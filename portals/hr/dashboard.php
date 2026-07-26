@@ -31,13 +31,21 @@ $recentApplications = getRecentApplications($userId, 10);
 
 // Get active jobs
 $activeJobs = getActiveJobs($userId);
+
+// Get total clients count for sidebar badge
+$clientsCount = 0;
+$clientsResult = mysqli_query($conn, "SELECT COUNT(*) as count FROM clients");
+if ($clientsResult) {
+    $clientsRow = mysqli_fetch_assoc($clientsResult);
+    $clientsCount = $clientsRow['count'] ?? 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>HR Dashboard - ISMERS</title>
+    <title>HR Dashboard </title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
@@ -101,8 +109,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   SIDEBAR - FIXED
-                ============================================= */
+           SIDEBAR - FIXED
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -274,17 +282,6 @@ $activeJobs = getActiveJobs($userId);
             transition: opacity 0.3s ease;
         }
 
-        .sidebar-main-link .nav-badge {
-            margin-left: auto;
-            background: var(--primary);
-            color: white;
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 0.125rem 0.5rem;
-            border-radius: 50px;
-            transition: opacity 0.3s ease;
-        }
-
         .sidebar-footer {
             padding: 1rem 1.25rem;
             border-top: 1px solid var(--slate-200);
@@ -327,6 +324,32 @@ $activeJobs = getActiveJobs($userId);
             text-overflow: ellipsis;
         }
 
+        .sidebar-footer .logout-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            margin-top: 0.5rem;
+            border-radius: 0.75rem;
+            color: #dc2626;
+            transition: all var(--transition-fast);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.875rem;
+            border: none;
+            background: none;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        .sidebar-footer .logout-btn:hover {
+            background: #fef2f2;
+        }
+
+        .sidebar-footer .logout-btn .material-symbols-outlined {
+            font-size: 1.125rem;
+        }
+
         .sidebar-backdrop {
             display: none;
             position: fixed;
@@ -347,8 +370,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   PROFILE DROPDOWN
-                ============================================= */
+           PROFILE DROPDOWN
+        ============================================= */
         .profile-dropdown-wrapper {
             position: relative;
         }
@@ -491,8 +514,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   MAIN CONTENT - PUSHED BY SIDEBAR
-                ============================================= */
+           MAIN CONTENT - PUSHED BY SIDEBAR
+        ============================================= */
         .main-wrapper {
             flex: 1;
             display: flex;
@@ -508,8 +531,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   TOP HEADER
-                ============================================= */
+           TOP HEADER
+        ============================================= */
         .top-header {
             background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(12px);
@@ -599,8 +622,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   MAIN SCROLLABLE AREA
-                ============================================= */
+           MAIN SCROLLABLE AREA
+        ============================================= */
         .main-scroll {
             flex: 1;
             overflow-y: auto;
@@ -613,8 +636,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   BREADCRUMB
-                ============================================= */
+           BREADCRUMB
+        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface-container-lowest);
             border-radius: var(--radius-xl);
@@ -666,8 +689,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   PAGE HEADER
-                ============================================= */
+           PAGE HEADER
+        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -751,8 +774,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   STATS GRID
-                ============================================= */
+           STATS GRID
+        ============================================= */
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -857,8 +880,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   DASHBOARD GRID
-                ============================================= */
+           DASHBOARD GRID
+        ============================================= */
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -872,8 +895,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   CARDS
-                ============================================= */
+           CARDS
+        ============================================= */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -919,8 +942,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   APPLICATION ITEMS
-                ============================================= */
+           APPLICATION ITEMS
+        ============================================= */
         .app-item {
             display: flex;
             justify-content: space-between;
@@ -984,8 +1007,8 @@ $activeJobs = getActiveJobs($userId);
         .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
 
         /* =============================================
-                   JOB ITEMS
-                ============================================= */
+           JOB ITEMS
+        ============================================= */
         .job-item {
             display: flex;
             justify-content: space-between;
@@ -1010,8 +1033,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   EMPTY STATE
-                ============================================= */
+           EMPTY STATE
+        ============================================= */
         .empty-state {
             text-align: center;
             padding: 2rem 1rem;
@@ -1035,8 +1058,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   RESPONSIVE
-                ============================================= */
+           RESPONSIVE
+        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop {
                 display: none !important;
@@ -1224,56 +1247,58 @@ $activeJobs = getActiveJobs($userId);
 </head>
 <body>
 
-    <!-- Sidebar Backdrop (Mobile) -->
+    <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- =============================================
-    SIDEBAR - FIXED
-    ============================================= -->
+    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">account_balance</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">HR Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">company name</p>
+            <p class="sidebar-brand-category">HR Portal</p>
         </div>
-
         <nav class="sidebar-nav">
-            <div class="nav-label">Main Menu</div>
-
+            <div class="nav-label">Main</div>
             <a href="dashboard.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-
+            <a href="clients.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">business</span>
+                <span class="nav-text">Clients</span>
+            </a>
             <a href="jobs.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">work</span>
                 <span class="nav-text">My Jobs</span>
-                <span class="nav-badge"><?php echo $stats['active_jobs']; ?></span>
             </a>
-
             <a href="applicants.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Applicants</span>
-                <span class="nav-badge"><?php echo $stats['total_applicants']; ?></span>
             </a>
-
+            <a href="pipeline.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">view_kanban</span>
+                <span class="nav-text">Pipeline</span>
+            </a>
+            <a href="interviews.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+            </a>
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">Offers</span>
+            </a>
             <a href="post_job.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">add_circle</span>
                 <span class="nav-text">Post Job</span>
             </a>
-
-            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
-
+            <div class="nav-label" style="margin-top:1rem;">System</div>
             <a href="settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-
         <div class="sidebar-footer">
             <div class="user-card">
                 <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -1282,6 +1307,7 @@ $activeJobs = getActiveJobs($userId);
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
+            
         </div>
     </aside>
 
@@ -1301,7 +1327,7 @@ $activeJobs = getActiveJobs($userId);
                 <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" title="Open Menu">
                     <span class="material-symbols-outlined">menu</span>
                 </button>
-                <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
+                <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">Nigga</span>
             </div>
 
             <!-- Profile Dropdown -->

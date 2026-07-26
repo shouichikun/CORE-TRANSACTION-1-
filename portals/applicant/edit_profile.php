@@ -76,7 +76,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errorMessage = 'Failed to update profile. Please try again.';
         }
     }
+
+    
 }
+$interviewCount = 0;
+if ($applicantId) {
+    $interviewResult = getRecord("
+        SELECT COUNT(*) as count FROM applications 
+        WHERE applicant_id = ? AND interview_date IS NOT NULL
+    ", [$applicantId], "i");
+    $interviewCount = $interviewResult['count'] ?? 0;
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -831,6 +842,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <span class="nav-text">Applications</span>
                 <span class="nav-badge"><?php echo $totalApplications; ?></span>
             </a>
+
+            <a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
+    <span class="material-symbols-outlined">calendar_month</span>
+    <span class="nav-text">Interviews</span>
+    <span class="nav-badge"><?php echo $interviewCount; ?></span>
+</a>
 
             <a href="job_search.php">
                 <svg class="nav-icon" viewBox="0 0 24 24">

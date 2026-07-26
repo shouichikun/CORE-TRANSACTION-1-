@@ -1756,55 +1756,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 
-    <!-- Sidebar Backdrop (Mobile) -->
+         <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- =============================================
-    SIDEBAR - FIXED
-    ============================================= -->
+    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">work</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">HR Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">HR Portal</p>
         </div>
-
         <nav class="sidebar-nav">
-            <div class="nav-label">Main Menu</div>
-
-            <a href="dashboard.php" class="sidebar-main-link">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-
-            <a href="jobs.php" class="sidebar-main-link active">
+            <a href="clients.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">business</span>
+                <span class="nav-text">Clients</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">work</span>
                 <span class="nav-text">My Jobs</span>
-                <span class="nav-badge"><?php echo $statusCounts['all']; ?></span>
             </a>
-
             <a href="applicants.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Applicants</span>
             </a>
-
+            <a href="pipeline.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">view_kanban</span>
+                <span class="nav-text">Pipeline</span>
+            </a>
+            <a href="interviews.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+            </a>
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">Offers</span>
+            </a>
             <a href="post_job.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">add_circle</span>
                 <span class="nav-text">Post Job</span>
             </a>
-
-            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
-
+            <div class="nav-label" style="margin-top:1rem;">System</div>
             <a href="settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-
         <div class="sidebar-footer">
             <div class="user-card">
                 <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -1813,12 +1816,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            <a href="../../logout.php" class="logout-btn">
-                <span class="material-symbols-outlined">logout</span>
-                <span class="logout-text">Logout</span>
-            </a>
+            
         </div>
     </aside>
+
+
 
     <!-- =============================================
     MAIN CONTENT

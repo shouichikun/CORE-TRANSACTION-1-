@@ -1,5 +1,5 @@
 <?php
-// portals/hr/post_job.php - Post New Job
+// portals/employee/dashboard.php - Employee Dashboard
 session_start();
 
 require_once '../../app/config.php';
@@ -10,126 +10,96 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     exit;
 }
 
-// Check if user has HR role
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+// Check if user has the correct role
+if ($_SESSION['role'] !== 'employee') {
     header('Location: ../../login.php');
     exit;
 }
 
 $userId = $_SESSION['user_id'];
-$fullName = $_SESSION['full_name'] ?? 'HR User';
+$fullName = $_SESSION['full_name'] ?? 'Employee';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
-$role = $_SESSION['role'] ?? 'hr_manager';
 
-// Database helper function (if not already in config.php)
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn;
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
-        }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
+// Get employee data
+$employee = getEmployeeByUserId($userId);
+$employeeId = $employee['id'] ?? 0;
+
+if ($employeeId <= 0) {
+    // If employee record doesn't exist, create it
+    $insertSql = "INSERT INTO employees (user_id, first_name, last_name, email, hire_date, status, created_at) 
+                  VALUES (?, ?, ?, ?, NOW(), 'active', NOW())";
+    $newId = insertRecord($insertSql, [
+        $userId,
+        $firstName,
+        $_SESSION['last_name'] ?? 'User',
+        $email
+    ], "isss");
+    
+    if ($newId) {
+        $employee = getEmployeeByUserId($userId);
+        $employeeId = $employee['id'] ?? 0;
     }
 }
 
-// Get user's clients (companies they manage)
-$clients = getRecords("SELECT id, company_name FROM clients WHERE user_id = ? OR is_active = 1", [$userId], "i");
+// =============================================
+// FIXED: Get employee details with job info - removed a.hired_at
+// =============================================
+$employeeDetails = getRecord("
+    SELECT e.*, 
+           jo.id as job_id, jo.title as job_title, jo.description as job_description,
+           jo.location as job_location, jo.job_type, jo.salary_range,
+           c.company_name, c.id as company_id,
+           a.id as application_id, a.interview_date, a.applied_at as hired_at,
+           u.first_name as hr_first_name, u.last_name as hr_last_name
+    FROM employees e
+    LEFT JOIN applications a ON e.application_id = a.id
+    LEFT JOIN job_orders jo ON a.job_order_id = jo.id
+    LEFT JOIN clients c ON jo.client_id = c.id
+    LEFT JOIN users u ON jo.created_by = u.id
+    WHERE e.user_id = ?
+", [$userId], "i");
 
-// If no clients, show a message
-$hasClients = !empty($clients);
+// Get attendance for today
+$todayAttendance = getEmployeeTodayAttendance($userId);
 
-// Initialize variables
-$successMessage = '';
-$errorMessage = '';
-$formData = [];
+$hasCheckedIn = $todayAttendance && $todayAttendance['check_in_time'] && !$todayAttendance['check_out_time'];
+$hasCheckedOut = $todayAttendance && $todayAttendance['check_out_time'];
 
-// Job types and levels
-$jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship', 'Freelance'];
-$experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead', 'Manager'];
-$jobStatuses = ['draft', 'open', 'ongoing', 'filled', 'cancelled'];
-$urgencyLevels = ['low', 'medium', 'high'];
+// Get attendance stats for the month
+$attendanceStats = getEmployeeAttendanceStats($userId);
 
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $formData = [
-        'client_id' => (int)$_POST['client_id'] ?? 0,
-        'title' => trim($_POST['title'] ?? ''),
-        'description' => trim($_POST['description'] ?? ''),
-        'skills_required' => trim($_POST['skills_required'] ?? ''),
-        'salary_range' => trim($_POST['salary_range'] ?? ''),
-        'location' => trim($_POST['location'] ?? ''),
-        'job_type' => $_POST['job_type'] ?? 'Full-time',
-        'experience_level' => $_POST['experience_level'] ?? 'Entry',
-        'status' => $_POST['status'] ?? 'open',
-        'urgency' => $_POST['urgency'] ?? 'medium',
-        'positions_available' => (int)($_POST['positions_available'] ?? 1),
-        'application_deadline' => $_POST['application_deadline'] ?? ''
-    ];
-    
-    // Validate
-    $errors = [];
-    if (empty($formData['client_id'])) $errors[] = 'Please select a client company.';
-    if (empty($formData['title'])) $errors[] = 'Job title is required.';
-    if (empty($formData['description'])) $errors[] = 'Job description is required.';
-    if (empty($formData['skills_required'])) $errors[] = 'Skills required is required.';
-    
-    if (empty($errors)) {
-        // Insert job - WITHOUT work_arrangement
-        $sql = "INSERT INTO job_orders (
-            client_id, title, description, skills_required, salary_range, 
-            location, job_type, experience_level, status, urgency, 
-            positions_available, application_deadline, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-        
-        // 13 parameters (removed work_arrangement)
-        $jobId = insertRecord($sql, [
-            $formData['client_id'],
-            $formData['title'],
-            $formData['description'],
-            $formData['skills_required'],
-            $formData['salary_range'],
-            $formData['location'],
-            $formData['job_type'],
-            $formData['experience_level'],
-            $formData['status'],
-            $formData['urgency'],
-            $formData['positions_available'],
-            $formData['application_deadline'],
-            $userId
-        ], "issssssssssis");
-        // Types: i + 10s + i + s + i = "issssssssssis" (13 characters)
-        
-        if ($jobId) {
-            logActivity($userId, 'Job Posted', 'job_orders', $jobId, 'Posted job: ' . $formData['title']);
-            $successMessage = 'Job posted successfully!';
-            
-            // Reset form data
-            $formData = [];
-            
-            // Redirect after 2 seconds
-            header('Refresh: 2; URL=jobs.php');
-        } else {
-            $errorMessage = 'Failed to post job. Please try again.';
-        }
-    } else {
-        $errorMessage = implode('<br>', $errors);
-    }
-}
+// Get recent attendance records
+$recentAttendance = getEmployeeRecentAttendance($userId, 7);
 
-// Get client list for dropdown
-$clientOptions = '';
-foreach ($clients as $client) {
-    $selected = ($formData['client_id'] ?? '') == $client['id'] ? 'selected' : '';
-    $clientOptions .= "<option value=\"{$client['id']}\" $selected>" . htmlspecialchars($client['company_name']) . "</option>";
+// Get notification count for badge
+$notificationCount = getRecord("
+    SELECT COUNT(*) as count FROM notifications 
+    WHERE user_id = ? AND is_read = 0
+", [$userId], "i");
+$totalNotifications = $notificationCount['count'] ?? 0;
+
+// Get upcoming schedule (if any)
+$upcomingSchedule = getEmployeeSchedule($employeeId, 5);
+
+// Role labels for display
+$roleLabels = [
+    'admin' => 'Administrator',
+    'hr_manager' => 'HR Manager',
+    'recruiter' => 'Recruiter',
+    'client' => 'Client',
+    'applicant' => 'Applicant',
+    'employee' => 'Employee',
+    'supervisor' => 'Supervisor'
+];
+
+// Get current time for greeting
+$currentHour = date('H');
+$greeting = 'Good Evening';
+if ($currentHour < 12) {
+    $greeting = 'Good Morning';
+} elseif ($currentHour < 18) {
+    $greeting = 'Good Afternoon';
 }
 ?>
 <!DOCTYPE html>
@@ -137,12 +107,12 @@ foreach ($clients as $client) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Post Job - ISMERS</title>
+    <title>Employee Dashboard - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - POST JOB
+           MATERIAL 3 DESIGN SYSTEM - EMPLOYEE DASHBOARD
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -175,6 +145,10 @@ foreach ($clients as $client) {
             --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
+            --success-color: #22c55e;
+            --error-color: #dc2626;
+            --warning-color: #f59e0b;
+            --info-color: #2563eb;
         }
 
         * {
@@ -731,7 +705,7 @@ foreach ($clients as $client) {
         }
 
         .main-scroll .container {
-            max-width: 56rem;
+            max-width: 80rem;
             margin: 0 auto;
         }
 
@@ -780,12 +754,6 @@ foreach ($clients as $client) {
             height: 0.5rem;
             border-radius: 50%;
             background: #22c55e;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
         }
 
         /* =============================================
@@ -819,12 +787,6 @@ foreach ($clients as $client) {
             margin-top: 0.25rem;
         }
 
-        .page-header .header-actions {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-        }
-
         /* =============================================
            BUTTONS
         ============================================= */
@@ -854,12 +816,6 @@ foreach ($clients as $client) {
             box-shadow: var(--shadow-md);
         }
 
-        .btn-primary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
-        }
-
         .btn-outline {
             background: transparent;
             color: var(--primary);
@@ -871,7 +827,7 @@ foreach ($clients as $client) {
         }
 
         .btn-success {
-            background: #22c55e;
+            background: var(--success-color);
             color: white;
         }
 
@@ -882,7 +838,7 @@ foreach ($clients as $client) {
         }
 
         .btn-danger {
-            background: #dc2626;
+            background: var(--error-color);
             color: white;
         }
 
@@ -903,67 +859,112 @@ foreach ($clients as $client) {
         }
 
         /* =============================================
-           MESSAGES
+           WELCOME CARD
         ============================================= */
-        .message {
-            padding: 0.875rem 1.25rem;
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            margin-bottom: 1rem;
+        .welcome-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            padding: 2rem;
+            margin-bottom: 1.5rem;
             display: flex;
-            align-items: flex-start;
+            flex-direction: column;
             gap: 0.75rem;
-            border: 1px solid transparent;
         }
 
-        .message .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-            margin-top: 0.0625rem;
+        @media (min-width: 640px) {
+            .welcome-card {
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+            }
         }
 
-        .message.success {
-            background: #f0fdf4;
-            border-color: #bbf7d0;
-            color: #16a34a;
+        .welcome-card .welcome-text h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
         }
 
-        .message.success .material-symbols-outlined {
-            color: #16a34a;
+        .welcome-card .welcome-text p {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
         }
 
-        .message.error {
-            background: #fef2f2;
-            border-color: #fecaca;
-            color: #dc2626;
+        .welcome-card .welcome-text .company-name {
+            color: var(--primary);
+            font-weight: 600;
         }
 
-        .message.error .material-symbols-outlined {
-            color: #dc2626;
-        }
-
-        .message.info {
-            background: #dbeafe;
-            border-color: #93c5fd;
-            color: #2563eb;
-        }
-
-        .message.info .material-symbols-outlined {
-            color: #2563eb;
+        .welcome-card .welcome-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
         }
 
         /* =============================================
-           FORM CARD
+           STATS CARDS
         ============================================= */
-        .card {
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            padding: 1.25rem 1.5rem;
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            transition: none;
+        }
+
+        .stat-card .stat-number {
+            font-size: 1.75rem;
+            font-weight: 800;
+            color: var(--text-on-surface);
+        }
+
+        .stat-card .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+
+        .stat-card .stat-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            float: right;
+        }
+
+        .stat-card .stat-icon .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+
+        /* =============================================
+           ATTENDANCE SECTION
+        ============================================= */
+        .section-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
         }
 
-        .card-header {
+        .section-card .section-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
@@ -973,131 +974,126 @@ foreach ($clients as $client) {
             gap: 0.75rem;
         }
 
-        .card-header h3 {
-            font-size: 1.125rem;
+        .section-card .section-header h3 {
+            font-size: 1rem;
             font-weight: 700;
             display: flex;
             align-items: center;
             gap: 0.625rem;
         }
 
-        .card-header h3 .material-symbols-outlined {
+        .section-card .section-header h3 .material-symbols-outlined {
             font-size: 1.25rem;
             color: var(--primary);
         }
 
-        .card-header .required-label {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .card-body {
+        .section-card .section-body {
             padding: 1.5rem;
         }
 
-        /* =============================================
-           FORM ELEMENTS
-        ============================================= */
-        .form-group {
-            margin-bottom: 1.25rem;
+        /* ===== ATTENDANCE STATUS ===== */
+        .attendance-status {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
         }
 
-        .form-group:last-child {
-            margin-bottom: 0;
+        .attendance-status .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
         }
 
-        .form-group label {
-            display: block;
-            font-size: 0.8125rem;
+        .attendance-status .status-item .status-dot {
+            width: 0.75rem;
+            height: 0.75rem;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .attendance-status .status-item .status-dot.checked-in {
+            background: var(--success-color);
+        }
+
+        .attendance-status .status-item .status-dot.checked-out {
+            background: var(--slate-500);
+        }
+
+        .attendance-status .status-item .status-dot.absent {
+            background: var(--error-color);
+        }
+
+        .attendance-status .status-item .status-dot.late {
+            background: var(--warning-color);
+        }
+
+        .attendance-status .status-item .status-label {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+        }
+
+        .attendance-status .status-item .status-value {
+            font-size: 0.875rem;
             font-weight: 600;
             color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
         }
 
-        .form-group label .required {
-            color: #dc2626;
-            margin-left: 0.125rem;
-        }
-
-        .form-group .form-control {
+        /* ===== ATTENDANCE TABLE ===== */
+        .attendance-table {
             width: 100%;
-            padding: 0.625rem 0.875rem;
-            border: 2px solid var(--slate-200);
-            border-radius: 0.75rem;
+            border-collapse: collapse;
             font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
         }
 
-        .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
-        }
-
-        .form-group .form-control::placeholder {
-            color: var(--text-on-surface-variant);
-            opacity: 0.6;
-        }
-
-        .form-group .form-control:disabled {
+        .attendance-table thead {
             background: var(--bg-surface-low);
-            cursor: not-allowed;
-            opacity: 0.7;
         }
 
-        .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 120px;
-        }
-
-        .form-group select.form-control {
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 1rem center;
-            padding-right: 2.5rem;
-        }
-
-        .form-group .helper-text {
+        .attendance-table th {
+            padding: 0.625rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
             font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
             color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
+            border-bottom: 2px solid var(--slate-200);
         }
 
-        .form-group .helper-text .material-symbols-outlined {
-            font-size: 0.875rem;
+        .attendance-table td {
+            padding: 0.625rem 0.75rem;
+            border-bottom: 1px solid var(--slate-200);
             vertical-align: middle;
         }
 
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
+        .attendance-table tr:last-child td {
+            border-bottom: none;
         }
 
-        .form-row-3 {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 1rem;
+        .attendance-table .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        @media (max-width: 640px) {
-            .form-row,
-            .form-row-3 {
-                grid-template-columns: 1fr;
-            }
+        .attendance-table .status-badge.present {
+            background: #d1fae5;
+            color: #059669;
         }
 
-        .form-actions {
-            display: flex;
-            gap: 0.75rem;
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--slate-200);
-            flex-wrap: wrap;
+        .attendance-table .status-badge.absent {
+            background: #fecaca;
+            color: #dc2626;
+        }
+
+        .attendance-table .status-badge.late {
+            background: #fef3c7;
+            color: #d97706;
         }
 
         /* =============================================
@@ -1105,7 +1101,7 @@ foreach ($clients as $client) {
         ============================================= */
         .empty-state {
             text-align: center;
-            padding: 2.5rem 1.5rem;
+            padding: 2rem 1.5rem;
         }
 
         .empty-state .material-symbols-outlined {
@@ -1116,7 +1112,7 @@ foreach ($clients as $client) {
         }
 
         .empty-state h4 {
-            font-size: 1.125rem;
+            font-size: 1rem;
             font-weight: 700;
             color: var(--text-on-surface);
             margin-bottom: 0.25rem;
@@ -1146,11 +1142,11 @@ foreach ($clients as $client) {
         }
 
         .toast.success {
-            background: #22c55e;
+            background: var(--success-color);
         }
 
         .toast.error {
-            background: #dc2626;
+            background: var(--error-color);
         }
 
         .toast.info {
@@ -1246,17 +1242,30 @@ foreach ($clients as $client) {
                 display: none;
             }
 
-            .card-body {
-                padding: 1rem 1.25rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
             }
 
-            .form-actions {
+            .attendance-status {
                 flex-direction: column;
+                gap: 0.75rem;
             }
 
-            .form-actions .btn {
-                width: 100%;
-                justify-content: center;
+            .attendance-table {
+                font-size: 0.75rem;
+            }
+
+            .attendance-table th,
+            .attendance-table td {
+                padding: 0.375rem 0.5rem;
+            }
+
+            .welcome-card {
+                padding: 1.25rem;
+            }
+
+            .welcome-card .welcome-text h2 {
+                font-size: 1.25rem;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1306,20 +1315,30 @@ foreach ($clients as $client) {
                 font-size: 1.5rem;
             }
 
-            .card-header {
-                padding: 1rem 1.25rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.5rem;
             }
 
-            .card-header h3 {
-                font-size: 1rem;
-            }
-
-            .card-body {
+            .stat-card {
                 padding: 0.75rem 1rem;
             }
 
-            .form-group {
-                margin-bottom: 0.875rem;
+            .stat-card .stat-number {
+                font-size: 1.25rem;
+            }
+
+            .section-card .section-header {
+                padding: 0.75rem 1rem;
+            }
+
+            .section-card .section-body {
+                padding: 0.75rem 1rem;
+            }
+
+            .attendance-table {
+                font-size: 0.6875rem;
+                min-width: 300px;
             }
 
             .toast {
@@ -1350,70 +1369,65 @@ foreach ($clients as $client) {
 </head>
 <body>
 
-       <!-- Sidebar Backdrop -->
+    <!-- Sidebar Backdrop (Mobile) -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
+    <!-- =============================================
+    SIDEBAR - FIXED
+    ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">account_balance</span>
-            </span>
-            <p class="sidebar-brand-text">ISMERS</p>
-            <p class="sidebar-brand-category">HR Portal</p>
+        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
+            <div class="sidebar-brand-card">
+                <span class="sidebar-brand-icon">
+                    <span class="material-symbols-outlined">badge</span>
+                </span>
+                <p class="sidebar-brand-text">ISMERS</p>
+                <p class="sidebar-brand-category">Employee Portal</p>
+            </div>
         </div>
+
         <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
+            <div class="nav-label">Main Menu</div>
+
             <a href="dashboard.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="clients.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">business</span>
-                <span class="nav-text">Clients</span>
+
+            <a href="profile.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">My Profile</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">My Jobs</span>
+
+            <a href="attendance.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">event_available</span>
+                <span class="nav-text">Attendance</span>
             </a>
-            <a href="applicants.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">people</span>
-                <span class="nav-text">Applicants</span>
+
+            <a href="schedule.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">schedule</span>
+                <span class="nav-text">My Schedule</span>
             </a>
-            <a href="pipeline.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">view_kanban</span>
-                <span class="nav-text">Pipeline</span>
-            </a>
-            <a href="interviews.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">calendar_month</span>
-                <span class="nav-text">Interviews</span>
-            </a>
-            <a href="offers.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">description</span>
-                <span class="nav-text">Offers</span>
-            </a>
-            <a href="post_job.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">add_circle</span>
-                <span class="nav-text">Post Job</span>
-            </a>
-            <div class="nav-label" style="margin-top:1rem;">System</div>
+
+            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
+
             <a href="settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
+
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            
+         
         </div>
     </aside>
-
 
     <!-- =============================================
     MAIN CONTENT
@@ -1429,31 +1443,44 @@ foreach ($clients as $client) {
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">/</span>
-                <span style="font-weight:600; font-size:0.875rem;">Post New Job</span>
+                <span style="font-weight:600; font-size:0.875rem;">Dashboard</span>
             </div>
 
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-                <div class="profile-dropdown-menu" id="profileMenu">
-                    <div class="dropdown-header">Account</div>
-                    <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                        <span class="material-symbols-outlined">person</span>
-                        Profile
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+                <!-- Notification Bell -->
+                <div class="notification-wrapper" style="position:relative;">
+                    <button class="notification-btn" id="notificationBtn" aria-label="Notifications" style="background:none;border:none;cursor:pointer;padding:0.5rem;border-radius:0.75rem;color:var(--text-on-surface-variant);position:relative;">
+                        <span class="material-symbols-outlined" style="font-size:1.5rem;">notifications</span>
+                        <span class="notification-badge" id="notifBadge" style="position:absolute;top:0.25rem;right:0.25rem;background:#dc2626;color:white;font-size:0.625rem;font-weight:700;min-width:1.25rem;height:1.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0 0.25rem;<?php echo $totalNotifications > 0 ? '' : 'display:none;'; ?>">
+                            <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
+                        </span>
                     </button>
-                    <button class="dropdown-item" onclick="window.location.href='settings.php'">
-                        <span class="material-symbols-outlined">settings</span>
-                        Settings
+                </div>
+
+                <!-- Profile -->
+                <div class="profile-dropdown-wrapper">
+                    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                        <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
+                        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'] ?? 'Employee')); ?></span>
+                        <span class="material-symbols-outlined">expand_more</span>
                     </button>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                        <span class="material-symbols-outlined">logout</span>
-                        Logout
-                    </button>
+                    <div class="profile-dropdown-menu" id="profileMenu">
+                        <div class="dropdown-header">Account</div>
+                        <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                            <span class="material-symbols-outlined">person</span>
+                            Profile
+                        </button>
+                        <button class="dropdown-item" onclick="window.location.href='settings.php'">
+                            <span class="material-symbols-outlined">settings</span>
+                            Settings
+                        </button>
+                        <div class="dropdown-divider"></div>
+                        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                            <span class="material-symbols-outlined">logout</span>
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -1465,223 +1492,204 @@ foreach ($clients as $client) {
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">add_circle</span>
-                        <span>Post Job</span>
+                        <span class="material-symbols-outlined">dashboard</span>
+                        <span>Dashboard</span>
                         <span class="status-dot"></span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">New Job Posting</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            Employee Portal
+                        </span>
                     </div>
                     <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        <?php echo date('M d, Y H:i'); ?>
+                        <?php echo date('l, F j, Y'); ?>
                     </span>
                 </div>
 
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Post New Job</h1>
-                        <p>Create a new job posting to find the best candidates</p>
+                <!-- Welcome Card -->
+                <div class="welcome-card">
+                    <div class="welcome-text">
+                        <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
+                        <p>
+                            Welcome to your employee dashboard. 
+                            <?php if ($employeeDetails && $employeeDetails['company_name']): ?>
+                                You are working at <span class="company-name"><?php echo htmlspecialchars($employeeDetails['company_name']); ?></span> 
+                                as <span class="company-name"><?php echo htmlspecialchars($employeeDetails['job_title'] ?? 'Employee'); ?></span>
+                            <?php else: ?>
+                                You are now part of the ISMERS team. Welcome aboard!
+                            <?php endif; ?>
+                        </p>
                     </div>
-                    <div class="header-actions">
-                        <a href="jobs.php" class="btn btn-outline">
-                            <span class="material-symbols-outlined">arrow_back</span>
-                            Back to Jobs
-                        </a>
+                    <div class="welcome-actions">
+                        <?php if (!$hasCheckedIn && !$hasCheckedOut): ?>
+                            <button class="btn btn-success" onclick="checkIn()">
+                                <span class="material-symbols-outlined">login</span>
+                                Check In
+                            </button>
+                        <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
+                            <button class="btn btn-danger" onclick="checkOut()">
+                                <span class="material-symbols-outlined">logout</span>
+                                Check Out
+                            </button>
+                            <span class="btn btn-outline" style="cursor:default;">
+                                <span class="material-symbols-outlined">verified</span>
+                                Checked In
+                            </span>
+                        <?php else: ?>
+                            <span class="btn btn-outline" style="cursor:default;">
+                                <span class="material-symbols-outlined">check_circle</span>
+                                Checked Out
+                            </span>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Messages -->
-                <?php if (!empty($successMessage)): ?>
-                    <div class="message success">
-                        <span class="material-symbols-outlined">check_circle</span>
-                        <div>
-                            <strong><?php echo htmlspecialchars($successMessage); ?></strong>
-                            <span style="display:block; font-weight:400;">Redirecting to jobs list...</span>
-                        </div>
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-icon">
+                            <span class="material-symbols-outlined">event_available</span>
+                        </span>
+                        <div class="stat-number"><?php echo $attendanceStats['days_present'] ?? 0; ?></div>
+                        <div class="stat-label">Days Present</div>
                     </div>
-                <?php endif; ?>
-
-                <?php if (!empty($errorMessage)): ?>
-                    <div class="message error">
-                        <span class="material-symbols-outlined">error</span>
-                        <div>
-                            <strong>Error:</strong>
-                            <span style="display:block; font-weight:400;"><?php echo $errorMessage; ?></span>
-                        </div>
+                    <div class="stat-card">
+                        <span class="stat-icon" style="background:rgba(220,38,38,0.1); color:#dc2626;">
+                            <span class="material-symbols-outlined">event_busy</span>
+                        </span>
+                        <div class="stat-number" style="color:#dc2626;"><?php echo $attendanceStats['days_absent'] ?? 0; ?></div>
+                        <div class="stat-label">Days Absent</div>
                     </div>
-                <?php endif; ?>
-
-                <!-- No Clients Message -->
-                <?php if (!$hasClients): ?>
-                    <div class="message info">
-                        <span class="material-symbols-outlined">info</span>
-                        <div>
-                            <strong>No clients available.</strong>
-                            <span style="display:block; font-weight:400;">Please contact an admin to add client companies before posting jobs.</span>
-                        </div>
+                    <div class="stat-card">
+                        <span class="stat-icon" style="background:rgba(245,158,11,0.1); color:#f59e0b;">
+                            <span class="material-symbols-outlined">warning</span>
+                        </span>
+                        <div class="stat-number" style="color:#f59e0b;"><?php echo $attendanceStats['days_late'] ?? 0; ?></div>
+                        <div class="stat-label">Late Arrivals</div>
                     </div>
-                <?php endif; ?>
+                    <div class="stat-card">
+                        <span class="stat-icon" style="background:rgba(34,197,94,0.1); color:#22c55e;">
+                            <span class="material-symbols-outlined">trending_up</span>
+                        </span>
+                        <div class="stat-number" style="color:#22c55e;">
+                            <?php 
+                            $total = $attendanceStats['total_days'] ?? 1;
+                            $present = $attendanceStats['days_present'] ?? 0;
+                            echo $total > 0 ? round(($present / $total) * 100) . '%' : '0%';
+                            ?>
+                        </div>
+                        <div class="stat-label">Attendance Rate</div>
+                    </div>
+                </div>
 
-                <!-- Post Job Form -->
-                <div class="card">
-                    <div class="card-header">
+                <!-- Recent Attendance -->
+                <div class="section-card">
+                    <div class="section-header">
                         <h3>
-                            <span class="material-symbols-outlined">description</span>
-                            Job Details
+                            <span class="material-symbols-outlined">history</span>
+                            Recent Attendance
                         </h3>
-                        <span class="required-label">Fields with <span style="color:#dc2626;">*</span> are required</span>
+                        <a href="attendance.php" style="font-size:0.875rem; color:var(--primary); font-weight:600;">View All</a>
                     </div>
-                    <div class="card-body">
-                        <form method="POST" action="" id="postJobForm" novalidate>
+                    <div class="section-body">
+                        <?php if (empty($recentAttendance)): ?>
+                            <div class="empty-state">
+                                <span class="material-symbols-outlined">inbox</span>
+                                <h4>No Attendance Records</h4>
+                                <p>Your attendance records will appear here once you start checking in.</p>
+                            </div>
+                        <?php else: ?>
+                            <div style="overflow-x:auto;">
+                                <table class="attendance-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Check In</th>
+                                            <th>Check Out</th>
+                                            <th>Hours</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($recentAttendance as $record): ?>
+                                            <?php
+                                            $status = 'present';
+                                            $statusLabel = 'Present';
+                                            if (!$record['check_in_time']) {
+                                                $status = 'absent';
+                                                $statusLabel = 'Absent';
+                                            } elseif ($record['is_late']) {
+                                                $status = 'late';
+                                                $statusLabel = 'Late';
+                                            }
+                                            $hours = 0;
+                                            if ($record['check_in_time'] && $record['check_out_time']) {
+                                                $checkIn = strtotime($record['check_in_time']);
+                                                $checkOut = strtotime($record['check_out_time']);
+                                                $hours = round(($checkOut - $checkIn) / 3600, 1);
+                                            }
+                                            ?>
+                                            <tr>
+                                                <td><?php echo date('M d, Y', strtotime($record['attendance_date'])); ?></td>
+                                                <td><?php echo $record['check_in_time'] ? date('h:i A', strtotime($record['check_in_time'])) : '—'; ?></td>
+                                                <td><?php echo $record['check_out_time'] ? date('h:i A', strtotime($record['check_out_time'])) : '—'; ?></td>
+                                                <td><?php echo $hours > 0 ? $hours . 'h' : '—'; ?></td>
+                                                <td>
+                                                    <span class="status-badge <?php echo $status; ?>">
+                                                        <?php echo $statusLabel; ?>
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
 
-                            <!-- Client -->
-                            <div class="form-group">
-                                <label>Client Company <span class="required">*</span></label>
-                                <select name="client_id" class="form-control" required <?php echo !$hasClients ? 'disabled' : ''; ?>>
-                                    <option value="">Select a client company</option>
-                                    <?php echo $clientOptions; ?>
-                                </select>
-                                <?php if (!$hasClients): ?>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">warning</span>
-                                        No clients available. Please contact admin.
+                <!-- Upcoming Schedule -->
+                <div class="section-card">
+                    <div class="section-header">
+                        <h3>
+                            <span class="material-symbols-outlined">schedule</span>
+                            Upcoming Schedule
+                        </h3>
+                        <a href="schedule.php" style="font-size:0.875rem; color:var(--primary); font-weight:600;">View All</a>
+                    </div>
+                    <div class="section-body">
+                        <?php if (empty($upcomingSchedule)): ?>
+                            <div class="empty-state">
+                                <span class="material-symbols-outlined">calendar_month</span>
+                                <h4>No Upcoming Schedule</h4>
+                                <p>Your schedule will appear here once it's assigned by your supervisor.</p>
+                            </div>
+                        <?php else: ?>
+                            <div style="display:grid; grid-template-columns:1fr; gap:0.75rem;">
+                                <?php foreach ($upcomingSchedule as $schedule): ?>
+                                    <div style="display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+                                        <div>
+                                            <div style="font-weight:600; font-size:0.875rem;">
+                                                <?php echo date('l, F j, Y', strtotime($schedule['schedule_date'])); ?>
+                                            </div>
+                                            <div style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
+                                                <?php echo date('h:i A', strtotime($schedule['start_time'])); ?> - 
+                                                <?php echo date('h:i A', strtotime($schedule['end_time'])); ?>
+                                            </div>
+                                        </div>
+                                        <div style="text-align:right;">
+                                            <div style="font-size:0.8125rem; font-weight:600; color:var(--primary);">
+                                                <?php echo htmlspecialchars($schedule['shift_type'] ?? 'Regular Shift'); ?>
+                                            </div>
+                                            <?php if (!empty($schedule['notes'])): ?>
+                                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                    <?php echo htmlspecialchars($schedule['notes']); ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
                                     </div>
-                                <?php endif; ?>
+                                <?php endforeach; ?>
                             </div>
-
-                            <!-- Job Title -->
-                            <div class="form-group">
-                                <label>Job Title <span class="required">*</span></label>
-                                <input type="text" name="title" class="form-control" 
-                                       placeholder="e.g., Senior PHP Developer" 
-                                       value="<?php echo htmlspecialchars($formData['title'] ?? ''); ?>" required>
-                            </div>
-
-                            <!-- Description -->
-                            <div class="form-group">
-                                <label>Job Description <span class="required">*</span></label>
-                                <textarea name="description" class="form-control" 
-                                          placeholder="Describe the role, responsibilities, and requirements" 
-                                          rows="5" required><?php echo htmlspecialchars($formData['description'] ?? ''); ?></textarea>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Provide a clear and detailed description of the job
-                                </div>
-                            </div>
-
-                            <!-- Skills Required -->
-                            <div class="form-group">
-                                <label>Skills Required <span class="required">*</span></label>
-                                <input type="text" name="skills_required" class="form-control" 
-                                       placeholder="e.g., PHP, Laravel, MySQL, JavaScript, React" 
-                                       value="<?php echo htmlspecialchars($formData['skills_required'] ?? ''); ?>" required>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Separate skills with commas
-                                </div>
-                            </div>
-
-                            <!-- Job Type + Experience Level -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Job Type</label>
-                                    <select name="job_type" class="form-control">
-                                        <?php foreach ($jobTypes as $type): ?>
-                                            <option value="<?php echo $type; ?>" <?php echo ($formData['job_type'] ?? 'Full-time') === $type ? 'selected' : ''; ?>>
-                                                <?php echo $type; ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Experience Level</label>
-                                    <select name="experience_level" class="form-control">
-                                        <?php foreach ($experienceLevels as $level): ?>
-                                            <option value="<?php echo $level; ?>" <?php echo ($formData['experience_level'] ?? 'Entry') === $level ? 'selected' : ''; ?>>
-                                                <?php echo $level; ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- Positions Available -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Positions Available</label>
-                                    <input type="number" name="positions_available" class="form-control" 
-                                           value="<?php echo htmlspecialchars($formData['positions_available'] ?? 1); ?>" min="1">
-                                </div>
-                            </div>
-
-                            <!-- Location + Salary -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Location</label>
-                                    <input type="text" name="location" class="form-control" 
-                                           placeholder="e.g., Makati, Philippines" 
-                                           value="<?php echo htmlspecialchars($formData['location'] ?? ''); ?>">
-                                </div>
-                                <div class="form-group">
-                                    <label>Salary Range</label>
-                                    <input type="text" name="salary_range" class="form-control" 
-                                           placeholder="e.g., ₱50,000 - ₱80,000" 
-                                           value="<?php echo htmlspecialchars($formData['salary_range'] ?? ''); ?>">
-                                </div>
-                            </div>
-
-                            <!-- Application Deadline -->
-                            <div class="form-group">
-                                <label>Application Deadline</label>
-                                <input type="date" name="application_deadline" class="form-control" 
-                                       value="<?php echo htmlspecialchars($formData['application_deadline'] ?? ''); ?>">
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">calendar_today</span>
-                                    Leave empty for ongoing applications
-                                </div>
-                            </div>
-
-                            <!-- Status + Urgency -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Status</label>
-                                    <select name="status" class="form-control">
-                                        <?php foreach ($jobStatuses as $status): ?>
-                                            <option value="<?php echo $status; ?>" <?php echo ($formData['status'] ?? 'open') === $status ? 'selected' : ''; ?>>
-                                                <?php echo ucfirst($status); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Urgency</label>
-                                    <select name="urgency" class="form-control">
-                                        <?php foreach ($urgencyLevels as $urgency): ?>
-                                            <option value="<?php echo $urgency; ?>" <?php echo ($formData['urgency'] ?? 'medium') === $urgency ? 'selected' : ''; ?>>
-                                                <?php echo ucfirst($urgency); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- Form Actions -->
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary" <?php echo !$hasClients ? 'disabled' : ''; ?>>
-                                    <span class="material-symbols-outlined">publish</span>
-                                    Publish Job
-                                </button>
-                                <button type="reset" class="btn btn-outline">
-                                    <span class="material-symbols-outlined">clear</span>
-                                    Clear All
-                                </button>
-                                <a href="jobs.php" class="btn btn-outline">
-                                    <span class="material-symbols-outlined">cancel</span>
-                                    Cancel
-                                </a>
-                            </div>
-
-                        </form>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -1767,66 +1775,63 @@ foreach ($clients as $client) {
         });
 
         // =============================================
-        // 4. FORM VALIDATION
+        // 4. CHECK IN / CHECK OUT
         // =============================================
-        document.getElementById('postJobForm').addEventListener('submit', function(e) {
-            const clientSelect = this.querySelector('select[name="client_id"]');
-            const titleInput = this.querySelector('input[name="title"]');
-            const descInput = this.querySelector('textarea[name="description"]');
-            const skillsInput = this.querySelector('input[name="skills_required"]');
-            let errors = [];
-            let hasError = false;
+        function checkIn() {
+            const btn = event.target.closest('button');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
 
-            // Reset styles
-            [clientSelect, titleInput, descInput, skillsInput].forEach(el => {
-                if (el) el.style.borderColor = '';
+            fetch('ajax/attendance.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=check_in'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Checked in successfully at ' + data.time, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast(data.error || 'Failed to check in.', 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
+                }
+            })
+            .catch(error => {
+                showToast('Error checking in. Please try again.', 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
             });
+        }
 
-            if (!clientSelect || !clientSelect.value) {
-                errors.push('Please select a client company.');
-                if (clientSelect) clientSelect.style.borderColor = '#dc2626';
-                hasError = true;
-            }
+        function checkOut() {
+            const btn = event.target.closest('button');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
 
-            if (!titleInput || !titleInput.value.trim()) {
-                errors.push('Please enter a job title.');
-                if (titleInput) titleInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!descInput || !descInput.value.trim()) {
-                errors.push('Please enter a job description.');
-                if (descInput) descInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!skillsInput || !skillsInput.value.trim()) {
-                errors.push('Please enter required skills.');
-                if (skillsInput) skillsInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (hasError) {
-                e.preventDefault();
-                showToast('Please fix the following errors:\n• ' + errors.join('\n• '), 'error');
-                
-                // Focus on first error
-                const firstError = [clientSelect, titleInput, descInput, skillsInput].find(el => 
-                    el && el.style.borderColor === '#dc2626'
-                );
-                if (firstError) firstError.focus();
-            }
-        });
-
-        // Clear error styling on input
-        document.querySelectorAll('.form-control').forEach(el => {
-            el.addEventListener('input', function() {
-                this.style.borderColor = '';
+            fetch('ajax/attendance.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=check_out'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Checked out successfully at ' + data.time, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast(data.error || 'Failed to check out.', 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
+                }
+            })
+            .catch(error => {
+                showToast('Error checking out. Please try again.', 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
             });
-            el.addEventListener('change', function() {
-                this.style.borderColor = '';
-            });
-        });
+        }
 
         // =============================================
         // 5. TOAST SYSTEM
@@ -1837,11 +1842,6 @@ foreach ($clients as $client) {
 
             const toast = document.createElement('div');
             toast.className = 'toast ' + type;
-            
-            // Handle multi-line messages
-            if (message.includes('\n')) {
-                toast.style.whiteSpace = 'pre-line';
-            }
             toast.textContent = message;
             document.body.appendChild(toast);
 
@@ -1850,7 +1850,7 @@ foreach ($clients as $client) {
                 toast.style.transform = 'translateY(20px)';
                 toast.style.transition = 'all 0.4s ease';
                 setTimeout(() => toast.remove(), 400);
-            }, 5000);
+            }, 4000);
         }
 
         // =============================================
@@ -1888,7 +1888,7 @@ foreach ($clients as $client) {
             }
         });
 
-        console.log('📝 ISMERS Post Job page loaded successfully!');
+        console.log('Employee Dashboard loaded successfully.');
     </script>
 
 </body>

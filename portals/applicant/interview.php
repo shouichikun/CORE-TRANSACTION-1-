@@ -1,5 +1,5 @@
 <?php
-// portals/hr/post_job.php - Post New Job
+// portals/applicant/interview.php - Applicant Interview Dashboard
 session_start();
 
 require_once '../../app/config.php';
@@ -10,139 +10,112 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     exit;
 }
 
-// Check if user has HR role
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+// Check if user has the correct role
+if ($_SESSION['role'] !== 'applicant') {
     header('Location: ../../login.php');
     exit;
 }
 
 $userId = $_SESSION['user_id'];
-$fullName = $_SESSION['full_name'] ?? 'HR User';
+$fullName = $_SESSION['full_name'] ?? 'Applicant';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
-$role = $_SESSION['role'] ?? 'hr_manager';
 
-// Database helper function (if not already in config.php)
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn;
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
-        }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
-    }
+// Get applicant data
+$applicant = getApplicantByUserId($userId);
+$applicantId = $applicant['id'] ?? 0;
+
+if ($applicantId <= 0) {
+    header('Location: dashboard.php');
+    exit;
 }
 
-// Get user's clients (companies they manage)
-$clients = getRecords("SELECT id, company_name FROM clients WHERE user_id = ? OR is_active = 1", [$userId], "i");
+// =============================================
+// GET INTERVIEW COUNT FOR SIDEBAR BADGE
+// =============================================
+$interviewCount = 0;
+$interviewResult = getRecord("
+    SELECT COUNT(*) as count FROM applications 
+    WHERE applicant_id = ? AND interview_date IS NOT NULL
+", [$applicantId], "i");
+$interviewCount = $interviewResult['count'] ?? 0;
 
-// If no clients, show a message
-$hasClients = !empty($clients);
+// Get all interviews for this applicant
+$interviews = getRecords("
+    SELECT a.id as application_id, a.status, a.applied_at, a.cover_letter,
+           a.interview_date, a.interview_notes,
+           jo.id as job_id, jo.title as job_title, jo.description as job_description,
+           jo.location as job_location, jo.job_type, jo.salary_range,
+           c.company_name, c.id as company_id,
+           u.first_name as hr_first_name, u.last_name as hr_last_name, u.email as hr_email
+    FROM applications a
+    JOIN job_orders jo ON a.job_order_id = jo.id
+    JOIN clients c ON jo.client_id = c.id
+    JOIN users u ON jo.created_by = u.id
+    WHERE a.applicant_id = ? 
+      AND a.interview_date IS NOT NULL
+      AND a.status IN ('interviewed', 'shortlisted')
+    ORDER BY a.interview_date ASC
+", [$applicantId], "i");
 
-// Initialize variables
-$successMessage = '';
-$errorMessage = '';
-$formData = [];
+// Get upcoming interviews (future dates)
+$upcomingInterviews = array_filter($interviews, function($interview) {
+    return strtotime($interview['interview_date']) > time();
+});
 
-// Job types and levels
-$jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship', 'Freelance'];
-$experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead', 'Manager'];
-$jobStatuses = ['draft', 'open', 'ongoing', 'filled', 'cancelled'];
-$urgencyLevels = ['low', 'medium', 'high'];
+// Get past interviews
+$pastInterviews = array_filter($interviews, function($interview) {
+    return strtotime($interview['interview_date']) <= time();
+});
 
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $formData = [
-        'client_id' => (int)$_POST['client_id'] ?? 0,
-        'title' => trim($_POST['title'] ?? ''),
-        'description' => trim($_POST['description'] ?? ''),
-        'skills_required' => trim($_POST['skills_required'] ?? ''),
-        'salary_range' => trim($_POST['salary_range'] ?? ''),
-        'location' => trim($_POST['location'] ?? ''),
-        'job_type' => $_POST['job_type'] ?? 'Full-time',
-        'experience_level' => $_POST['experience_level'] ?? 'Entry',
-        'status' => $_POST['status'] ?? 'open',
-        'urgency' => $_POST['urgency'] ?? 'medium',
-        'positions_available' => (int)($_POST['positions_available'] ?? 1),
-        'application_deadline' => $_POST['application_deadline'] ?? ''
-    ];
-    
-    // Validate
-    $errors = [];
-    if (empty($formData['client_id'])) $errors[] = 'Please select a client company.';
-    if (empty($formData['title'])) $errors[] = 'Job title is required.';
-    if (empty($formData['description'])) $errors[] = 'Job description is required.';
-    if (empty($formData['skills_required'])) $errors[] = 'Skills required is required.';
-    
-    if (empty($errors)) {
-        // Insert job - WITHOUT work_arrangement
-        $sql = "INSERT INTO job_orders (
-            client_id, title, description, skills_required, salary_range, 
-            location, job_type, experience_level, status, urgency, 
-            positions_available, application_deadline, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-        
-        // 13 parameters (removed work_arrangement)
-        $jobId = insertRecord($sql, [
-            $formData['client_id'],
-            $formData['title'],
-            $formData['description'],
-            $formData['skills_required'],
-            $formData['salary_range'],
-            $formData['location'],
-            $formData['job_type'],
-            $formData['experience_level'],
-            $formData['status'],
-            $formData['urgency'],
-            $formData['positions_available'],
-            $formData['application_deadline'],
-            $userId
-        ], "issssssssssis");
-        // Types: i + 10s + i + s + i = "issssssssssis" (13 characters)
-        
-        if ($jobId) {
-            logActivity($userId, 'Job Posted', 'job_orders', $jobId, 'Posted job: ' . $formData['title']);
-            $successMessage = 'Job posted successfully!';
-            
-            // Reset form data
-            $formData = [];
-            
-            // Redirect after 2 seconds
-            header('Refresh: 2; URL=jobs.php');
-        } else {
-            $errorMessage = 'Failed to post job. Please try again.';
-        }
-    } else {
-        $errorMessage = implode('<br>', $errors);
-    }
+// Check if there are any new interview notifications
+$notificationCheck = getRecord("
+    SELECT COUNT(*) as count FROM notifications 
+    WHERE user_id = ? 
+      AND type = 'interview_scheduled' 
+      AND is_read = 0
+", [$userId], "i");
+
+$hasNewNotifications = ($notificationCheck['count'] ?? 0) > 0;
+
+// Mark notifications as read when viewing
+if ($hasNewNotifications) {
+    updateRecord("
+        UPDATE notifications 
+        SET is_read = 1, read_at = NOW() 
+        WHERE user_id = ? AND type = 'interview_scheduled' AND is_read = 0
+    ", [$userId], "i");
 }
 
-// Get client list for dropdown
-$clientOptions = '';
-foreach ($clients as $client) {
-    $selected = ($formData['client_id'] ?? '') == $client['id'] ? 'selected' : '';
-    $clientOptions .= "<option value=\"{$client['id']}\" $selected>" . htmlspecialchars($client['company_name']) . "</option>";
-}
+// Get notification count for badge
+$notificationCount = getRecord("
+    SELECT COUNT(*) as count FROM notifications 
+    WHERE user_id = ? AND is_read = 0
+", [$userId], "i");
+$totalNotifications = $notificationCount['count'] ?? 0;
+
+// Role labels for display
+$roleLabels = [
+    'admin' => 'Administrator',
+    'hr_manager' => 'HR Manager',
+    'recruiter' => 'Recruiter',
+    'client' => 'Client',
+    'applicant' => 'Applicant',
+    'employee' => 'Employee',
+    'supervisor' => 'Supervisor'
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Post Job - ISMERS</title>
+    <title>My Interviews - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - POST JOB
+           MATERIAL 3 DESIGN SYSTEM - INTERVIEWS PAGE
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -175,6 +148,10 @@ foreach ($clients as $client) {
             --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
+            --success-color: #22c55e;
+            --error-color: #dc2626;
+            --warning-color: #f59e0b;
+            --info-color: #2563eb;
         }
 
         * {
@@ -722,6 +699,179 @@ foreach ($clients as $client) {
         }
 
         /* =============================================
+           NOTIFICATION BELL
+        ============================================= */
+        .notification-wrapper {
+            position: relative;
+        }
+
+        .notification-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            position: relative;
+        }
+
+        .notification-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .notification-btn .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+
+        .notification-badge {
+            position: absolute;
+            top: 0.25rem;
+            right: 0.25rem;
+            background: #dc2626;
+            color: white;
+            font-size: 0.625rem;
+            font-weight: 700;
+            min-width: 1.25rem;
+            height: 1.25rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 0.25rem;
+        }
+
+        .notification-badge.hidden {
+            display: none;
+        }
+
+        .notification-dropdown {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            width: 22rem;
+            max-height: 24rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--slate-200);
+            z-index: 50;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-0.5rem) scale(0.95);
+            transition: all var(--transition-smooth);
+            transform-origin: top right;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .notification-dropdown.open {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0) scale(1);
+        }
+
+        .notification-dropdown .dropdown-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .notification-dropdown .dropdown-header h4 {
+            font-size: 0.875rem;
+            font-weight: 700;
+        }
+
+        .notification-dropdown .dropdown-header .mark-all {
+            font-size: 0.75rem;
+            color: var(--primary);
+            cursor: pointer;
+            font-weight: 600;
+            background: none;
+            border: none;
+        }
+
+        .notification-dropdown .dropdown-header .mark-all:hover {
+            text-decoration: underline;
+        }
+
+        .notification-list {
+            overflow-y: auto;
+            padding: 0.25rem 0;
+            flex: 1;
+        }
+
+        .notification-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--slate-100);
+            transition: all var(--transition-fast);
+            cursor: default;
+        }
+
+        .notification-item:hover {
+            background: var(--bg-surface-low);
+        }
+
+        .notification-item.unread {
+            background: rgba(79, 70, 229, 0.04);
+            border-left: 3px solid var(--primary);
+        }
+
+        .notification-item .notif-icon {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .notification-item .notif-icon .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .notification-item .notif-content .notif-title {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+
+        .notification-item .notif-content .notif-text {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.125rem;
+        }
+
+        .notification-item .notif-content .notif-time {
+            font-size: 0.625rem;
+            color: var(--text-dim);
+            margin-top: 0.25rem;
+        }
+
+        .notification-empty {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .notification-empty .material-symbols-outlined {
+            font-size: 2.5rem;
+            color: var(--slate-200);
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        /* =============================================
            MAIN SCROLLABLE AREA
         ============================================= */
         .main-scroll {
@@ -731,7 +881,7 @@ foreach ($clients as $client) {
         }
 
         .main-scroll .container {
-            max-width: 56rem;
+            max-width: 80rem;
             margin: 0 auto;
         }
 
@@ -780,12 +930,6 @@ foreach ($clients as $client) {
             height: 0.5rem;
             border-radius: 50%;
             background: #22c55e;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
         }
 
         /* =============================================
@@ -819,12 +963,6 @@ foreach ($clients as $client) {
             margin-top: 0.25rem;
         }
 
-        .page-header .header-actions {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-        }
-
         /* =============================================
            BUTTONS
         ============================================= */
@@ -854,12 +992,6 @@ foreach ($clients as $client) {
             box-shadow: var(--shadow-md);
         }
 
-        .btn-primary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
-        }
-
         .btn-outline {
             background: transparent;
             color: var(--primary);
@@ -871,23 +1003,12 @@ foreach ($clients as $client) {
         }
 
         .btn-success {
-            background: #22c55e;
+            background: var(--success-color);
             color: white;
         }
 
         .btn-success:hover {
             background: #16a34a;
-            transform: translateY(-1px);
-            box-shadow: var(--shadow-md);
-        }
-
-        .btn-danger {
-            background: #dc2626;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #b91c1c;
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
         }
@@ -903,200 +1024,180 @@ foreach ($clients as $client) {
         }
 
         /* =============================================
-           MESSAGES
+           STATS CARDS
         ============================================= */
-        .message {
-            padding: 0.875rem 1.25rem;
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            padding: 1.25rem 1.5rem;
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            transition: none;
+        }
+
+        .stat-card .stat-number {
+            font-size: 1.75rem;
+            font-weight: 800;
+            color: var(--text-on-surface);
+        }
+
+        .stat-card .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+
+        .stat-card .stat-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
             border-radius: 0.75rem;
-            font-size: 0.875rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: flex-start;
-            gap: 0.75rem;
-            border: 1px solid transparent;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            float: right;
         }
 
-        .message .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-            margin-top: 0.0625rem;
-        }
-
-        .message.success {
-            background: #f0fdf4;
-            border-color: #bbf7d0;
-            color: #16a34a;
-        }
-
-        .message.success .material-symbols-outlined {
-            color: #16a34a;
-        }
-
-        .message.error {
-            background: #fef2f2;
-            border-color: #fecaca;
-            color: #dc2626;
-        }
-
-        .message.error .material-symbols-outlined {
-            color: #dc2626;
-        }
-
-        .message.info {
-            background: #dbeafe;
-            border-color: #93c5fd;
-            color: #2563eb;
-        }
-
-        .message.info .material-symbols-outlined {
-            color: #2563eb;
+        .stat-card .stat-icon .material-symbols-outlined {
+            font-size: 1.5rem;
         }
 
         /* =============================================
-           FORM CARD
+           INTERVIEW CARDS
         ============================================= */
-        .card {
+        .interview-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
+            transition: none;
         }
 
-        .card-header {
+        .interview-card.upcoming {
+            border-left: 4px solid var(--primary);
+        }
+
+        .interview-card.past {
+            border-left: 4px solid var(--slate-500);
+            opacity: 0.7;
+        }
+
+        .interview-card .interview-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
             flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: flex-start;
             gap: 0.75rem;
         }
 
-        .card-header h3 {
+        .interview-card .interview-header .job-title {
             font-size: 1.125rem;
             font-weight: 700;
+            color: var(--text-on-surface);
+        }
+
+        .interview-card .interview-header .company-name {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .interview-card .interview-header .status-badge {
+            display: inline-block;
+            padding: 0.1875rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .interview-card .interview-header .status-badge.upcoming {
+            background: #dbeafe;
+            color: #2563eb;
+        }
+
+        .interview-card .interview-header .status-badge.past {
+            background: #f3f4f6;
+            color: #6b7280;
+        }
+
+        .interview-card .interview-header .status-badge.today {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .interview-card .interview-body {
+            padding: 1.25rem 1.5rem;
+        }
+
+        .interview-card .interview-body .interview-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .interview-card .interview-body .detail-item {
             display: flex;
             align-items: center;
             gap: 0.625rem;
         }
 
-        .card-header h3 .material-symbols-outlined {
+        .interview-card .interview-body .detail-item .material-symbols-outlined {
             font-size: 1.25rem;
             color: var(--primary);
         }
 
-        .card-header .required-label {
+        .interview-card .interview-body .detail-item .detail-label {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
         }
 
-        .card-body {
-            padding: 1.5rem;
-        }
-
-        /* =============================================
-           FORM ELEMENTS
-        ============================================= */
-        .form-group {
-            margin-bottom: 1.25rem;
-        }
-
-        .form-group:last-child {
-            margin-bottom: 0;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 0.8125rem;
+        .interview-card .interview-body .detail-item .detail-value {
+            font-size: 0.875rem;
             font-weight: 600;
             color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
         }
 
-        .form-group label .required {
-            color: #dc2626;
-            margin-left: 0.125rem;
-        }
-
-        .form-group .form-control {
-            width: 100%;
-            padding: 0.625rem 0.875rem;
-            border: 2px solid var(--slate-200);
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-        }
-
-        .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
-        }
-
-        .form-group .form-control::placeholder {
-            color: var(--text-on-surface-variant);
-            opacity: 0.6;
-        }
-
-        .form-group .form-control:disabled {
+        .interview-card .interview-notes {
+            padding: 1rem 1.5rem;
             background: var(--bg-surface-low);
-            cursor: not-allowed;
-            opacity: 0.7;
+            border-top: 1px solid var(--slate-200);
+            border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
         }
 
-        .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 120px;
-        }
-
-        .form-group select.form-control {
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 1rem center;
-            padding-right: 2.5rem;
-        }
-
-        .form-group .helper-text {
-            font-size: 0.75rem;
+        .interview-card .interview-notes .notes-label {
+            font-size: 0.6875rem;
+            font-weight: 600;
             color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .interview-card .interview-notes .notes-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
             margin-top: 0.25rem;
         }
 
-        .form-group .helper-text .material-symbols-outlined {
-            font-size: 0.875rem;
-            vertical-align: middle;
-        }
-
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }
-
-        .form-row-3 {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 1rem;
-        }
-
-        @media (max-width: 640px) {
-            .form-row,
-            .form-row-3 {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        .form-actions {
-            display: flex;
-            gap: 0.75rem;
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
+        .interview-card .interview-actions {
+            padding: 0.75rem 1.5rem 1.25rem;
             border-top: 1px solid var(--slate-200);
+            display: flex;
+            gap: 0.5rem;
             flex-wrap: wrap;
         }
 
@@ -1105,14 +1206,14 @@ foreach ($clients as $client) {
         ============================================= */
         .empty-state {
             text-align: center;
-            padding: 2.5rem 1.5rem;
+            padding: 4rem 1.5rem;
         }
 
         .empty-state .material-symbols-outlined {
-            font-size: 3rem;
+            font-size: 4rem;
             color: var(--slate-200);
             display: block;
-            margin-bottom: 0.75rem;
+            margin-bottom: 1rem;
         }
 
         .empty-state h4 {
@@ -1146,11 +1247,11 @@ foreach ($clients as $client) {
         }
 
         .toast.success {
-            background: #22c55e;
+            background: var(--success-color);
         }
 
         .toast.error {
-            background: #dc2626;
+            background: var(--error-color);
         }
 
         .toast.info {
@@ -1246,17 +1347,17 @@ foreach ($clients as $client) {
                 display: none;
             }
 
-            .card-body {
-                padding: 1rem 1.25rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
             }
 
-            .form-actions {
-                flex-direction: column;
+            .interview-card .interview-body .interview-details {
+                grid-template-columns: 1fr;
             }
 
-            .form-actions .btn {
-                width: 100%;
-                justify-content: center;
+            .notification-dropdown {
+                width: 18rem;
+                right: -2rem;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1306,20 +1407,38 @@ foreach ($clients as $client) {
                 font-size: 1.5rem;
             }
 
-            .card-header {
-                padding: 1rem 1.25rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.5rem;
             }
 
-            .card-header h3 {
-                font-size: 1rem;
-            }
-
-            .card-body {
+            .stat-card {
                 padding: 0.75rem 1rem;
             }
 
-            .form-group {
-                margin-bottom: 0.875rem;
+            .stat-card .stat-number {
+                font-size: 1.25rem;
+            }
+
+            .interview-card .interview-header {
+                padding: 1rem 1.25rem;
+            }
+
+            .interview-card .interview-body {
+                padding: 1rem 1.25rem;
+            }
+
+            .interview-card .interview-notes {
+                padding: 0.75rem 1.25rem;
+            }
+
+            .interview-card .interview-actions {
+                padding: 0.75rem 1.25rem;
+            }
+
+            .notification-dropdown {
+                width: 16rem;
+                right: -1rem;
             }
 
             .toast {
@@ -1350,61 +1469,63 @@ foreach ($clients as $client) {
 </head>
 <body>
 
-       <!-- Sidebar Backdrop -->
+    <!-- Sidebar Backdrop (Mobile) -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
+    <!-- =============================================
+    SIDEBAR - FIXED
+    ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">account_balance</span>
-            </span>
-            <p class="sidebar-brand-text">ISMERS</p>
-            <p class="sidebar-brand-category">HR Portal</p>
+        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
+            <div class="sidebar-brand-card">
+                <span class="sidebar-brand-icon">
+                    <span class="material-symbols-outlined">calendar_month</span>
+                </span>
+                <p class="sidebar-brand-text">ISMERS</p>
+                <p class="sidebar-brand-category">Applicant Portal</p>
+            </div>
         </div>
+
         <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link active">
+            <div class="nav-label">Main Menu</div>
+
+            <a href="dashboard.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="clients.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">business</span>
-                <span class="nav-text">Clients</span>
+
+            <a href="profile.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">My Profile</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">My Jobs</span>
+
+            <a href="applications.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">Applications</span>
             </a>
-            <a href="applicants.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">people</span>
-                <span class="nav-text">Applicants</span>
-            </a>
-            <a href="pipeline.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">view_kanban</span>
-                <span class="nav-text">Pipeline</span>
-            </a>
-            <a href="interviews.php" class="sidebar-main-link">
+
+            <a href="interview.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">calendar_month</span>
                 <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
             </a>
-            <a href="offers.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">description</span>
-                <span class="nav-text">Offers</span>
+
+            <a href="job_search.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">search</span>
+                <span class="nav-text">Job Search</span>
             </a>
-            <a href="post_job.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">add_circle</span>
-                <span class="nav-text">Post Job</span>
-            </a>
-            <div class="nav-label" style="margin-top:1rem;">System</div>
+
+            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
+
             <a href="settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
+
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
@@ -1413,7 +1534,6 @@ foreach ($clients as $client) {
             
         </div>
     </aside>
-
 
     <!-- =============================================
     MAIN CONTENT
@@ -1429,31 +1549,58 @@ foreach ($clients as $client) {
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">/</span>
-                <span style="font-weight:600; font-size:0.875rem;">Post New Job</span>
+                <span style="font-weight:600; font-size:0.875rem;">My Interviews</span>
             </div>
 
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-                <div class="profile-dropdown-menu" id="profileMenu">
-                    <div class="dropdown-header">Account</div>
-                    <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                        <span class="material-symbols-outlined">person</span>
-                        Profile
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+                <!-- Notification Bell -->
+                <div class="notification-wrapper">
+                    <button class="notification-btn" id="notificationBtn" aria-label="Notifications">
+                        <span class="material-symbols-outlined">notifications</span>
+                        <span class="notification-badge <?php echo $totalNotifications > 0 ? '' : 'hidden'; ?>" id="notifBadge">
+                            <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
+                        </span>
                     </button>
-                    <button class="dropdown-item" onclick="window.location.href='settings.php'">
-                        <span class="material-symbols-outlined">settings</span>
-                        Settings
+                    <div class="notification-dropdown" id="notificationDropdown">
+                        <div class="dropdown-header">
+                            <h4>Notifications</h4>
+                            <?php if ($totalNotifications > 0): ?>
+                                <button class="mark-all" onclick="markAllNotifications()">Mark all as read</button>
+                            <?php endif; ?>
+                        </div>
+                        <div class="notification-list" id="notificationList">
+                            <!-- Notifications loaded via AJAX -->
+                            <div style="text-align:center; padding:1rem; color:var(--text-on-surface-variant);">
+                                Loading...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Profile -->
+                <div class="profile-dropdown-wrapper">
+                    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                        <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'] ?? 'Applicant')); ?></span>
+                        <span class="material-symbols-outlined">expand_more</span>
                     </button>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                        <span class="material-symbols-outlined">logout</span>
-                        Logout
-                    </button>
+                    <div class="profile-dropdown-menu" id="profileMenu">
+                        <div class="dropdown-header">Account</div>
+                        <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                            <span class="material-symbols-outlined">person</span>
+                            Profile
+                        </button>
+                        <button class="dropdown-item" onclick="window.location.href='settings.php'">
+                            <span class="material-symbols-outlined">settings</span>
+                            Settings
+                        </button>
+                        <div class="dropdown-divider"></div>
+                        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                            <span class="material-symbols-outlined">logout</span>
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -1465,11 +1612,13 @@ foreach ($clients as $client) {
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">add_circle</span>
-                        <span>Post Job</span>
+                        <span class="material-symbols-outlined">calendar_month</span>
+                        <span>My Interviews</span>
                         <span class="status-dot"></span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">New Job Posting</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            <?php echo $interviewCount; ?> interviews
+                        </span>
                     </div>
                     <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
                         <?php echo date('M d, Y H:i'); ?>
@@ -1479,211 +1628,152 @@ foreach ($clients as $client) {
                 <!-- Page Header -->
                 <div class="page-header">
                     <div>
-                        <h1>Post New Job</h1>
-                        <p>Create a new job posting to find the best candidates</p>
+                        <h1>My Interviews</h1>
+                        <p>View and manage all your scheduled interviews</p>
                     </div>
-                    <div class="header-actions">
-                        <a href="jobs.php" class="btn btn-outline">
-                            <span class="material-symbols-outlined">arrow_back</span>
-                            Back to Jobs
+                </div>
+
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-icon">
+                            <span class="material-symbols-outlined">calendar_month</span>
+                        </span>
+                        <div class="stat-number"><?php echo $interviewCount; ?></div>
+                        <div class="stat-label">Total Interviews</div>
+                    </div>
+                    <div class="stat-card" style="border-left:4px solid var(--primary);">
+                        <span class="stat-icon" style="background:rgba(79,70,229,0.1); color:var(--primary);">
+                            <span class="material-symbols-outlined">upcoming</span>
+                        </span>
+                        <div class="stat-number" style="color:var(--primary);"><?php echo count($upcomingInterviews); ?></div>
+                        <div class="stat-label">Upcoming</div>
+                    </div>
+                    <div class="stat-card" style="border-left:4px solid var(--slate-500);">
+                        <span class="stat-icon" style="background:rgba(100,116,139,0.1); color:var(--slate-500);">
+                            <span class="material-symbols-outlined">history</span>
+                        </span>
+                        <div class="stat-number" style="color:var(--slate-500);"><?php echo count($pastInterviews); ?></div>
+                        <div class="stat-label">Past</div>
+                    </div>
+                    <div class="stat-card" style="border-left:4px solid #22c55e;">
+                        <span class="stat-icon" style="background:rgba(34,197,94,0.1); color:#22c55e;">
+                            <span class="material-symbols-outlined">check_circle</span>
+                        </span>
+                        <div class="stat-number" style="color:#22c55e;">
+                            <?php 
+                            $completed = array_filter($interviews, function($i) { 
+                                return strtotime($i['interview_date']) <= time() && $i['status'] === 'interviewed';
+                            });
+                            echo count($completed);
+                            ?>
+                        </div>
+                        <div class="stat-label">Completed</div>
+                    </div>
+                </div>
+
+                <!-- Interviews List -->
+                <?php if (empty($interviews)): ?>
+                    <div class="empty-state">
+                        <span class="material-symbols-outlined">event_busy</span>
+                        <h4>No Interviews Scheduled</h4>
+                        <p>You don't have any interviews scheduled yet. Keep applying to jobs!</p>
+                        <br>
+                        <a href="job_search.php" class="btn btn-primary">
+                            <span class="material-symbols-outlined">search</span>
+                            Browse Jobs
                         </a>
                     </div>
-                </div>
-
-                <!-- Messages -->
-                <?php if (!empty($successMessage)): ?>
-                    <div class="message success">
-                        <span class="material-symbols-outlined">check_circle</span>
-                        <div>
-                            <strong><?php echo htmlspecialchars($successMessage); ?></strong>
-                            <span style="display:block; font-weight:400;">Redirecting to jobs list...</span>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <?php if (!empty($errorMessage)): ?>
-                    <div class="message error">
-                        <span class="material-symbols-outlined">error</span>
-                        <div>
-                            <strong>Error:</strong>
-                            <span style="display:block; font-weight:400;"><?php echo $errorMessage; ?></span>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <!-- No Clients Message -->
-                <?php if (!$hasClients): ?>
-                    <div class="message info">
-                        <span class="material-symbols-outlined">info</span>
-                        <div>
-                            <strong>No clients available.</strong>
-                            <span style="display:block; font-weight:400;">Please contact an admin to add client companies before posting jobs.</span>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <!-- Post Job Form -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">description</span>
-                            Job Details
-                        </h3>
-                        <span class="required-label">Fields with <span style="color:#dc2626;">*</span> are required</span>
-                    </div>
-                    <div class="card-body">
-                        <form method="POST" action="" id="postJobForm" novalidate>
-
-                            <!-- Client -->
-                            <div class="form-group">
-                                <label>Client Company <span class="required">*</span></label>
-                                <select name="client_id" class="form-control" required <?php echo !$hasClients ? 'disabled' : ''; ?>>
-                                    <option value="">Select a client company</option>
-                                    <?php echo $clientOptions; ?>
-                                </select>
-                                <?php if (!$hasClients): ?>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">warning</span>
-                                        No clients available. Please contact admin.
+                <?php else: ?>
+                    <?php foreach ($interviews as $interview): ?>
+                        <?php
+                        $isUpcoming = strtotime($interview['interview_date']) > time();
+                        $isToday = date('Y-m-d', strtotime($interview['interview_date'])) === date('Y-m-d');
+                        $statusClass = $isUpcoming ? 'upcoming' : 'past';
+                        $statusLabel = $isUpcoming ? 'Upcoming' : 'Past';
+                        if ($isToday && $isUpcoming) {
+                            $statusClass = 'today';
+                            $statusLabel = 'Today';
+                        }
+                        ?>
+                        <div class="interview-card <?php echo $isUpcoming ? 'upcoming' : 'past'; ?>">
+                            <div class="interview-header">
+                                <div>
+                                    <div class="job-title"><?php echo htmlspecialchars($interview['job_title']); ?></div>
+                                    <div class="company-name"><?php echo htmlspecialchars($interview['company_name']); ?></div>
+                                </div>
+                                <span class="status-badge <?php echo $statusClass; ?>">
+                                    <?php echo $statusLabel; ?>
+                                </span>
+                            </div>
+                            <div class="interview-body">
+                                <div class="interview-details">
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">event</span>
+                                        <div>
+                                            <div class="detail-label">Date & Time</div>
+                                            <div class="detail-value"><?php echo date('l, F j, Y', strtotime($interview['interview_date'])); ?></div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo date('g:i A', strtotime($interview['interview_date'])); ?>
+                                            </div>
+                                        </div>
                                     </div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">person</span>
+                                        <div>
+                                            <div class="detail-label">Interviewer</div>
+                                            <div class="detail-value"><?php echo htmlspecialchars($interview['hr_first_name'] . ' ' . $interview['hr_last_name']); ?></div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo htmlspecialchars($interview['hr_email']); ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">work</span>
+                                        <div>
+                                            <div class="detail-label">Job Details</div>
+                                            <div class="detail-value"><?php echo htmlspecialchars($interview['job_type'] ?? 'Full-time'); ?></div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo htmlspecialchars($interview['salary_range'] ?? 'Salary not specified'); ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">location_on</span>
+                                        <div>
+                                            <div class="detail-label">Location</div>
+                                            <div class="detail-value"><?php echo htmlspecialchars($interview['job_location'] ?? 'Remote'); ?></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <?php if (!empty($interview['interview_notes'])): ?>
+                                <div class="interview-notes">
+                                    <div class="notes-label">Interview Notes</div>
+                                    <div class="notes-text"><?php echo nl2br(htmlspecialchars($interview['interview_notes'])); ?></div>
+                                </div>
+                            <?php endif; ?>
+
+                            <div class="interview-actions">
+                                <?php if ($isUpcoming): ?>
+                                    <button class="btn btn-outline btn-sm" onclick="addToCalendar('<?php echo htmlspecialchars($interview['job_title']); ?>', '<?php echo $interview['interview_date']; ?>', '<?php echo htmlspecialchars($interview['interview_notes'] ?? ''); ?>')">
+                                        <span class="material-symbols-outlined">calendar_add_on</span>
+                                        Add to Calendar
+                                    </button>
                                 <?php endif; ?>
-                            </div>
-
-                            <!-- Job Title -->
-                            <div class="form-group">
-                                <label>Job Title <span class="required">*</span></label>
-                                <input type="text" name="title" class="form-control" 
-                                       placeholder="e.g., Senior PHP Developer" 
-                                       value="<?php echo htmlspecialchars($formData['title'] ?? ''); ?>" required>
-                            </div>
-
-                            <!-- Description -->
-                            <div class="form-group">
-                                <label>Job Description <span class="required">*</span></label>
-                                <textarea name="description" class="form-control" 
-                                          placeholder="Describe the role, responsibilities, and requirements" 
-                                          rows="5" required><?php echo htmlspecialchars($formData['description'] ?? ''); ?></textarea>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Provide a clear and detailed description of the job
-                                </div>
-                            </div>
-
-                            <!-- Skills Required -->
-                            <div class="form-group">
-                                <label>Skills Required <span class="required">*</span></label>
-                                <input type="text" name="skills_required" class="form-control" 
-                                       placeholder="e.g., PHP, Laravel, MySQL, JavaScript, React" 
-                                       value="<?php echo htmlspecialchars($formData['skills_required'] ?? ''); ?>" required>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Separate skills with commas
-                                </div>
-                            </div>
-
-                            <!-- Job Type + Experience Level -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Job Type</label>
-                                    <select name="job_type" class="form-control">
-                                        <?php foreach ($jobTypes as $type): ?>
-                                            <option value="<?php echo $type; ?>" <?php echo ($formData['job_type'] ?? 'Full-time') === $type ? 'selected' : ''; ?>>
-                                                <?php echo $type; ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Experience Level</label>
-                                    <select name="experience_level" class="form-control">
-                                        <?php foreach ($experienceLevels as $level): ?>
-                                            <option value="<?php echo $level; ?>" <?php echo ($formData['experience_level'] ?? 'Entry') === $level ? 'selected' : ''; ?>>
-                                                <?php echo $level; ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- Positions Available -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Positions Available</label>
-                                    <input type="number" name="positions_available" class="form-control" 
-                                           value="<?php echo htmlspecialchars($formData['positions_available'] ?? 1); ?>" min="1">
-                                </div>
-                            </div>
-
-                            <!-- Location + Salary -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Location</label>
-                                    <input type="text" name="location" class="form-control" 
-                                           placeholder="e.g., Makati, Philippines" 
-                                           value="<?php echo htmlspecialchars($formData['location'] ?? ''); ?>">
-                                </div>
-                                <div class="form-group">
-                                    <label>Salary Range</label>
-                                    <input type="text" name="salary_range" class="form-control" 
-                                           placeholder="e.g., ₱50,000 - ₱80,000" 
-                                           value="<?php echo htmlspecialchars($formData['salary_range'] ?? ''); ?>">
-                                </div>
-                            </div>
-
-                            <!-- Application Deadline -->
-                            <div class="form-group">
-                                <label>Application Deadline</label>
-                                <input type="date" name="application_deadline" class="form-control" 
-                                       value="<?php echo htmlspecialchars($formData['application_deadline'] ?? ''); ?>">
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">calendar_today</span>
-                                    Leave empty for ongoing applications
-                                </div>
-                            </div>
-
-                            <!-- Status + Urgency -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Status</label>
-                                    <select name="status" class="form-control">
-                                        <?php foreach ($jobStatuses as $status): ?>
-                                            <option value="<?php echo $status; ?>" <?php echo ($formData['status'] ?? 'open') === $status ? 'selected' : ''; ?>>
-                                                <?php echo ucfirst($status); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Urgency</label>
-                                    <select name="urgency" class="form-control">
-                                        <?php foreach ($urgencyLevels as $urgency): ?>
-                                            <option value="<?php echo $urgency; ?>" <?php echo ($formData['urgency'] ?? 'medium') === $urgency ? 'selected' : ''; ?>>
-                                                <?php echo ucfirst($urgency); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- Form Actions -->
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary" <?php echo !$hasClients ? 'disabled' : ''; ?>>
-                                    <span class="material-symbols-outlined">publish</span>
-                                    Publish Job
+                                <button class="btn btn-outline btn-sm" onclick="viewJobDetails(<?php echo $interview['job_id']; ?>)">
+                                    <span class="material-symbols-outlined">visibility</span>
+                                    View Job
                                 </button>
-                                <button type="reset" class="btn btn-outline">
-                                    <span class="material-symbols-outlined">clear</span>
-                                    Clear All
+                                <button class="btn btn-outline btn-sm" onclick="contactHR('<?php echo htmlspecialchars($interview['hr_email']); ?>', '<?php echo htmlspecialchars($interview['job_title']); ?>')">
+                                    <span class="material-symbols-outlined">email</span>
+                                    Contact HR
                                 </button>
-                                <a href="jobs.php" class="btn btn-outline">
-                                    <span class="material-symbols-outlined">cancel</span>
-                                    Cancel
-                                </a>
                             </div>
-
-                        </form>
-                    </div>
-                </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
 
             </div>
         </main>
@@ -1767,69 +1857,200 @@ foreach ($clients as $client) {
         });
 
         // =============================================
-        // 4. FORM VALIDATION
+        // 4. NOTIFICATIONS
         // =============================================
-        document.getElementById('postJobForm').addEventListener('submit', function(e) {
-            const clientSelect = this.querySelector('select[name="client_id"]');
-            const titleInput = this.querySelector('input[name="title"]');
-            const descInput = this.querySelector('textarea[name="description"]');
-            const skillsInput = this.querySelector('input[name="skills_required"]');
-            let errors = [];
-            let hasError = false;
+        const notificationBtn = document.getElementById('notificationBtn');
+        const notificationDropdown = document.getElementById('notificationDropdown');
+        const notificationList = document.getElementById('notificationList');
 
-            // Reset styles
-            [clientSelect, titleInput, descInput, skillsInput].forEach(el => {
-                if (el) el.style.borderColor = '';
-            });
-
-            if (!clientSelect || !clientSelect.value) {
-                errors.push('Please select a client company.');
-                if (clientSelect) clientSelect.style.borderColor = '#dc2626';
-                hasError = true;
+        notificationBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const isOpen = notificationDropdown.classList.contains('open');
+            if (!isOpen) {
+                loadNotifications();
             }
+            notificationDropdown.classList.toggle('open');
+        });
 
-            if (!titleInput || !titleInput.value.trim()) {
-                errors.push('Please enter a job title.');
-                if (titleInput) titleInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!descInput || !descInput.value.trim()) {
-                errors.push('Please enter a job description.');
-                if (descInput) descInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!skillsInput || !skillsInput.value.trim()) {
-                errors.push('Please enter required skills.');
-                if (skillsInput) skillsInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (hasError) {
-                e.preventDefault();
-                showToast('Please fix the following errors:\n• ' + errors.join('\n• '), 'error');
-                
-                // Focus on first error
-                const firstError = [clientSelect, titleInput, descInput, skillsInput].find(el => 
-                    el && el.style.borderColor === '#dc2626'
-                );
-                if (firstError) firstError.focus();
+        document.addEventListener('click', function(e) {
+            if (!notificationBtn.contains(e.target) && !notificationDropdown.contains(e.target)) {
+                notificationDropdown.classList.remove('open');
             }
         });
 
-        // Clear error styling on input
-        document.querySelectorAll('.form-control').forEach(el => {
-            el.addEventListener('input', function() {
-                this.style.borderColor = '';
+        function loadNotifications() {
+            fetch('get_notifications.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.notifications.length > 0) {
+                        let html = '';
+                        data.notifications.forEach(notif => {
+                            const isUnread = !notif.is_read ? 'unread' : '';
+                            html += `
+                                <div class="notification-item ${isUnread}" onclick="markNotificationRead(${notif.id})">
+                                    <div class="notif-icon">
+                                        <span class="material-symbols-outlined">${notif.icon || 'info'}</span>
+                                    </div>
+                                    <div class="notif-content">
+                                        <div class="notif-title">${escapeHtml(notif.title)}</div>
+                                        <div class="notif-text">${escapeHtml(notif.message)}</div>
+                                        <div class="notif-time">${timeAgo(notif.created_at)}</div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        notificationList.innerHTML = html;
+                    } else {
+                        notificationList.innerHTML = `
+                            <div class="notification-empty">
+                                <span class="material-symbols-outlined">notifications_off</span>
+                                <p>No notifications yet</p>
+                            </div>
+                        `;
+                    }
+                    // Update badge
+                    const badge = document.getElementById('notifBadge');
+                    if (data.unread_count > 0) {
+                        badge.textContent = data.unread_count;
+                        badge.classList.remove('hidden');
+                    } else {
+                        badge.classList.add('hidden');
+                    }
+                })
+                .catch(error => {
+                    notificationList.innerHTML = `
+                        <div class="notification-empty">
+                            <span class="material-symbols-outlined">error</span>
+                            <p>Failed to load notifications</p>
+                        </div>
+                    `;
+                });
+        }
+
+        function markNotificationRead(id) {
+            fetch('mark_notification.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'id=' + id
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNotifications();
+                }
             });
-            el.addEventListener('change', function() {
-                this.style.borderColor = '';
+        }
+
+        function markAllNotifications() {
+            fetch('mark_notification.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=mark_all'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNotifications();
+                }
             });
+        }
+
+        // =============================================
+        // 5. REAL-TIME NOTIFICATION CHECK (Polling) - 1 SECOND
+        // =============================================
+        function checkNewNotifications() {
+            fetch('check_notifications.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.has_new) {
+                        // Update badge
+                        const badge = document.getElementById('notifBadge');
+                        badge.textContent = data.unread_count;
+                        badge.classList.remove('hidden');
+                        
+                        // Show toast for new interview notification
+                        if (data.latest && data.latest.type === 'interview_scheduled') {
+                            showToast('New interview scheduled for ' + data.latest.job_title, 'info');
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.log('Notification check failed:', error);
+                });
+        }
+
+        // Check for new notifications every 1 second (1000ms)
+        setInterval(checkNewNotifications, 1000);
+
+        // Initial load of notifications
+        document.addEventListener('DOMContentLoaded', function() {
+            <?php if ($hasNewNotifications): ?>
+            setTimeout(function() {
+                showToast('You have a new interview scheduled!', 'info');
+            }, 1000);
+            <?php endif; ?>
         });
 
         // =============================================
-        // 5. TOAST SYSTEM
+        // 6. ADD TO CALENDAR
+        // =============================================
+        function addToCalendar(jobTitle, interviewDate, notes) {
+            const date = new Date(interviewDate);
+            const formattedDate = date.toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            // Create Google Calendar link
+            const start = date.toISOString().replace(/-|:|\.\d+/g, '');
+            const end = new Date(date.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
+            const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Interview: ${encodeURIComponent(jobTitle)}&dates=${start}/${end}&details=${encodeURIComponent('Interview Notes: ' + notes)}`;
+            
+            window.open(url, '_blank');
+        }
+
+        // =============================================
+        // 7. VIEW JOB DETAILS
+        // =============================================
+        function viewJobDetails(jobId) {
+            window.location.href = 'job_details.php?id=' + jobId;
+        }
+
+        // =============================================
+        // 8. CONTACT HR
+        // =============================================
+        function contactHR(hrEmail, jobTitle) {
+            window.location.href = 'mailto:' + hrEmail + '?subject=Interview for ' + encodeURIComponent(jobTitle);
+        }
+
+        // =============================================
+        // 9. UTILITY FUNCTIONS
+        // =============================================
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function timeAgo(date) {
+            const now = new Date();
+            const past = new Date(date);
+            const diff = Math.floor((now - past) / 1000);
+            
+            if (diff < 60) return 'Just now';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+            return past.toLocaleDateString();
+        }
+
+        // =============================================
+        // 10. TOAST SYSTEM
         // =============================================
         function showToast(message, type = 'info') {
             const existingToast = document.querySelector('.toast');
@@ -1837,11 +2058,6 @@ foreach ($clients as $client) {
 
             const toast = document.createElement('div');
             toast.className = 'toast ' + type;
-            
-            // Handle multi-line messages
-            if (message.includes('\n')) {
-                toast.style.whiteSpace = 'pre-line';
-            }
             toast.textContent = message;
             document.body.appendChild(toast);
 
@@ -1854,7 +2070,7 @@ foreach ($clients as $client) {
         }
 
         // =============================================
-        // 6. RESPONSIVE HANDLING
+        // 11. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -1878,17 +2094,18 @@ foreach ($clients as $client) {
         });
 
         // =============================================
-        // 7. KEYBOARD ACCESSIBILITY
+        // 12. KEYBOARD ACCESSIBILITY
         // =============================================
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 closeMobileSidebar();
                 profileToggle.classList.remove('open');
                 profileMenu.classList.remove('open');
+                notificationDropdown.classList.remove('open');
             }
         });
 
-        console.log('📝 ISMERS Post Job page loaded successfully!');
+        console.log('Interview Management loaded successfully.');
     </script>
 
 </body>
