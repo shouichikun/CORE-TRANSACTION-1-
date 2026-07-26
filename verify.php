@@ -18,32 +18,35 @@ $role = $_SESSION['temp_role'] ?? 'applicant';
 $firstName = $_SESSION['temp_first_name'] ?? '';
 $remember = $_SESSION['remember_me'] ?? false;
 
-// Check if user is already verified
-$user = getUserById($userId);
-if ($user && $user['is_verified'] == 1) {
-    // Already verified - direct login
-    $_SESSION['user_id'] = $userId;
-    $_SESSION['role'] = $role;
-    $_SESSION['full_name'] = $fullName;
-    $_SESSION['email'] = $email;
-    $_SESSION['first_name'] = $firstName;
-    
-    if ($remember) {
-        setcookie('remember_email', $email, time() + 86400 * 7, '/');
-    }
-    
-    $redirects = [
-        'admin' => 'portals/admin/dashboard.php',
-        'hr_manager' => 'portals/hr/dashboard.php',
-        'recruiter' => 'portals/hr/dashboard.php',
-        'client' => 'portals/client/index.php',
-        'applicant' => 'portals/applicant/dashboard.php',
-        'employee' => 'portals/employee/index.php',
-        'supervisor' => 'portals/supervisor/index.php'
-    ];
-    header('Location: ' . ($redirects[$role] ?? 'index.php'));
-    exit;
-}
+// =============================================
+// REMOVED: This was causing the redirect!
+// =============================================
+// // Check if user is already verified
+// $user = getUserById($userId);
+// if ($user && $user['is_verified'] == 1) {
+//     // Already verified - direct login
+//     $_SESSION['user_id'] = $userId;
+//     $_SESSION['role'] = $role;
+//     $_SESSION['full_name'] = $fullName;
+//     $_SESSION['email'] = $email;
+//     $_SESSION['first_name'] = $firstName;
+//     
+//     if ($remember) {
+//         setcookie('remember_email', $email, time() + 86400 * 7, '/');
+//     }
+//     
+//     $redirects = [
+//         'admin' => 'portals/admin/dashboard.php',
+//         'hr_manager' => 'portals/hr/dashboard.php',
+//         'recruiter' => 'portals/hr/dashboard.php',
+//         'client' => 'portals/client/dashboard.php',
+//         'applicant' => 'portals/applicant/dashboard.php',
+//         'employee' => 'portals/employee/dashboard.php',
+//         'supervisor' => 'portals/supervisor/dashboard.php'
+//     ];
+//     header('Location: ' . ($redirects[$role] ?? 'index.php'));
+//     exit;
+// }
 
 // Generate verification code if not exists
 if (!isset($_SESSION['verification_code']) || !isset($_SESSION['verification_expires'])) {
@@ -92,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Verification code has expired. Please request a new one.';
                     $showResend = true;
                 } else {
-                    // Mark user as verified
+                    // Mark user as verified (if not already)
                     $updateSql = "UPDATE users SET is_verified = 1, verification_code = NULL, verification_expires = NULL WHERE id = ?";
                     updateRecord($updateSql, [$userId], "i");
                     
@@ -126,10 +129,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'admin' => 'portals/admin/dashboard.php',
                         'hr_manager' => 'portals/hr/dashboard.php',
                         'recruiter' => 'portals/hr/dashboard.php',
-                        'client' => 'portals/client/index.php',
+                        'client' => 'portals/client/dashboard.php',
                         'applicant' => 'portals/applicant/dashboard.php',
-                        'employee' => 'portals/employee/index.php',
-                        'supervisor' => 'portals/supervisor/index.php'
+                        'employee' => 'portals/employee/dashboard.php',
+                        'supervisor' => 'portals/supervisor/dashboard.php'
                     ];
                     header('Refresh: 2; URL=' . ($redirects[$role] ?? 'index.php'));
                 }
@@ -207,12 +210,12 @@ function sendVerificationEmail($toEmail, $toName, $code) {
                     <h1>Verify Your Email</h1>
                 </div>
                 <p>Hello <strong>' . htmlspecialchars($toName) . '</strong>,</p>
-                <p>Thank you for registering with ISMERS. Please use the verification code below to complete your registration:</p>
+                <p>Please use the verification code below to complete your login:</p>
                 <div class="code-box">' . $code . '</div>
                 <div class="warning">
                     <strong>⚠️ This code will expire in 10 minutes.</strong>
                 </div>
-                <p>If you didn\'t create an account with ISMERS, you can safely ignore this email.</p>
+                <p>If you didn\'t try to log in, you can safely ignore this email.</p>
                 <div class="footer">
                     <p>&copy; ' . date('Y') . ' ISMERS. All rights reserved.</p>
                 </div>
@@ -222,10 +225,10 @@ function sendVerificationEmail($toEmail, $toName, $code) {
         ';
         
         $mail->AltBody = "Hello " . $toName . ",\n\n" .
-                         "Thank you for registering with ISMERS.\n\n" .
+                         "Please use the verification code below to complete your login:\n\n" .
                          "Your verification code is: " . $code . "\n\n" .
                          "This code will expire in 10 minutes.\n\n" .
-                         "If you didn't create an account, please ignore this email.\n\n" .
+                         "If you didn't try to log in, please ignore this email.\n\n" .
                          "— ISMERS Team";
         
         $mail->send();
@@ -243,6 +246,7 @@ if (isset($_SESSION['verification_expires'])) {
     $remainingTime = max(0, $_SESSION['verification_expires'] - time());
 }
 ?>
+
 <!DOCTYPE html>
 <html class="light" lang="en">
 <head>
