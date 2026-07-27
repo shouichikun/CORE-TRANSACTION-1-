@@ -458,7 +458,7 @@ function getFaceLogsByUserId($userId, $limit = 50) {
 }
 
 // =============================================
-// ATTENDANCE FUNCTIONS
+// ATTENDANCE FUNCTIONS (Original - using user_id)
 // =============================================
 
 /**
@@ -482,7 +482,7 @@ function logAttendanceCheckOut($userId) {
 }
 
 /**
- * Get attendance records for a user
+ * Get attendance records for a user (Original)
  */
 function getAttendanceByUserId($userId, $date = null) {
     if ($date) {
@@ -494,9 +494,9 @@ function getAttendanceByUserId($userId, $date = null) {
 }
 
 /**
- * Get today's attendance for a user
+ * Get today's attendance for a user (Original)
  */
-function getTodayAttendance($userId) {
+function getUserTodayAttendance($userId) {
     $sql = "SELECT * FROM attendance WHERE user_id = ? AND DATE(check_in_time) = CURDATE() ORDER BY check_in_time DESC";
     return getRecords($sql, [$userId], "i");
 }
@@ -696,13 +696,6 @@ function displayFlashMessage() {
 }
 
 // =============================================
-// CHECK IF CONNECTION IS WORKING
-// =============================================
-// Comment this out in production
-// echo "✅ Database connection established successfully!";
-
-
-// =============================================
 // HR FUNCTIONS
 // =============================================
 
@@ -855,9 +848,372 @@ define('SMTP_USER', 'calicaarvy13@gmail.com');
 define('SMTP_PASS', 'cetc iywq dnpz wdub');
 define('SMTP_PORT', 587);
 define('SMTP_SECURE', 'tls');
-define('MAIL_FROM', 'calicaarvy13@gmail.com');  // FIXED: Use your actual email
+define('MAIL_FROM', 'calicaarvy13@gmail.com');
 define('MAIL_FROM_NAME', 'ISMERS System');
-define('MAIL_REPLY_TO', 'calicaarvy13@gmail.com');  // FIXED
+define('MAIL_REPLY_TO', 'calicaarvy13@gmail.com');
 define('MAIL_REPLY_TO_NAME', 'ISMERS Support');
 
+// =============================================
+// EMPLOYEE FUNCTIONS
+// =============================================
+
+/**
+ * Get employee by user ID
+ */
+function getEmployeeByUserId($userId) {
+    global $conn;
+    $sql = "SELECT * FROM employees WHERE user_id = ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "i", $userId);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $employee = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+    return $employee;
+}
+
+/**
+ * Get employee by ID
+ */
+function getEmployeeById($employeeId) {
+    global $conn;
+    $sql = "SELECT * FROM employees WHERE id = ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "i", $employeeId);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $employee = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+    return $employee;
+}
+
+/**
+ * Get all employees (with optional filters)
+ */
+function getEmployees($filters = []) {
+    global $conn;
+    $sql = "SELECT e.*, u.email, u.role 
+            FROM employees e 
+            JOIN users u ON e.user_id = u.id";
+    
+    $conditions = [];
+    $params = [];
+    $types = "";
+    
+    if (!empty($filters['status'])) {
+        $conditions[] = "e.status = ?";
+        $params[] = $filters['status'];
+        $types .= "s";
+    }
+    
+    if (!empty($filters['search'])) {
+        $conditions[] = "(e.first_name LIKE ? OR e.last_name LIKE ? OR e.email LIKE ?)";
+        $search = "%" . $filters['search'] . "%";
+        $params[] = $search;
+        $params[] = $search;
+        $params[] = $search;
+        $types .= "sss";
+    }
+    
+    if (!empty($conditions)) {
+        $sql .= " WHERE " . implode(" AND ", $conditions);
+    }
+    
+    $sql .= " ORDER BY e.created_at DESC";
+    
+    $stmt = mysqli_prepare($conn, $sql);
+    if (!empty($params)) {
+        mysqli_stmt_bind_param($stmt, $types, ...$params);
+    }
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $employees = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    mysqli_stmt_close($stmt);
+    return $employees;
+}
+
+/**
+ * Create employee record
+ */
+function createEmployee($userId, $data) {
+    global $conn;
+    $sql = "INSERT INTO employees (user_id, first_name, last_name, email, phone, position, department, hire_date, status, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "issssssss", 
+        $userId,
+        $data['first_name'],
+        $data['last_name'],
+        $data['email'],
+        $data['phone'] ?? null,
+        $data['position'] ?? null,
+        $data['department'] ?? null,
+        $data['hire_date'] ?? date('Y-m-d'),
+        $data['status'] ?? 'active'
+    );
+    mysqli_stmt_execute($stmt);
+    $id = mysqli_insert_id($conn);
+    mysqli_stmt_close($stmt);
+    return $id;
+}
+
+/**
+ * Update employee record
+ */
+function updateEmployee($employeeId, $data) {
+    global $conn;
+    $fields = [];
+    $params = [];
+    $types = "";
+    
+    $allowedFields = ['first_name', 'last_name', 'email', 'phone', 'position', 'department', 'status'];
+    foreach ($allowedFields as $field) {
+        if (isset($data[$field])) {
+            $fields[] = "$field = ?";
+            $params[] = $data[$field];
+            $types .= "s";
+        }
+    }
+    
+    if (empty($fields)) {
+        return false;
+    }
+    
+    $params[] = $employeeId;
+    $types .= "i";
+    
+    $sql = "UPDATE employees SET " . implode(", ", $fields) . " WHERE id = ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, $types, ...$params);
+    $result = mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+    return $result;
+}
+
+// =============================================
+// EMPLOYEE ATTENDANCE FUNCTIONS (Using your existing table)
+// =============================================
+
+/**
+ * Get today's attendance for an employee (using user_id)
+ */
+function getEmployeeTodayAttendance($userId) {
+    global $conn;
+    $sql = "SELECT * FROM attendance 
+            WHERE user_id = ? AND DATE(check_in_time) = CURDATE() 
+            ORDER BY check_in_time DESC LIMIT 1";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "i", $userId);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $attendance = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+    return $attendance;
+}
+
+/**
+ * Check in employee (using user_id)
+ */
+function checkInEmployee($userId) {
+    global $conn;
+    
+    // Check if already checked in today
+    $existing = getEmployeeTodayAttendance($userId);
+    if ($existing) {
+        if ($existing['check_out_time']) {
+            return ['success' => false, 'error' => 'Already checked out for today'];
+        }
+        if ($existing['check_in_time']) {
+            return ['success' => false, 'error' => 'Already checked in'];
+        }
+    }
+    
+    // Check if user has a face scan verified (optional)
+    $user = getUserById($userId);
+    $isFaceVerified = $user['is_face_verified'] ?? 0;
+    
+    $sql = "INSERT INTO attendance (user_id, check_in_time, is_face_verified, created_at) 
+            VALUES (?, NOW(), ?, NOW())";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "ii", $userId, $isFaceVerified);
+    $result = mysqli_stmt_execute($stmt);
+    $id = mysqli_insert_id($conn);
+    mysqli_stmt_close($stmt);
+    
+    if ($result) {
+        // Log activity
+        logActivity($userId, 'Checked In', 'attendance', $id, 'Employee checked in');
+        return ['success' => true, 'id' => $id];
+    }
+    return ['success' => false, 'error' => 'Failed to check in'];
+}
+
+/**
+ * Check out employee (using user_id)
+ */
+function checkOutEmployee($userId) {
+    global $conn;
+    
+    $today = getEmployeeTodayAttendance($userId);
+    if (!$today) {
+        return ['success' => false, 'error' => 'Not checked in today'];
+    }
+    if ($today['check_out_time']) {
+        return ['success' => false, 'error' => 'Already checked out'];
+    }
+    
+    $sql = "UPDATE attendance SET check_out_time = NOW() WHERE id = ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "i", $today['id']);
+    $result = mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+    
+    if ($result) {
+        // Log activity
+        logActivity($userId, 'Checked Out', 'attendance', $today['id'], 'Employee checked out');
+        return ['success' => true];
+    }
+    return ['success' => false, 'error' => 'Failed to check out'];
+}
+
+/**
+ * Get attendance stats for an employee (using user_id)
+ */
+function getEmployeeAttendanceStats($userId) {
+    global $conn;
+    $sql = "SELECT 
+                COUNT(*) as total_days,
+                SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) as days_present,
+                SUM(CASE WHEN check_in_time IS NULL THEN 1 ELSE 0 END) as days_absent
+            FROM attendance 
+            WHERE user_id = ? 
+            AND MONTH(check_in_time) = MONTH(CURDATE()) 
+            AND YEAR(check_in_time) = YEAR(CURDATE())";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "i", $userId);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $stats = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+    
+    // Add default values if null
+    if (!$stats) {
+        $stats = [
+            'total_days' => 0,
+            'days_present' => 0,
+            'days_absent' => 0
+        ];
+    }
+    
+    return $stats;
+}
+
+/**
+ * Get recent attendance records for an employee (using user_id)
+ */
+function getEmployeeRecentAttendance($userId, $limit = 7) {
+    global $conn;
+    $sql = "SELECT * FROM attendance 
+            WHERE user_id = ? 
+            ORDER BY check_in_time DESC 
+            LIMIT ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "ii", $userId, $limit);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $records = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    mysqli_stmt_close($stmt);
+    return $records;
+}
+
+/**
+ * Get employee schedule (using user_id from employees table)
+ */
+function getEmployeeSchedule($userId, $limit = 5) {
+    global $conn;
+    // First get employee_id from employees table
+    $employee = getEmployeeByUserId($userId);
+    $employeeId = $employee['id'] ?? 0;
+    
+    if ($employeeId <= 0) {
+        return [];
+    }
+    
+    $sql = "SELECT * FROM schedules 
+            WHERE employee_id = ? AND schedule_date >= CURDATE()
+            ORDER BY schedule_date ASC 
+            LIMIT ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "ii", $employeeId, $limit);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $schedules = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    mysqli_stmt_close($stmt);
+    return $schedules;
+}
+
+function getProfilePicture($userId, $profilePicture = null) {
+    if (!empty($profilePicture) && file_exists('../../' . $profilePicture)) {
+        return '../../' . $profilePicture;
+    }
+    
+    // Check if profile picture exists in uploads folder
+    if (!empty($profilePicture) && file_exists($profilePicture)) {
+        return $profilePicture;
+    }
+    
+    // Return default avatar based on user ID or name
+    return '../../assets/default-avatar.png';
+}
+
+function getInitials($firstName, $lastName = '') {
+    $first = !empty($firstName) ? strtoupper(substr($firstName, 0, 1)) : 'U';
+    $last = !empty($lastName) ? strtoupper(substr($lastName, 0, 1)) : '';
+    return $first . $last;
+}
+
+function getUserProfileData($userId) {
+    $user = getRecord("SELECT first_name, last_name, email, profile_picture FROM users WHERE id = ?", [$userId], "i");
+    
+    if (!$user) {
+        return [
+            'first_name' => 'User',
+            'last_name' => '',
+            'email' => '',
+            'profile_picture' => null,
+            'initials' => 'U',
+            'avatar_url' => '../../assets/default-avatar.png'
+        ];
+    }
+    
+    $profilePic = !empty($user['profile_picture']) ? $user['profile_picture'] : null;
+    $initials = getInitials($user['first_name'], $user['last_name']);
+    
+    // Check if profile picture file exists
+    $avatarUrl = '../../assets/default-avatar.png';
+    if (!empty($profilePic)) {
+        // Check multiple possible paths
+        $paths = [
+            '../../' . $profilePic,
+            $profilePic,
+            '../../uploads/profile_pictures/' . basename($profilePic)
+        ];
+        
+        foreach ($paths as $path) {
+            if (file_exists($path)) {
+                $avatarUrl = '../../' . $profilePic;
+                break;
+            }
+        }
+    }
+    
+    return [
+        'first_name' => $user['first_name'],
+        'last_name' => $user['last_name'],
+        'email' => $user['email'],
+        'profile_picture' => $profilePic,
+        'initials' => $initials,
+        'avatar_url' => $avatarUrl
+    ];
+}
 ?>
