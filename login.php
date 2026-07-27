@@ -12,10 +12,10 @@ if (isset($_SESSION['user_id'])) {
         'admin' => 'portals/admin/dashboard.php',
         'hr_manager' => 'portals/hr/dashboard.php',
         'recruiter' => 'portals/hr/dashboard.php',
-        'client' => 'portals/client/index.php',
+        'client' => 'portals/client/dashboard.php',
         'applicant' => 'portals/applicant/dashboard.php',
-        'employee' => 'portals/employee/index.php',
-        'supervisor' => 'portals/supervisor/index.php'
+        'employee' => 'portals/employee/dashboard.php',
+        'supervisor' => 'portals/supervisor/dashboard.php'
     ];
     header('Location: ' . ($redirects[$role] ?? 'index.php'));
     exit;
@@ -142,6 +142,11 @@ function getSystemAccountRole($email) {
 $error = '';
 $email = '';
 $isSystemAccount = false;
+$showModal = false;
+$modalEmail = '';
+$modalUserId = 0;
+$modalFullName = '';
+$modalCode = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = trim($_POST['email'] ?? '');
@@ -221,71 +226,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'admin' => 'portals/admin/dashboard.php',
                         'hr_manager' => 'portals/hr/dashboard.php',
                         'recruiter' => 'portals/hr/dashboard.php',
-                        'client' => 'portals/client/index.php',
+                        'client' => 'portals/client/dashboard.php',
                         'applicant' => 'portals/applicant/dashboard.php',
-                        'employee' => 'portals/employee/index.php',
-                        'supervisor' => 'portals/supervisor/index.php'
+                        'employee' => 'portals/employee/dashboard.php',
+                        'supervisor' => 'portals/supervisor/dashboard.php'
                     ];
                     header('Location: ' . ($redirects[$user['role']] ?? 'index.php'));
                     exit;
                 }
                 
                 // =============================================
-                // REAL ACCOUNT - Check if verified
+                // REGULAR USER - SHOW MODAL, SEND EMAIL
                 // =============================================
-                if ($user['is_verified'] == 1) {
-                    // Already verified - direct login
-                    $_SESSION['user_id'] = $user['id'];
-                    $_SESSION['role'] = $user['role'];
-                    $_SESSION['full_name'] = $user['full_name'];
-                    $_SESSION['email'] = $user['email'];
-                    $_SESSION['first_name'] = $user['first_name'];
-                    
-                    updateLastLogin($user['id']);
-                    $updateSql = "UPDATE users SET last_activity = NOW() WHERE id = ?";
-                    updateRecord($updateSql, [$user['id']], "i");
-                    
-                    if ($remember) {
-                        setcookie('remember_email', $email, time() + 86400 * 7, '/');
-                    }
-                    
-                    $redirects = [
-                        'admin' => 'portals/admin/dashboard.php',
-                        'hr_manager' => 'portals/hr/dashboard.php',
-                        'recruiter' => 'portals/hr/dashboard.php',
-                        'client' => 'portals/client/index.php',
-                        'applicant' => 'portals/applicant/dashboard.php',
-                        'employee' => 'portals/employee/index.php',
-                        'supervisor' => 'portals/supervisor/index.php'
-                    ];
-                    header('Location: ' . ($redirects[$user['role']] ?? 'index.php'));
-                    exit;
-                } else {
-                    // Not verified - send verification code
-                    $code = sprintf("%06d", rand(100000, 999999));
-                    $expires = time() + 600; // 10 minutes
-                    
-                    // Store in session
-                    $_SESSION['temp_user_id'] = $user['id'];
-                    $_SESSION['temp_role'] = $user['role'];
-                    $_SESSION['temp_full_name'] = $user['full_name'];
-                    $_SESSION['temp_email'] = $user['email'];
-                    $_SESSION['temp_first_name'] = $user['first_name'];
-                    $_SESSION['verification_code'] = $code;
-                    $_SESSION['verification_expires'] = $expires;
-                    $_SESSION['remember_me'] = $remember;
-                    
-                    // Store in database
-                    $updateSql = "UPDATE users SET verification_code = ?, verification_expires = FROM_UNIXTIME(?) WHERE id = ?";
-                    updateRecord($updateSql, [$code, $expires, $user['id']], "sii");
-                    
-                    // Send verification email
-                    $mailSent = sendLoginVerificationEmail($email, $user['full_name'], $code);
-                    
-                    // Redirect to verify.php
-                    header('Location: verify.php');
-                    exit;
-                }
+                // Generate OTP code
+                $code = sprintf("%06d", rand(100000, 999999));
+                $expires = time() + 600; // 10 minutes
+                
+                // Store in session
+                $_SESSION['temp_user_id'] = $user['id'];
+                $_SESSION['temp_role'] = $user['role'];
+                $_SESSION['temp_full_name'] = $user['full_name'];
+                $_SESSION['temp_email'] = $user['email'];
+                $_SESSION['temp_first_name'] = $user['first_name'];
+                $_SESSION['verification_code'] = $code;
+                $_SESSION['verification_expires'] = $expires;
+                $_SESSION['remember_me'] = $remember;
+                
+                // Store in database
+                $updateSql = "UPDATE users SET verification_code = ?, verification_expires = FROM_UNIXTIME(?) WHERE id = ?";
+                updateRecord($updateSql, [$code, $expires, $user['id']], "sii");
+                
+                // Log OTP generated
+                logActivity($user['id'], 'Login OTP Generated', 'users', $user['id'], 'OTP generated for: ' . $email);
+                
+                // Set modal data - SHOW IMMEDIATELY
+                $showModal = true;
+                $modalEmail = $email;
+                $modalUserId = $user['id'];
+                $modalFullName = $user['full_name'];
+                $modalCode = $code;
             }
         } else {
             $error = 'Invalid email or password.';
@@ -622,47 +601,327 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
             margin-top: 0.25rem;
         }
 
+        /* =============================================
+           VERIFICATION MODAL - AESTHETIC & MODERN
+        ============================================= */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(27, 27, 36, 0.5);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+            width: 100%;
+            height: 100%;
+            min-height: 100vh;
+        }
+
+        .modal-overlay.active {
+            display: flex !important;
+        }
+
+        .modal-container {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            max-width: 420px;
+            width: 100%;
+            padding: 2.5rem 2rem 2rem;
+            text-align: center;
+            box-shadow: 0 32px 64px rgba(0, 0, 0, 0.2);
+            position: relative;
+            overflow: hidden;
+            z-index: 10000;
+            animation: modalSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes modalSlideUp {
+            from {
+                transform: translateY(30px) scale(0.96);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0) scale(1);
+                opacity: 1;
+            }
+        }
+
+        .modal-icon {
+            width: 72px;
+            height: 72px;
+            background: linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(79, 70, 229, 0.04));
+            border-radius: 50%;
+            margin: 0 auto 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .modal-icon .material-symbols-outlined {
+            font-size: 2.25rem;
+            color: var(--primary);
+            animation: iconPulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes iconPulse {
+            0%, 100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+            50% {
+                transform: scale(1.1);
+                opacity: 0.7;
+            }
+        }
+
+        .modal-icon::before {
+            content: '';
+            position: absolute;
+            inset: -6px;
+            border-radius: 50%;
+            border: 2px solid rgba(79, 70, 229, 0.15);
+            animation: ringPulse 2s ease-out infinite;
+        }
+
+        .modal-icon::after {
+            content: '';
+            position: absolute;
+            inset: -14px;
+            border-radius: 50%;
+            border: 2px solid rgba(79, 70, 229, 0.08);
+            animation: ringPulse 2s ease-out infinite 0.6s;
+        }
+
+        @keyframes ringPulse {
+            0% {
+                transform: scale(0.8);
+                opacity: 1;
+            }
+            100% {
+                transform: scale(1.4);
+                opacity: 0;
+            }
+        }
+
+        .success-icon {
+            display: none;
+            width: 72px;
+            height: 72px;
+            background: #22c55e;
+            border-radius: 50%;
+            margin: 0 auto 1.25rem;
+            align-items: center;
+            justify-content: center;
+            animation: popIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .success-icon.show {
+            display: flex;
+        }
+
+        @keyframes popIn {
+            0% {
+                transform: scale(0) rotate(-10deg);
+                opacity: 0;
+            }
+            100% {
+                transform: scale(1) rotate(0deg);
+                opacity: 1;
+            }
+        }
+
+        .success-icon .material-symbols-outlined {
+            color: white;
+            font-size: 2.25rem;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 0.375rem;
+        }
+
+        .modal-subtitle {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-family: var(--font-label);
+            line-height: 1.6;
+        }
+
+        .modal-email {
+            display: inline-block;
+            background: var(--bg-main);
+            padding: 0.25rem 0.875rem;
+            border-radius: 50px;
+            font-weight: 600;
+            color: var(--primary);
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+
+        .progress-dots {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin: 1.25rem 0 0.75rem;
+        }
+
+        .progress-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--outline-variant);
+            transition: all 0.4s ease;
+        }
+
+        .progress-dot.active {
+            background: var(--primary);
+            transform: scale(1.3);
+            box-shadow: 0 0 12px rgba(79, 70, 229, 0.3);
+        }
+
+        .progress-dot.done {
+            background: #22c55e;
+            transform: scale(1);
+        }
+
+        .btn-continue {
+            display: none;
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: none;
+            border-radius: var(--radius-md);
+            background: var(--primary);
+            color: var(--on-primary);
+            font-size: 0.875rem;
+            font-weight: 600;
+            font-family: var(--font-sans);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            margin-top: 1.25rem;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-continue.show {
+            display: flex;
+        }
+
+        .btn-continue:hover {
+            background: var(--primary-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(79, 70, 229, 0.3);
+        }
+
+        .status-text {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-family: var(--font-label);
+            margin-top: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .status-text.success {
+            color: var(--success);
+        }
+
         @media (max-width: 480px) {
             .auth-card {
                 padding: 1.5rem;
             }
-
             .auth-header h1 {
                 font-size: 1.25rem;
             }
-
             .form-options {
                 flex-direction: column;
                 gap: 0.75rem;
                 align-items: flex-start;
+            }
+            .modal-container {
+                padding: 1.75rem 1.25rem;
+            }
+            .modal-icon {
+                width: 60px;
+                height: 60px;
+            }
+            .modal-icon .material-symbols-outlined {
+                font-size: 1.75rem;
+            }
+            .success-icon {
+                width: 60px;
+                height: 60px;
+            }
+            .success-icon .material-symbols-outlined {
+                font-size: 1.75rem;
             }
         }
     </style>
 </head>
 <body>
 
+<!-- =============================================
+     VERIFICATION MODAL - AESTHETIC
+     ============================================= -->
+<div class="modal-overlay <?php echo $showModal ? 'active' : ''; ?>" id="verificationModal">
+    <div class="modal-container">
+        <div class="modal-icon" id="modalIcon">
+            <span class="material-symbols-outlined">mail</span>
+        </div>
+
+        <div class="success-icon" id="successIcon">
+            <span class="material-symbols-outlined">check</span>
+        </div>
+
+        <h2 class="modal-title" id="modalTitle">Sending Verification Code</h2>
+        
+        <p class="modal-subtitle">
+            We're sending a 6-digit code to
+            <br>
+            <span class="modal-email"><?php echo htmlspecialchars($modalEmail); ?></span>
+        </p>
+
+        <div class="progress-dots" id="progressDots">
+            <span class="progress-dot active" id="dot1"></span>
+            <span class="progress-dot" id="dot2"></span>
+            <span class="progress-dot" id="dot3"></span>
+            <span class="progress-dot" id="dot4"></span>
+        </div>
+
+        <p class="status-text" id="statusText">Preparing your code...</p>
+
+        <button class="btn-continue" id="continueBtn">
+            <span class="material-symbols-outlined">arrow_forward</span>
+            Continue to Verify
+        </button>
+    </div>
+</div>
+
+<!-- =============================================
+     LOGIN FORM
+     ============================================= -->
 <div class="auth-wrapper">
     <div class="auth-card">
-
-        <!-- Header -->
         <div class="auth-header">
             <h1>Sign In</h1>
             <p>Access your account to continue.</p>
         </div>
 
-        <!-- Success Message -->
         <div class="message success <?php echo empty($logoutMessage) ? 'hidden' : ''; ?>" id="successMessage">
             <span class="material-symbols-outlined">check_circle</span>
             <span><?php echo htmlspecialchars($logoutMessage); ?></span>
         </div>
 
-        <!-- Error Message -->
         <div class="message error <?php echo empty($error) ? 'hidden' : ''; ?>" id="errorMessage">
             <span class="material-symbols-outlined">error</span>
             <span id="errorText"><?php echo htmlspecialchars($error); ?></span>
         </div>
 
-        <!-- System Account Notice -->
         <?php if (!empty($email) && isSystemAccount($email)): ?>
             <div style="background:#fef3c7; border:1px solid #fcd34d; border-radius:0.75rem; padding:0.75rem 1rem; margin-bottom:1rem; text-align:center;">
                 <span style="font-size:0.875rem; color:#92400e;">
@@ -673,9 +932,7 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
             </div>
         <?php endif; ?>
 
-        <!-- Login Form -->
-        <form method="POST" action="" id="loginForm">
-            <!-- Email -->
+        <form method="POST" action="" id="loginForm" novalidate>
             <div class="form-group">
                 <label for="email">Email Address</label>
                 <div class="input-wrapper">
@@ -687,7 +944,6 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
                 </div>
             </div>
 
-            <!-- Password -->
             <div class="form-group">
                 <label for="password">Password</label>
                 <div class="input-wrapper">
@@ -703,7 +959,6 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
                 </div>
             </div>
 
-            <!-- Options -->
             <div class="form-options">
                 <label>
                     <input type="checkbox" name="remember" 
@@ -713,26 +968,22 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
                 <a href="forgot_password.php">Forgot password?</a>
             </div>
 
-            <!-- Submit -->
             <button type="submit" class="btn-login" id="loginBtn">
                 <span>Sign In</span>
                 <span class="material-symbols-outlined" style="font-size:1.25rem;">arrow_forward</span>
             </button>
         </form>
 
-        <!-- Sign Up Link -->
         <div class="signup-link">
             Don't have an account? <a href="portals/applicant/register.php">Get Started</a>
         </div>
 
-        <!-- Back to Home -->
         <div class="auth-footer">
             <a href="index.php">
                 <span class="material-symbols-outlined">arrow_back</span>
                 Back to Home
             </a>
         </div>
-
     </div>
 </div>
 
@@ -753,65 +1004,98 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
     });
 
     // =============================================
-    // 2. FORM VALIDATION
+    // 2. FORM SUBMISSION - FIXED
     // =============================================
     const form = document.getElementById('loginForm');
+    const loginBtn = document.getElementById('loginBtn');
     const errorMsg = document.getElementById('errorMessage');
     const errorText = document.getElementById('errorText');
 
-    form.addEventListener('submit', function(e) {
-        const email = document.getElementById('email').value.trim();
-        const password = passwordInput.value.trim();
-
-        // Hide previous errors
-        errorMsg.classList.add('hidden');
-
-        // Validate
-        if (!email) {
-            e.preventDefault();
-            showError('Please enter your email address.');
-            return false;
-        }
-
-        if (!isValidEmail(email)) {
-            e.preventDefault();
-            showError('Please enter a valid email address.');
-            return false;
-        }
-
-        if (!password) {
-            e.preventDefault();
-            showError('Please enter your password.');
-            return false;
-        }
-
-        if (password.length < 6) {
-            e.preventDefault();
-            showError('Password must be at least 6 characters.');
-            return false;
-        }
-
-        return true;
-    });
+    // Store original button HTML for reset
+    const originalBtnHTML = loginBtn.innerHTML;
 
     function showError(message) {
         errorText.textContent = message;
         errorMsg.classList.remove('hidden');
+        // Reset button
+        loginBtn.disabled = false;
+        loginBtn.innerHTML = originalBtnHTML;
     }
 
     function isValidEmail(email) {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     }
 
+    form.addEventListener('submit', function(e) {
+        // Clear previous errors
+        errorMsg.classList.add('hidden');
+
+        const email = document.getElementById('email').value.trim();
+        const password = passwordInput.value.trim();
+
+        // Validation
+        if (!email) {
+            e.preventDefault();
+            showError('Please enter your email address.');
+            document.getElementById('email').focus();
+            return false;
+        }
+
+        if (!isValidEmail(email)) {
+            e.preventDefault();
+            showError('Please enter a valid email address.');
+            document.getElementById('email').focus();
+            return false;
+        }
+
+        if (!password) {
+            e.preventDefault();
+            showError('Please enter your password.');
+            passwordInput.focus();
+            return false;
+        }
+
+        if (password.length < 6) {
+            e.preventDefault();
+            showError('Password must be at least 6 characters.');
+            passwordInput.focus();
+            return false;
+        }
+
+        // Show loading state
+        loginBtn.disabled = true;
+        loginBtn.innerHTML = `
+            <span>Sending code...</span>
+            <span class="material-symbols-outlined" style="font-size:1.25rem; animation: spin 1s linear infinite;">refresh</span>
+        `;
+
+        // Add spin animation
+        const style = document.createElement('style');
+        style.textContent = '@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+        document.head.appendChild(style);
+
+        // Allow form to submit
+        return true;
+    });
+
     // =============================================
     // 3. CLEAR ERROR ON INPUT
     // =============================================
     document.getElementById('email').addEventListener('input', function() {
         errorMsg.classList.add('hidden');
+        // Reset button if it was in loading state
+        if (loginBtn.disabled) {
+            loginBtn.disabled = false;
+            loginBtn.innerHTML = originalBtnHTML;
+        }
     });
 
     passwordInput.addEventListener('input', function() {
         errorMsg.classList.add('hidden');
+        if (loginBtn.disabled) {
+            loginBtn.disabled = false;
+            loginBtn.innerHTML = originalBtnHTML;
+        }
     });
 
     // =============================================
@@ -825,26 +1109,112 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
     }
 
     // =============================================
-    // 5. KEYBOARD SUPPORT
+    // 5. VERIFICATION MODAL
     // =============================================
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-            const active = document.activeElement;
-            if (active && (active.id === 'email' || active.id === 'password')) {
-                form.dispatchEvent(new Event('submit'));
+    <?php if ($showModal): ?>
+    (function() {
+        const modal = document.getElementById('verificationModal');
+        const modalIcon = document.getElementById('modalIcon');
+        const successIcon = document.getElementById('successIcon');
+        const modalTitle = document.getElementById('modalTitle');
+        const statusText = document.getElementById('statusText');
+        const continueBtn = document.getElementById('continueBtn');
+        const dots = [
+            document.getElementById('dot1'),
+            document.getElementById('dot2'),
+            document.getElementById('dot3'),
+            document.getElementById('dot4')
+        ];
+
+        // Show modal IMMEDIATELY
+        modal.style.display = 'flex';
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+
+        // Reset button state (in case form submission got stuck)
+        const btn = document.getElementById('loginBtn');
+        btn.disabled = false;
+        btn.innerHTML = `
+            <span>Sign In</span>
+            <span class="material-symbols-outlined" style="font-size:1.25rem;">arrow_forward</span>
+        `;
+
+        // Step 1: Update status after 0.8s
+        setTimeout(function() {
+            statusText.textContent = 'Sending verification code...';
+            dots[0].classList.remove('active');
+            dots[0].classList.add('done');
+            dots[1].classList.add('active');
+        }, 800);
+
+        // Step 2: Update status after 1.6s
+        setTimeout(function() {
+            statusText.textContent = 'Almost there...';
+            dots[1].classList.remove('active');
+            dots[1].classList.add('done');
+            dots[2].classList.add('active');
+        }, 1600);
+
+        // Step 3: Success state after 2.4s
+        setTimeout(function() {
+            modalIcon.style.display = 'none';
+            successIcon.classList.add('show');
+            
+            dots[2].classList.remove('active');
+            dots[2].classList.add('done');
+            dots[3].classList.add('active');
+            
+            modalTitle.textContent = 'Verification Code Sent!';
+            statusText.textContent = 'Check your email for the 6-digit code.';
+            statusText.classList.add('success');
+            
+            continueBtn.classList.add('show');
+            
+            setTimeout(function() {
+                dots[3].classList.remove('active');
+                dots[3].classList.add('done');
+            }, 400);
+        }, 2400);
+
+        // Continue button redirect
+        continueBtn.addEventListener('click', function() {
+            window.location.href = 'verify.php';
+        });
+
+        // =============================================
+        // SEND EMAIL VIA AJAX (BACKGROUND)
+        // =============================================
+        <?php if ($showModal && isset($modalUserId) && $modalUserId > 0): ?>
+        fetch('send_otp.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: 'user_id=<?php echo $modalUserId; ?>&code=<?php echo $modalCode; ?>&email=<?php echo urlencode($modalEmail); ?>&name=<?php echo urlencode($modalFullName); ?>'
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                console.log('Email sent successfully');
+            } else {
+                console.log('Email failed:', data.error);
             }
-        }
-    });
+        })
+        .catch(error => {
+            console.log('Email error:', error);
+        });
+        <?php endif; ?>
+    })();
+    <?php endif; ?>
 
     // =============================================
-    // 6. SYSTEM ACCOUNT DETECTION - Show on email input
+    // 6. SYSTEM ACCOUNT DETECTION
     // =============================================
     const emailInput = document.getElementById('email');
     emailInput.addEventListener('input', function() {
         const email = this.value.trim();
         const isSystem = email.includes('@ismers.com');
         
-        // Remove existing badge
         const existingBadge = document.querySelector('.system-badge-notice');
         if (existingBadge) existingBadge.remove();
         
@@ -867,7 +1237,7 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
         }
     });
 
-    console.log('ISMERS Login Page loaded with System Account Detection.');
+    console.log('✅ ISMERS Login Page loaded successfully.');
 </script>
 
 </body>

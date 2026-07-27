@@ -127,13 +127,22 @@ $quickActions = [
     ['icon' => 'description', 'label' => 'View Applications', 'link' => 'applications.php'],
     ['icon' => 'settings', 'label' => 'Account Settings', 'link' => 'settings.php']
 ];
+
+$interviewCount = 0;
+if ($applicantId) {
+    $interviewResult = getRecord("
+        SELECT COUNT(*) as count FROM applications 
+        WHERE applicant_id = ? AND interview_date IS NOT NULL
+    ", [$applicantId], "i");
+    $interviewCount = $interviewResult['count'] ?? 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Dashboard - ISMERS</title>
+    <title>Dashboard </title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
@@ -1628,7 +1637,7 @@ $quickActions = [
                 <span class="sidebar-brand-icon">
                     <span class="material-symbols-outlined">account_balance</span>
                 </span>
-                <p class="sidebar-brand-text">ISMERS</p>
+                <p class="sidebar-brand-text">NIGGA</p>
                 <p class="sidebar-brand-category">Applicant Portal</p>
             </div>
         </div>
@@ -1651,18 +1660,18 @@ $quickActions = [
                 <span class="nav-text">Applications</span>
                 <span class="nav-badge"><?php echo $totalApplications; ?></span>
             </a>
+           
+            <a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
+                 <span class="material-symbols-outlined">calendar_month</span>
+                 <span class="nav-text">Interviews</span>
+                 <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
 
             <a href="job_search.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">search</span>
                 <span class="nav-text">Job Search</span>
             </a>
 
-            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
-
-            <a href="settings.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">settings</span>
-                <span class="nav-text">Settings</span>
-            </a>
         </nav>
 
         <div class="sidebar-footer">
@@ -1707,10 +1716,7 @@ $quickActions = [
     <!-- Dropdown Menu -->
     <div class="profile-dropdown-menu" id="profileDropdownMenu">
         <div class="dropdown-header">Account</div>
-        <a href="profile.php" class="dropdown-item">
-            <span class="material-symbols-outlined">person</span>
-            My Profile
-        </a>
+
         <a href="settings.php" class="dropdown-item">
             <span class="material-symbols-outlined">settings</span>
             Settings

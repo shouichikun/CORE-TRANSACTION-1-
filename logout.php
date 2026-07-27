@@ -33,16 +33,16 @@ if (isset($_GET['cancel'])) {
             $redirect = 'portals/hr/dashboard.php';
             break;
         case 'client':
-            $redirect = 'portals/client/index.php';
+            $redirect = 'portals/client/dashboard.php';
             break;
         case 'applicant':
             $redirect = 'portals/applicant/dashboard.php';
             break;
         case 'employee':
-            $redirect = 'portals/employee/index.php';
+            $redirect = 'portals/employee/dashboard.php';
             break;
         case 'supervisor':
-            $redirect = 'portals/supervisor/index.php';
+            $redirect = 'portals/supervisor/dashboard.php';
             break;
         default:
             $redirect = 'index.php';

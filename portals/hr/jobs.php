@@ -1756,112 +1756,101 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 
-    <!-- Sidebar Backdrop (Mobile) -->
-    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-
-    <!-- =============================================
-    SIDEBAR - FIXED
-    ============================================= -->
-    <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">work</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">HR Portal</p>
+<!-- ===== SIDEBAR ===== -->
+<aside class="dashboard-sidebar" id="appSidebar">
+    <div class="sidebar-brand-card">
+        <span class="sidebar-brand-icon">
+            <span class="material-symbols-outlined">account_balance</span>
+        </span>
+        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-category">HR Portal</p>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-label">Main</div>
+        <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">dashboard</span>
+            <span class="nav-text">Dashboard</span>
+        </a>
+        <a href="clients.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'clients.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">business</span>
+            <span class="nav-text">Clients</span>
+        </a>
+        <a href="jobs.php" class="sidebar-main-link <?php echo in_array(basename($_SERVER['PHP_SELF']), ['jobs.php', 'job_view.php', 'post_job.php']) ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">work</span>
+            <span class="nav-text">My Jobs</span>
+        </a>
+        <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">people</span>
+            <span class="nav-text">Applicants</span>
+        </a>
+        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">view_kanban</span>
+            <span class="nav-text">Pipeline</span>
+        </a>
+        <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">calendar_month</span>
+            <span class="nav-text">Interviews</span>
+        </a>
+        <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">description</span>
+            <span class="nav-text">Offers</span>
+        </a>
+        <!-- NO "System" section with Settings -->
+    </nav>
+    <div class="sidebar-footer">
+        <div class="user-card">
+            <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+            <div class="user-info">
+                <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
+                <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
+        <!-- NO logout-btn here - only in profile dropdown -->
+    </div>
+</aside>
 
-        <nav class="sidebar-nav">
-            <div class="nav-label">Main Menu</div>
-
-            <a href="dashboard.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">dashboard</span>
-                <span class="nav-text">Dashboard</span>
-            </a>
-
-            <a href="jobs.php" class="sidebar-main-link active">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">My Jobs</span>
-                <span class="nav-badge"><?php echo $statusCounts['all']; ?></span>
-            </a>
-
-            <a href="applicants.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">people</span>
-                <span class="nav-text">Applicants</span>
-            </a>
-
-            <a href="post_job.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">add_circle</span>
-                <span class="nav-text">Post Job</span>
-            </a>
-
-            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
-
-            <a href="settings.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">settings</span>
-                <span class="nav-text">Settings</span>
-            </a>
-        </nav>
-
-        <div class="sidebar-footer">
-            <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-                <div class="user-info">
-                    <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
-                    <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
-                </div>
-            </div>
-            <a href="../../logout.php" class="logout-btn">
-                <span class="material-symbols-outlined">logout</span>
-                <span class="logout-text">Logout</span>
-            </a>
-        </div>
-    </aside>
 
     <!-- =============================================
     MAIN CONTENT
     ============================================= -->
     <div class="main-wrapper" id="mainWrapper">
         <!-- Top Header -->
-        <header class="top-header">
-            <div class="top-header-left">
-                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                    <span class="material-symbols-outlined">menu</span>
-                </button>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
-                </button>
-                <span class="separator">/</span>
-                <span style="font-weight:600; font-size:0.875rem;">Job Management</span>
-            </div>
-
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-                <div class="profile-dropdown-menu" id="profileMenu">
-                    <div class="dropdown-header">Account</div>
-                    <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                        <span class="material-symbols-outlined">person</span>
-                        Profile
-                    </button>
-                    <button class="dropdown-item" onclick="window.location.href='settings.php'">
-                        <span class="material-symbols-outlined">settings</span>
-                        Settings
-                    </button>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                        <span class="material-symbols-outlined">logout</span>
-                        Logout
-                    </button>
-                </div>
-            </div>
-        </header>
+       <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined">chevron_left</span>
+        </button>
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
+    <div class="profile-dropdown-wrapper">
+        <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+            <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+            <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+            <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+            <span class="material-symbols-outlined">expand_more</span>
+        </button>
+        <div class="profile-dropdown-menu" id="profileMenu">
+            <div class="dropdown-header">Account</div>
+            <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                <span class="material-symbols-outlined">person</span> Profile
+            </button>
+            <div class="dropdown-divider"></div>
+            <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                <span class="material-symbols-outlined">logout</span> Logout
+            </button>
+        </div>
+    </div>
+</header>
 
         <!-- Scrollable Content -->
         <main class="main-scroll">
@@ -2062,67 +2051,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <!-- =============================================
     JAVASCRIPT
     ============================================= -->
-    <script>
-        // =============================================
-        // 1. SIDEBAR TOGGLE
-        // =============================================
-        const sidebar = document.getElementById('appSidebar');
-        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-        const mainWrapper = document.getElementById('mainWrapper');
-        const isMobile = window.innerWidth <= 768;
-        const savedState = localStorage.getItem('sidebarCollapsed');
+  <script>
+    // =============================================
+    // 1. SIDEBAR TOGGLE
+    // =============================================
+    const sidebar = document.getElementById('appSidebar');
+    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+    const mainWrapper = document.getElementById('mainWrapper');
+    const isMobile = window.innerWidth <= 768;
+    const savedState = localStorage.getItem('sidebarCollapsed');
 
-        if (savedState === 'true' && !isMobile) {
-            sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+    if (savedState === 'true' && !isMobile) {
+        sidebar.classList.add('collapsed');
+        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'chevron_right';
+    }
+
+    sidebarToggleBtn.addEventListener('click', function() {
+        if (window.innerWidth <= 768) return;
+        sidebar.classList.toggle('collapsed');
+        const icon = this.querySelector('.material-symbols-outlined');
+        if (icon) {
+            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
         }
+        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    });
 
-        sidebarToggleBtn.addEventListener('click', function() {
-            if (window.innerWidth <= 768) return;
-            sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            }
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
-        });
+    // =============================================
+    // 2. MOBILE SIDEBAR
+    // =============================================
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
 
-        // =============================================
-        // 2. MOBILE SIDEBAR
-        // =============================================
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    function openMobileSidebar() {
+        sidebar.classList.add('mobile-open');
+        sidebarBackdrop.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
 
-        function openMobileSidebar() {
-            sidebar.classList.add('mobile-open');
-            sidebarBackdrop.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
+    function closeMobileSidebar() {
+        sidebar.classList.remove('mobile-open');
+        sidebarBackdrop.classList.remove('active');
+        document.body.style.overflow = '';
+    }
 
-        function closeMobileSidebar() {
-            sidebar.classList.remove('mobile-open');
-            sidebarBackdrop.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-
+    if (mobileMenuBtn) {
         mobileMenuBtn.addEventListener('click', openMobileSidebar);
+    }
+    if (sidebarBackdrop) {
         sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
 
-        document.querySelectorAll('.sidebar-main-link').forEach(link => {
-            link.addEventListener('click', function() {
-                if (window.innerWidth <= 768) {
-                    closeMobileSidebar();
-                }
-            });
+    document.querySelectorAll('.sidebar-main-link').forEach(link => {
+        link.addEventListener('click', function() {
+            if (window.innerWidth <= 768) {
+                closeMobileSidebar();
+            }
         });
+    });
 
-        // =============================================
-        // 3. PROFILE DROPDOWN
-        // =============================================
-        const profileToggle = document.getElementById('profileToggle');
-        const profileMenu = document.getElementById('profileMenu');
+    // =============================================
+    // 3. PROFILE DROPDOWN - FIXED WITH NULL CHECK
+    // =============================================
+    const profileToggle = document.getElementById('profileToggle');
+    const profileMenu = document.getElementById('profileMenu');
 
+    if (profileToggle && profileMenu) {
         profileToggle.addEventListener('click', function(e) {
             e.stopPropagation();
             this.classList.toggle('open');
@@ -2135,88 +2129,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 profileMenu.classList.remove('open');
             }
         });
+    }
 
-        // =============================================
-        // 4. SEARCH FUNCTION
-        // =============================================
-        function applyFilters() {
-            const search = document.getElementById('searchInput').value;
-            const status = '<?php echo $statusFilter; ?>';
-            let url = 'jobs.php?';
-            if (status !== 'all') url += 'status=' + status + '&';
-            if (search) url += 'search=' + encodeURIComponent(search);
-            window.location.href = url;
-        }
+    // =============================================
+    // 4. SEARCH FUNCTION - FIXED WITH NULL CHECK
+    // =============================================
+    function applyFilters() {
+        const search = document.getElementById('searchInput');
+        if (!search) return;
+        
+        const status = '<?php echo $statusFilter; ?>';
+        let url = 'jobs.php?';
+        if (status !== 'all') url += 'status=' + status + '&';
+        if (search.value) url += 'search=' + encodeURIComponent(search.value);
+        window.location.href = url;
+    }
 
-        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+        searchInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 applyFilters();
             }
         });
+    }
 
-        // =============================================
-        // 5. MODAL FUNCTIONS
-        // =============================================
-        const modalOverlay = document.getElementById('jobModal');
-        const modalBody = document.getElementById('modalBody');
-        const modalContent = document.getElementById('modalContent');
-        const modalLoading = document.getElementById('modalLoading');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalIcon = document.getElementById('modalIcon');
-        const modalFooter = document.getElementById('modalFooter');
-        const modalActionBtn = document.getElementById('modalActionBtn');
+    // =============================================
+    // 5. MODAL FUNCTIONS - FIXED WITH NULL CHECKS
+    // =============================================
+    const modalOverlay = document.getElementById('jobModal');
+    const modalContent = document.getElementById('modalContent');
+    const modalLoading = document.getElementById('modalLoading');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalIcon = document.getElementById('modalIcon');
+    const modalActionBtn = document.getElementById('modalActionBtn');
 
-        function openModal() {
+    function openModal() {
+        if (modalOverlay) {
             modalOverlay.classList.add('active');
             document.body.style.overflow = 'hidden';
         }
+    }
 
-        function closeModal() {
+    function closeModal() {
+        if (modalOverlay) {
             modalOverlay.classList.remove('active');
             document.body.style.overflow = '';
-            modalContent.style.display = 'none';
-            modalLoading.style.display = 'block';
-            modalActionBtn.style.display = 'none';
         }
+        if (modalContent) modalContent.style.display = 'none';
+        if (modalLoading) modalLoading.style.display = 'block';
+        if (modalActionBtn) modalActionBtn.style.display = 'none';
+    }
 
-        // Close on overlay click
+    // Close on overlay click
+    if (modalOverlay) {
         modalOverlay.addEventListener('click', function(e) {
             if (e.target === this) {
                 closeModal();
             }
         });
+    }
 
-        // Close on Escape
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape' && modalOverlay.classList.contains('active')) {
+    // Close on Escape - FIXED
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            if (modalOverlay && modalOverlay.classList.contains('active')) {
                 closeModal();
+            } else {
+                closeMobileSidebar();
+                if (profileToggle) profileToggle.classList.remove('open');
+                if (profileMenu) profileMenu.classList.remove('open');
             }
-        });
+        }
+    });
 
-        // =============================================
-        // 6. VIEW JOB
-        // =============================================
-        function viewJob(jobId) {
-            openModal();
-            modalTitle.textContent = 'Job Details';
-            modalIcon.textContent = 'work';
-            modalActionBtn.style.display = 'none';
-            modalLoading.style.display = 'block';
-            modalContent.style.display = 'none';
+    // =============================================
+    // 6. VIEW JOB - FIXED WITH NULL CHECKS
+    // =============================================
+    function viewJob(jobId) {
+        openModal();
+        if (modalTitle) modalTitle.textContent = 'Job Details';
+        if (modalIcon) modalIcon.textContent = 'work';
+        if (modalActionBtn) modalActionBtn.style.display = 'none';
+        if (modalLoading) modalLoading.style.display = 'block';
+        if (modalContent) modalContent.style.display = 'none';
 
-            fetch('jobs.php?ajax=view&id=' + jobId)
-                .then(response => response.json())
-                .then(data => {
-                    modalLoading.style.display = 'none';
-                    modalContent.style.display = 'block';
+        fetch('jobs.php?ajax=view&id=' + jobId)
+            .then(response => response.json())
+            .then(data => {
+                if (modalLoading) modalLoading.style.display = 'none';
+                if (modalContent) modalContent.style.display = 'block';
 
-                    if (data.success) {
-                        const job = data.job;
-                        const skills = job.skills_list || [];
-                        const skillsHtml = skills.filter(s => s.trim()).map(s => 
-                            '<span class="skill-tag">' + escapeHtml(s.trim()) + '</span>'
-                        ).join('');
+                if (data.success) {
+                    const job = data.job;
+                    const skills = job.skills_list || [];
+                    const skillsHtml = skills.filter(s => s.trim()).map(s => 
+                        '<span class="skill-tag">' + escapeHtml(s.trim()) + '</span>'
+                    ).join('');
 
+                    if (modalContent) {
                         modalContent.innerHTML = `
                             <div class="view-grid">
                                 <div class="view-item">
@@ -2273,7 +2284,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
                             </div>
                         `;
-                    } else {
+                    }
+                } else {
+                    if (modalContent) {
                         modalContent.innerHTML = `
                             <div style="text-align:center; padding:1rem; color:#dc2626;">
                                 <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
@@ -2281,9 +2294,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                         `;
                     }
-                })
-                .catch(error => {
-                    modalLoading.style.display = 'none';
+                }
+            })
+            .catch(error => {
+                if (modalLoading) modalLoading.style.display = 'none';
+                if (modalContent) {
                     modalContent.style.display = 'block';
                     modalContent.innerHTML = `
                         <div style="text-align:center; padding:1rem; color:#dc2626;">
@@ -2291,40 +2306,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <p style="margin-top:0.5rem;">Error loading job details. Please try again.</p>
                         </div>
                     `;
-                });
-        }
+                }
+            });
+    }
 
-        // =============================================
-        // 7. EDIT JOB
-        // =============================================
-        function editJob(jobId) {
-            openModal();
-            modalTitle.textContent = 'Edit Job';
-            modalIcon.textContent = 'edit';
+    // =============================================
+    // 7. EDIT JOB - FIXED WITH NULL CHECKS
+    // =============================================
+    function editJob(jobId) {
+        openModal();
+        if (modalTitle) modalTitle.textContent = 'Edit Job';
+        if (modalIcon) modalIcon.textContent = 'edit';
+        if (modalActionBtn) {
             modalActionBtn.style.display = 'flex';
             modalActionBtn.textContent = 'Update Job';
-            modalLoading.style.display = 'block';
-            modalContent.style.display = 'none';
+        }
+        if (modalLoading) modalLoading.style.display = 'block';
+        if (modalContent) modalContent.style.display = 'none';
 
-            fetch('jobs.php?ajax=edit&id=' + jobId)
-                .then(response => response.json())
-                .then(data => {
-                    modalLoading.style.display = 'none';
-                    modalContent.style.display = 'block';
+        fetch('jobs.php?ajax=edit&id=' + jobId)
+            .then(response => response.json())
+            .then(data => {
+                if (modalLoading) modalLoading.style.display = 'none';
+                if (modalContent) modalContent.style.display = 'block';
 
-                    if (data.success) {
-                        const job = data.job;
-                        const jobTypes = <?php echo json_encode($jobTypes); ?>;
-                        const experienceLevels = <?php echo json_encode($experienceLevels); ?>;
-                        const jobStatuses = <?php echo json_encode($jobStatuses); ?>;
-                        const urgencyLevels = <?php echo json_encode($urgencyLevels); ?>;
+                if (data.success) {
+                    const job = data.job;
+                    const jobTypes = <?php echo json_encode($jobTypes); ?>;
+                    const experienceLevels = <?php echo json_encode($experienceLevels); ?>;
+                    const jobStatuses = <?php echo json_encode($jobStatuses); ?>;
+                    const urgencyLevels = <?php echo json_encode($urgencyLevels); ?>;
 
-                        function createOptions(options, selected) {
-                            return options.map(opt => 
-                                `<option value="${opt}" ${opt === selected ? 'selected' : ''}>${opt}</option>`
-                            ).join('');
-                        }
+                    function createOptions(options, selected) {
+                        return options.map(opt => 
+                            `<option value="${opt}" ${opt === selected ? 'selected' : ''}>${opt}</option>`
+                        ).join('');
+                    }
 
+                    if (modalContent) {
                         modalContent.innerHTML = `
                             <form id="editJobForm" onsubmit="submitEditJob(event, ${jobId})">
                                 <input type="hidden" name="action" value="update_job">
@@ -2385,18 +2404,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
                             </form>
                         `;
-                    } else {
+                    }
+                } else {
+                    if (modalContent) {
                         modalContent.innerHTML = `
                             <div style="text-align:center; padding:1rem; color:#dc2626;">
                                 <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
                                 <p style="margin-top:0.5rem;">${data.error || 'Failed to load job details.'}</p>
                             </div>
                         `;
-                        modalActionBtn.style.display = 'none';
                     }
-                })
-                .catch(error => {
-                    modalLoading.style.display = 'none';
+                    if (modalActionBtn) modalActionBtn.style.display = 'none';
+                }
+            })
+            .catch(error => {
+                if (modalLoading) modalLoading.style.display = 'none';
+                if (modalContent) {
                     modalContent.style.display = 'block';
                     modalContent.innerHTML = `
                         <div style="text-align:center; padding:1rem; color:#dc2626;">
@@ -2404,170 +2427,164 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <p style="margin-top:0.5rem;">Error loading job details. Please try again.</p>
                         </div>
                     `;
-                    modalActionBtn.style.display = 'none';
-                });
-        }
+                }
+                if (modalActionBtn) modalActionBtn.style.display = 'none';
+            });
+    }
 
-        // =============================================
-        // 8. SUBMIT EDIT JOB
-        // =============================================
-        function submitEditJob(event, jobId) {
-            event.preventDefault();
-            const form = document.getElementById('editJobForm');
-            const formData = new FormData(form);
-            
+    // =============================================
+    // 8. SUBMIT EDIT JOB
+    // =============================================
+    function submitEditJob(event, jobId) {
+        event.preventDefault();
+        const form = document.getElementById('editJobForm');
+        if (!form) return;
+        
+        const formData = new FormData(form);
+        
+        if (modalActionBtn) {
             modalActionBtn.disabled = true;
             modalActionBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Saving...';
-
-            fetch('jobs.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                modalActionBtn.disabled = false;
-                modalActionBtn.innerHTML = 'Save Changes';
-
-                if (data.success) {
-                    showToast('Job updated successfully!', 'success');
-                    setTimeout(() => {
-                        closeModal();
-                        location.reload();
-                    }, 1000);
-                } else {
-                    showToast(data.error || 'Failed to update job.', 'error');
-                }
-            })
-            .catch(error => {
-                modalActionBtn.disabled = false;
-                modalActionBtn.innerHTML = 'Save Changes';
-                showToast('Error updating job. Please try again.', 'error');
-            });
         }
 
-        // =============================================
-        // 9. DELETE JOB
-        // =============================================
-        function deleteJob(jobId) {
-            if (!confirm('Are you sure you want to delete this job? This action cannot be undone.')) {
-                return;
+        fetch('jobs.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (modalActionBtn) {
+                modalActionBtn.disabled = false;
+                modalActionBtn.innerHTML = 'Save Changes';
             }
 
-            showToast('Deleting job...', 'info');
-            
-            const formData = new FormData();
-            formData.append('action', 'delete_job');
-            formData.append('job_id', jobId);
-
-            fetch('jobs.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showToast(data.message, 'success');
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    showToast(data.error || 'Failed to delete job.', 'error');
-                }
-            })
-            .catch(error => {
-                showToast('Error deleting job. Please try again.', 'error');
-            });
-        }
-
-        // =============================================
-        // 10. TOAST SYSTEM
-        // =============================================
-        function showToast(message, type = 'info') {
-            const existingToast = document.querySelector('.toast');
-            if (existingToast) existingToast.remove();
-
-            const toast = document.createElement('div');
-            toast.className = 'toast ' + type;
-            toast.textContent = message;
-            document.body.appendChild(toast);
-
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                toast.style.transform = 'translateY(20px)';
-                toast.style.transition = 'all 0.4s ease';
-                setTimeout(() => toast.remove(), 400);
-            }, 3000);
-        }
-
-        // =============================================
-        // 11. UTILITY FUNCTIONS
-        // =============================================
-        function escapeHtml(text) {
-            if (!text) return '';
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        function getStatusBadge(status) {
-            const badges = {
-                'open': 'badge-open',
-                'ongoing': 'badge-ongoing',
-                'filled': 'badge-filled',
-                'cancelled': 'badge-cancelled',
-                'draft': 'badge-draft'
-            };
-            return badges[status] || 'badge-draft';
-        }
-
-        function getUrgencyBadge(urgency) {
-            const badges = {
-                'low': 'badge-urgency-low',
-                'medium': 'badge-urgency-medium',
-                'high': 'badge-urgency-high'
-            };
-            return badges[urgency] || 'badge-urgency-low';
-        }
-
-        // =============================================
-        // 12. RESPONSIVE HANDLING
-        // =============================================
-        let resizeTimer;
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                const width = window.innerWidth;
-                if (width <= 768) {
-                    sidebar.classList.remove('collapsed');
-                } else {
-                    sidebar.classList.remove('mobile-open');
-                    sidebarBackdrop.classList.remove('active');
-                    document.body.style.overflow = '';
-                    const saved = localStorage.getItem('sidebarCollapsed');
-                    if (saved === 'true') {
-                        sidebar.classList.add('collapsed');
-                    } else {
-                        sidebar.classList.remove('collapsed');
-                    }
-                }
-            }, 250);
-        });
-
-        // =============================================
-        // 13. KEYBOARD ACCESSIBILITY
-        // =============================================
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                if (modalOverlay.classList.contains('active')) {
+            if (data.success) {
+                showToast('Job updated successfully!', 'success');
+                setTimeout(() => {
                     closeModal();
+                    location.reload();
+                }, 1000);
+            } else {
+                showToast(data.error || 'Failed to update job.', 'error');
+            }
+        })
+        .catch(error => {
+            if (modalActionBtn) {
+                modalActionBtn.disabled = false;
+                modalActionBtn.innerHTML = 'Save Changes';
+            }
+            showToast('Error updating job. Please try again.', 'error');
+        });
+    }
+
+    // =============================================
+    // 9. DELETE JOB
+    // =============================================
+    function deleteJob(jobId) {
+        if (!confirm('Are you sure you want to delete this job? This action cannot be undone.')) {
+            return;
+        }
+
+        showToast('Deleting job...', 'info');
+        
+        const formData = new FormData();
+        formData.append('action', 'delete_job');
+        formData.append('job_id', jobId);
+
+        fetch('jobs.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast(data.message, 'success');
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                showToast(data.error || 'Failed to delete job.', 'error');
+            }
+        })
+        .catch(error => {
+            showToast('Error deleting job. Please try again.', 'error');
+        });
+    }
+
+    // =============================================
+    // 10. TOAST SYSTEM
+    // =============================================
+    function showToast(message, type = 'info') {
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) existingToast.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            toast.style.transition = 'all 0.4s ease';
+            setTimeout(() => toast.remove(), 400);
+        }, 3000);
+    }
+
+    // =============================================
+    // 11. UTILITY FUNCTIONS
+    // =============================================
+    function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function getStatusBadge(status) {
+        const badges = {
+            'open': 'badge-open',
+            'ongoing': 'badge-ongoing',
+            'filled': 'badge-filled',
+            'cancelled': 'badge-cancelled',
+            'draft': 'badge-draft'
+        };
+        return badges[status] || 'badge-draft';
+    }
+
+    function getUrgencyBadge(urgency) {
+        const badges = {
+            'low': 'badge-urgency-low',
+            'medium': 'badge-urgency-medium',
+            'high': 'badge-urgency-high'
+        };
+        return badges[urgency] || 'badge-urgency-low';
+    }
+
+    // =============================================
+    // 12. RESPONSIVE HANDLING
+    // =============================================
+    let resizeTimer;
+    window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function() {
+            const width = window.innerWidth;
+            if (width <= 768) {
+                sidebar.classList.remove('collapsed');
+            } else {
+                sidebar.classList.remove('mobile-open');
+                sidebarBackdrop.classList.remove('active');
+                document.body.style.overflow = '';
+                const saved = localStorage.getItem('sidebarCollapsed');
+                if (saved === 'true') {
+                    sidebar.classList.add('collapsed');
                 } else {
-                    closeMobileSidebar();
-                    profileToggle.classList.remove('open');
-                    profileMenu.classList.remove('open');
+                    sidebar.classList.remove('collapsed');
                 }
             }
-        });
+        }, 250);
+    });
 
-        console.log('📋 ISMERS Jobs Management loaded successfully!');
-    </script>
+    console.log('📋 ISMERS Jobs Management loaded successfully!');
+</script>
 
 </body>
 </html>

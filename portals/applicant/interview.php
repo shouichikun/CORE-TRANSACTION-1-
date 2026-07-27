@@ -1,8 +1,7 @@
 <?php
-// portals/applicant/apply.php - Apply for Job
+// portals/applicant/interview.php - Applicant Interview Dashboard
 session_start();
 
-// Include configuration file
 require_once '../../app/config.php';
 
 // Check if user is logged in
@@ -17,179 +16,87 @@ if ($_SESSION['role'] !== 'applicant') {
     exit;
 }
 
-// Get user data
 $userId = $_SESSION['user_id'];
 $fullName = $_SESSION['full_name'] ?? 'Applicant';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 
-// Database helper function (if not already in config.php)
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn;
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
-        }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
-    }
-}
-
 // Get applicant data
 $applicant = getApplicantByUserId($userId);
 $applicantId = $applicant['id'] ?? 0;
 
-// Get applications count for the badge
-$applications = [];
-if ($applicantId) {
-    $applications = getApplicationsByApplicant($applicantId);
-}
-$totalApplications = count($applications);
-
-// Get job ID from URL
-$jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
-
-// If no job ID, redirect to job search
-if ($jobId <= 0) {
-    header('Location: job_search.php');
+if ($applicantId <= 0) {
+    header('Location: dashboard.php');
     exit;
 }
 
-// Get job details
-$job = getRecord("SELECT jo.*, c.company_name FROM job_orders jo 
-                  JOIN clients c ON jo.client_id = c.id 
-                  WHERE jo.id = ?", [$jobId], "i");
+// =============================================
+// GET INTERVIEW COUNT FOR SIDEBAR BADGE
+// =============================================
+$interviewCount = 0;
+$interviewResult = getRecord("
+    SELECT COUNT(*) as count FROM applications 
+    WHERE applicant_id = ? AND interview_date IS NOT NULL
+", [$applicantId], "i");
+$interviewCount = $interviewResult['count'] ?? 0;
 
-// If job not found or not open, redirect
-if (!$job || !in_array($job['status'], ['open', 'ongoing'])) {
-    header('Location: job_search.php');
-    exit;
+// Get all interviews for this applicant
+$interviews = getRecords("
+    SELECT a.id as application_id, a.status, a.applied_at, a.cover_letter,
+           a.interview_date, a.interview_notes,
+           jo.id as job_id, jo.title as job_title, jo.description as job_description,
+           jo.location as job_location, jo.job_type, jo.salary_range,
+           c.company_name, c.id as company_id,
+           u.first_name as hr_first_name, u.last_name as hr_last_name, u.email as hr_email
+    FROM applications a
+    JOIN job_orders jo ON a.job_order_id = jo.id
+    JOIN clients c ON jo.client_id = c.id
+    JOIN users u ON jo.created_by = u.id
+    WHERE a.applicant_id = ? 
+      AND a.interview_date IS NOT NULL
+      AND a.status IN ('interviewed', 'shortlisted')
+    ORDER BY a.interview_date ASC
+", [$applicantId], "i");
+
+// Get upcoming interviews (future dates)
+$upcomingInterviews = array_filter($interviews, function($interview) {
+    return strtotime($interview['interview_date']) > time();
+});
+
+// Get past interviews
+$pastInterviews = array_filter($interviews, function($interview) {
+    return strtotime($interview['interview_date']) <= time();
+});
+
+// Check if there are any new interview notifications
+$notificationCheck = getRecord("
+    SELECT COUNT(*) as count FROM notifications 
+    WHERE user_id = ? 
+      AND type = 'interview_scheduled' 
+      AND is_read = 0
+", [$userId], "i");
+
+$hasNewNotifications = ($notificationCheck['count'] ?? 0) > 0;
+
+// Mark notifications as read when viewing
+if ($hasNewNotifications) {
+    updateRecord("
+        UPDATE notifications 
+        SET is_read = 1, read_at = NOW() 
+        WHERE user_id = ? AND type = 'interview_scheduled' AND is_read = 0
+    ", [$userId], "i");
 }
 
-// Check if already applied
-$alreadyApplied = false;
-if ($applicantId) {
-    $existingApplication = getRecord(
-        "SELECT id FROM applications WHERE applicant_id = ? AND job_order_id = ?",
-        [$applicantId, $jobId],
-        "ii"
-    );
-    if ($existingApplication) {
-        $alreadyApplied = true;
-    }
-}
-
-// Initialize variables
-$successMessage = '';
-$errorMessage = '';
-$coverLetter = '';
-$resumePath = '';
-$uploadError = '';
-
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$alreadyApplied) {
-    $coverLetter = trim($_POST['cover_letter'] ?? '');
-    $agreeTerms = isset($_POST['agree_terms']);
-    
-    // Handle file upload
-    $resumeFile = $_FILES['resume'] ?? null;
-    $uploadSuccess = false;
-    
-    // Validate
-    $errors = [];
-    
-    if (empty($coverLetter)) {
-        $errors[] = 'Please write a cover letter.';
-    }
-    if (strlen($coverLetter) < 50) {
-        $errors[] = 'Cover letter must be at least 50 characters.';
-    }
-    
-    // Resume validation
-    if (!$resumeFile || $resumeFile['error'] === UPLOAD_ERR_NO_FILE) {
-        $errors[] = 'Please upload your resume/CV.';
-    } elseif ($resumeFile['error'] !== UPLOAD_ERR_OK) {
-        $errors[] = 'Error uploading file. Please try again.';
-    } else {
-        // Validate file type
-        $allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-        $fileType = mime_content_type($resumeFile['tmp_name']);
-        
-        if (!in_array($fileType, $allowedTypes)) {
-            $errors[] = 'Please upload a PDF, DOC, or DOCX file.';
-        }
-        
-        // Validate file size (max 5MB)
-        if ($resumeFile['size'] > 5 * 1024 * 1024) {
-            $errors[] = 'File size must be less than 5MB.';
-        }
-        
-        // Upload file if no errors
-        if (empty($errors)) {
-            $uploadDir = '../../uploads/resumes/';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
-            }
-            
-            $fileExtension = pathinfo($resumeFile['name'], PATHINFO_EXTENSION);
-            $fileName = 'resume_' . $userId . '_' . $jobId . '_' . time() . '.' . $fileExtension;
-            $filePath = $uploadDir . $fileName;
-            
-            if (move_uploaded_file($resumeFile['tmp_name'], $filePath)) {
-                $resumePath = 'uploads/resumes/' . $fileName;
-                $uploadSuccess = true;
-            } else {
-                $errors[] = 'Failed to upload resume. Please try again.';
-            }
-        }
-    }
-    
-    if (!$agreeTerms) {
-        $errors[] = 'You must agree to the terms to proceed.';
-    }
-    
-    // Check if applicant has a complete profile
-    if (empty($applicant['skills'])) {
-        $errors[] = 'Please complete your profile skills before applying. <a href="edit_profile.php" style="color:var(--primary-light);">Edit Profile</a>';
-    }
-    
-    if (empty($errors) && $uploadSuccess) {
-        // Insert application
-        $sql = "INSERT INTO applications (applicant_id, job_order_id, cover_letter, resume_path, status, face_scan_verified, applied_at) 
-                VALUES (?, ?, ?, ?, 'pending', 0, NOW())";
-        
-        $result = insertRecord($sql, [$applicantId, $jobId, $coverLetter, $resumePath], "iiss");
-        
-        if ($result) {
-            $successMessage = 'Application submitted successfully!';
-            
-            // Log activity
-            logActivity($userId, 'Applied for Job', 'application', $result, 'Applied for: ' . $job['title'] . ' | Resume: ' . $resumePath);
-            
-            // Redirect after 2 seconds
-            header('Refresh: 2; URL=applications.php');
-        } else {
-            $errorMessage = 'Failed to submit application. Please try again.';
-            // Clean up uploaded file if application fails
-            if (file_exists($filePath)) {
-                unlink($filePath);
-            }
-        }
-    } else {
-        $errorMessage = implode('<br>', $errors);
-    }
-}
+// Get notification count for badge
+$notificationCount = getRecord("
+    SELECT COUNT(*) as count FROM notifications 
+    WHERE user_id = ? AND is_read = 0
+", [$userId], "i");
+$totalNotifications = $notificationCount['count'] ?? 0;
 
 // Role labels for display
 $roleLabels = [
-    'admin' => 'Admin',
+    'admin' => 'Administrator',
     'hr_manager' => 'HR Manager',
     'recruiter' => 'Recruiter',
     'client' => 'Client',
@@ -197,27 +104,18 @@ $roleLabels = [
     'employee' => 'Employee',
     'supervisor' => 'Supervisor'
 ];
-
-$interviewCount = 0;
-if ($applicantId) {
-    $interviewResult = getRecord("
-        SELECT COUNT(*) as count FROM applications 
-        WHERE applicant_id = ? AND interview_date IS NOT NULL
-    ", [$applicantId], "i");
-    $interviewCount = $interviewResult['count'] ?? 0;
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Apply for Job - ISMERS</title>
+    <title>My Interviews - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - APPLY FOR JOB
+           MATERIAL 3 DESIGN SYSTEM - INTERVIEWS PAGE
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -253,6 +151,7 @@ if ($applicantId) {
             --success-color: #22c55e;
             --error-color: #dc2626;
             --warning-color: #f59e0b;
+            --info-color: #2563eb;
         }
 
         * {
@@ -800,6 +699,179 @@ if ($applicantId) {
         }
 
         /* =============================================
+           NOTIFICATION BELL
+        ============================================= */
+        .notification-wrapper {
+            position: relative;
+        }
+
+        .notification-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            position: relative;
+        }
+
+        .notification-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .notification-btn .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+
+        .notification-badge {
+            position: absolute;
+            top: 0.25rem;
+            right: 0.25rem;
+            background: #dc2626;
+            color: white;
+            font-size: 0.625rem;
+            font-weight: 700;
+            min-width: 1.25rem;
+            height: 1.25rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 0.25rem;
+        }
+
+        .notification-badge.hidden {
+            display: none;
+        }
+
+        .notification-dropdown {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            width: 22rem;
+            max-height: 24rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--slate-200);
+            z-index: 50;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-0.5rem) scale(0.95);
+            transition: all var(--transition-smooth);
+            transform-origin: top right;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .notification-dropdown.open {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0) scale(1);
+        }
+
+        .notification-dropdown .dropdown-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .notification-dropdown .dropdown-header h4 {
+            font-size: 0.875rem;
+            font-weight: 700;
+        }
+
+        .notification-dropdown .dropdown-header .mark-all {
+            font-size: 0.75rem;
+            color: var(--primary);
+            cursor: pointer;
+            font-weight: 600;
+            background: none;
+            border: none;
+        }
+
+        .notification-dropdown .dropdown-header .mark-all:hover {
+            text-decoration: underline;
+        }
+
+        .notification-list {
+            overflow-y: auto;
+            padding: 0.25rem 0;
+            flex: 1;
+        }
+
+        .notification-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--slate-100);
+            transition: all var(--transition-fast);
+            cursor: default;
+        }
+
+        .notification-item:hover {
+            background: var(--bg-surface-low);
+        }
+
+        .notification-item.unread {
+            background: rgba(79, 70, 229, 0.04);
+            border-left: 3px solid var(--primary);
+        }
+
+        .notification-item .notif-icon {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .notification-item .notif-icon .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .notification-item .notif-content .notif-title {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+
+        .notification-item .notif-content .notif-text {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.125rem;
+        }
+
+        .notification-item .notif-content .notif-time {
+            font-size: 0.625rem;
+            color: var(--text-dim);
+            margin-top: 0.25rem;
+        }
+
+        .notification-empty {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .notification-empty .material-symbols-outlined {
+            font-size: 2.5rem;
+            color: var(--slate-200);
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        /* =============================================
            MAIN SCROLLABLE AREA
         ============================================= */
         .main-scroll {
@@ -809,7 +881,7 @@ if ($applicantId) {
         }
 
         .main-scroll .container {
-            max-width: 56rem;
+            max-width: 80rem;
             margin: 0 auto;
         }
 
@@ -858,12 +930,6 @@ if ($applicantId) {
             height: 0.5rem;
             border-radius: 50%;
             background: #22c55e;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
         }
 
         /* =============================================
@@ -895,12 +961,6 @@ if ($applicantId) {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.25rem;
-        }
-
-        .page-header .header-actions {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
         }
 
         /* =============================================
@@ -953,17 +1013,6 @@ if ($applicantId) {
             box-shadow: var(--shadow-md);
         }
 
-        .btn-danger {
-            background: var(--error-color);
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #b91c1c;
-            transform: translateY(-1px);
-            box-shadow: var(--shadow-md);
-        }
-
         .btn-sm {
             padding: 0.375rem 0.75rem;
             font-size: 0.75rem;
@@ -974,449 +1023,209 @@ if ($applicantId) {
             font-size: 1.125rem;
         }
 
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
-        }
-
         /* =============================================
-           JOB SUMMARY
+           STATS CARDS
         ============================================= */
-        .job-summary {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            padding: 1.25rem 1.5rem;
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
             margin-bottom: 1.5rem;
-            box-shadow: var(--shadow-sm);
         }
 
-        .job-summary .job-title {
-            font-size: 1.25rem;
-            font-weight: 700;
+        .stat-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            padding: 1.25rem 1.5rem;
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            transition: none;
+        }
+
+        .stat-card .stat-number {
+            font-size: 1.75rem;
+            font-weight: 800;
             color: var(--text-on-surface);
         }
 
-        .job-summary .job-company {
-            font-size: 0.9375rem;
+        .stat-card .stat-label {
+            font-size: 0.75rem;
             color: var(--text-on-surface-variant);
-            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
         }
 
-        .job-summary .job-meta {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem 1.25rem;
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .job-summary .job-meta .meta-item {
-            display: flex;
+        .stat-card .stat-icon {
+            display: inline-flex;
             align-items: center;
-            gap: 0.375rem;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            float: right;
         }
 
-        .job-summary .job-meta .meta-item .material-symbols-outlined {
-            font-size: 1rem;
+        .stat-card .stat-icon .material-symbols-outlined {
+            font-size: 1.5rem;
         }
 
         /* =============================================
-           FORM CARD
+           INTERVIEW CARDS
         ============================================= */
-        .card {
+        .interview-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
+            transition: none;
         }
 
-        .card-header {
+        .interview-card.upcoming {
+            border-left: 4px solid var(--primary);
+        }
+
+        .interview-card.past {
+            border-left: 4px solid var(--slate-500);
+            opacity: 0.7;
+        }
+
+        .interview-card .interview-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
             flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: flex-start;
             gap: 0.75rem;
         }
 
-        .card-header h3 {
+        .interview-card .interview-header .job-title {
             font-size: 1.125rem;
             font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.625rem;
-        }
-
-        .card-header h3 .material-symbols-outlined {
-            font-size: 1.25rem;
-            color: var(--primary);
-        }
-
-        .card-body {
-            padding: 1.5rem;
-        }
-
-        /* =============================================
-           FORM ELEMENTS
-        ============================================= */
-        .form-group {
-            margin-bottom: 1.25rem;
-        }
-
-        .form-group:last-child {
-            margin-bottom: 0;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-
-        .form-group label .required {
-            color: #dc2626;
-            margin-left: 0.125rem;
-        }
-
-        .form-group .form-control {
-            width: 100%;
-            padding: 0.625rem 0.875rem;
-            border: 2px solid var(--slate-200);
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
             color: var(--text-on-surface);
         }
 
-        .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
-        }
-
-        .form-group .form-control::placeholder {
-            color: var(--text-on-surface-variant);
-            opacity: 0.6;
-        }
-
-        .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 150px;
-        }
-
-        .form-group .form-control.is-invalid {
-            border-color: #dc2626;
-        }
-
-        .form-group .helper-text {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
-
-        .form-group .helper-text .material-symbols-outlined {
-            font-size: 0.875rem;
-            vertical-align: middle;
-        }
-
-        .form-group .char-count {
-            text-align: right;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
-
-        /* =============================================
-           FILE UPLOAD
-        ============================================= */
-        .file-upload-wrapper {
-            position: relative;
-        }
-
-        .file-upload-area {
-            border: 2px dashed var(--slate-200);
-            border-radius: 0.75rem;
-            padding: 2rem 1.5rem;
-            text-align: center;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            background: var(--bg-surface-low);
-        }
-
-        .file-upload-area:hover {
-            border-color: var(--primary);
-            background: rgba(79, 70, 229, 0.04);
-        }
-
-        .file-upload-area.dragover {
-            border-color: var(--primary);
-            background: rgba(79, 70, 229, 0.08);
-        }
-
-        .file-upload-area .upload-icon .material-symbols-outlined {
-            font-size: 3rem;
-            color: var(--text-on-surface-variant);
-            display: block;
-            margin-bottom: 0.5rem;
-        }
-
-        .file-upload-area .upload-text {
-            font-size: 0.9375rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .file-upload-area .upload-hint {
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
-
-        .file-upload-area .upload-formats {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-            opacity: 0.6;
-        }
-
-        .file-upload-area .file-preview {
-            display: none;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.75rem 1rem;
-            background: var(--bg-surface);
-            border-radius: 0.75rem;
-            border: 1px solid var(--success-color);
-            margin-top: 0.75rem;
-        }
-
-        .file-upload-area .file-preview.show {
-            display: flex;
-        }
-
-        .file-upload-area .file-preview .file-icon .material-symbols-outlined {
-            font-size: 2rem;
-            color: var(--success-color);
-        }
-
-        .file-upload-area .file-preview .file-info {
-            flex: 1;
-            text-align: left;
-        }
-
-        .file-upload-area .file-preview .file-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .file-upload-area .file-preview .file-size {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .file-upload-area .file-preview .file-remove {
-            background: none;
-            border: none;
-            color: var(--error-color);
-            cursor: pointer;
-            padding: 0.25rem;
-            font-size: 1.25rem;
-            transition: all var(--transition-fast);
-        }
-
-        .file-upload-area .file-preview .file-remove:hover {
-            opacity: 0.7;
-            transform: scale(1.1);
-        }
-
-        #resume_file {
-            display: none;
-        }
-
-        /* =============================================
-           CHECKBOX
-        ============================================= */
-        .checkbox-group {
-            display: flex;
-            align-items: flex-start;
-            gap: 0.625rem;
-            padding: 0.5rem 0;
-        }
-
-        .checkbox-group input[type="checkbox"] {
-            width: 1.125rem;
-            height: 1.125rem;
-            margin-top: 0.125rem;
-            accent-color: var(--primary);
-            cursor: pointer;
-            flex-shrink: 0;
-        }
-
-        .checkbox-group label {
-            font-weight: 400;
+        .interview-card .interview-header .company-name {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
-            cursor: pointer;
         }
 
-        .checkbox-group label a {
-            color: var(--primary);
-            font-weight: 600;
-        }
-
-        .checkbox-group label a:hover {
-            text-decoration: underline;
-        }
-
-        /* =============================================
-           PROFILE INFO BOX
-        ============================================= */
-        .profile-info-box {
-            background: var(--bg-surface-low);
-            padding: 1rem 1.25rem;
-            border-radius: 0.75rem;
-            border: 1px solid var(--slate-200);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .profile-info-box .user-details .user-name {
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .profile-info-box .user-details .user-email {
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .profile-info-box .status-badge {
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
+        .interview-card .interview-header .status-badge {
+            display: inline-block;
+            padding: 0.1875rem 0.75rem;
             border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .interview-card .interview-header .status-badge.upcoming {
+            background: #dbeafe;
+            color: #2563eb;
+        }
+
+        .interview-card .interview-header .status-badge.past {
+            background: #f3f4f6;
+            color: #6b7280;
+        }
+
+        .interview-card .interview-header .status-badge.today {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .interview-card .interview-body {
+            padding: 1.25rem 1.5rem;
+        }
+
+        .interview-card .interview-body .interview-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .interview-card .interview-body .detail-item {
             display: flex;
             align-items: center;
-            gap: 0.25rem;
+            gap: 0.625rem;
         }
 
-        .profile-info-box .status-badge.complete {
-            background: #f0fdf4;
-            color: #22c55e;
+        .interview-card .interview-body .detail-item .material-symbols-outlined {
+            font-size: 1.25rem;
+            color: var(--primary);
         }
 
-        .profile-info-box .status-badge.incomplete {
-            background: #fef2f2;
-            color: #dc2626;
+        .interview-card .interview-body .detail-item .detail-label {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
         }
 
-        .profile-info-box .status-badge .material-symbols-outlined {
+        .interview-card .interview-body .detail-item .detail-value {
             font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+
+        .interview-card .interview-notes {
+            padding: 1rem 1.5rem;
+            background: var(--bg-surface-low);
+            border-top: 1px solid var(--slate-200);
+            border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
+        }
+
+        .interview-card .interview-notes .notes-label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .interview-card .interview-notes .notes-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+            margin-top: 0.25rem;
+        }
+
+        .interview-card .interview-actions {
+            padding: 0.75rem 1.5rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
         }
 
         /* =============================================
-           ALREADY APPLIED
+           EMPTY STATE
         ============================================= */
-        .already-applied {
+        .empty-state {
             text-align: center;
-            padding: 3rem 1.5rem;
+            padding: 4rem 1.5rem;
         }
 
-        .already-applied .material-symbols-outlined {
+        .empty-state .material-symbols-outlined {
             font-size: 4rem;
-            color: var(--warning-color);
+            color: var(--slate-200);
             display: block;
-            margin-bottom: 0.75rem;
+            margin-bottom: 1rem;
         }
 
-        .already-applied h3 {
-            font-size: 1.25rem;
+        .empty-state h4 {
+            font-size: 1.125rem;
             font-weight: 700;
             color: var(--text-on-surface);
             margin-bottom: 0.25rem;
         }
 
-        .already-applied p {
-            color: var(--text-on-surface-variant);
-            margin-bottom: 1rem;
-        }
-
-        /* =============================================
-           MESSAGES
-        ============================================= */
-        .message {
-            padding: 0.875rem 1.25rem;
-            border-radius: 0.75rem;
+        .empty-state p {
             font-size: 0.875rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: flex-start;
-            gap: 0.75rem;
-            border: 1px solid transparent;
-        }
-
-        .message .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-            margin-top: 0.0625rem;
-        }
-
-        .message.success {
-            background: #f0fdf4;
-            border-color: #bbf7d0;
-            color: #16a34a;
-        }
-
-        .message.success .material-symbols-outlined {
-            color: #16a34a;
-        }
-
-        .message.error {
-            background: #fef2f2;
-            border-color: #fecaca;
-            color: #dc2626;
-        }
-
-        .message.error .material-symbols-outlined {
-            color: #dc2626;
-        }
-
-        .message.info {
-            background: #dbeafe;
-            border-color: #93c5fd;
-            color: #2563eb;
-        }
-
-        .message.info .material-symbols-outlined {
-            color: #2563eb;
-        }
-
-        .message .btn {
-            margin-left: auto;
-            flex-shrink: 0;
-        }
-
-        /* =============================================
-           FORM ACTIONS
-        ============================================= */
-        .form-actions {
-            display: flex;
-            gap: 0.75rem;
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--slate-200);
-            flex-wrap: wrap;
+            color: var(--text-on-surface-variant);
         }
 
         /* =============================================
@@ -1538,35 +1347,17 @@ if ($applicantId) {
                 display: none;
             }
 
-            .job-summary {
-                padding: 1rem 1.25rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
             }
 
-            .job-summary .job-title {
-                font-size: 1.125rem;
+            .interview-card .interview-body .interview-details {
+                grid-template-columns: 1fr;
             }
 
-            .card-body {
-                padding: 1rem 1.25rem;
-            }
-
-            .form-actions {
-                flex-direction: column;
-            }
-
-            .form-actions .btn {
-                width: 100%;
-                justify-content: center;
-            }
-
-            .file-upload-area {
-                padding: 1.5rem 1rem;
-            }
-
-            .message .btn {
-                margin-left: 0;
-                width: 100%;
-                justify-content: center;
+            .notification-dropdown {
+                width: 18rem;
+                right: -2rem;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1616,47 +1407,38 @@ if ($applicantId) {
                 font-size: 1.5rem;
             }
 
-            .job-summary .job-title {
-                font-size: 1rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.5rem;
             }
 
-            .job-summary .job-meta {
-                font-size: 0.75rem;
-                gap: 0.5rem 0.75rem;
-            }
-
-            .card-header {
+            .stat-card {
                 padding: 0.75rem 1rem;
             }
 
-            .card-header h3 {
-                font-size: 1rem;
+            .stat-card .stat-number {
+                font-size: 1.25rem;
             }
 
-            .card-body {
-                padding: 0.75rem 1rem;
+            .interview-card .interview-header {
+                padding: 1rem 1.25rem;
             }
 
-            .form-group {
-                margin-bottom: 0.875rem;
+            .interview-card .interview-body {
+                padding: 1rem 1.25rem;
             }
 
-            .file-upload-area .upload-icon .material-symbols-outlined {
-                font-size: 2.5rem;
+            .interview-card .interview-notes {
+                padding: 0.75rem 1.25rem;
             }
 
-            .file-upload-area .upload-text {
-                font-size: 0.875rem;
+            .interview-card .interview-actions {
+                padding: 0.75rem 1.25rem;
             }
 
-            .profile-info-box {
-                flex-direction: column;
-                align-items: stretch;
-                text-align: center;
-            }
-
-            .profile-info-box .status-badge {
-                justify-content: center;
+            .notification-dropdown {
+                width: 16rem;
+                right: -1rem;
             }
 
             .toast {
@@ -1697,7 +1479,7 @@ if ($applicantId) {
         <div class="px-5 pt-6 pb-5 border-b border-slate-200">
             <div class="sidebar-brand-card">
                 <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">person</span>
+                    <span class="material-symbols-outlined">calendar_month</span>
                 </span>
                 <p class="sidebar-brand-text">ISMERS</p>
                 <p class="sidebar-brand-category">Applicant Portal</p>
@@ -1718,20 +1500,21 @@ if ($applicantId) {
             </a>
 
             <a href="applications.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">work</span>
+                <span class="material-symbols-outlined">description</span>
                 <span class="nav-text">Applications</span>
-                <span class="nav-badge"><?php echo $totalApplications; ?></span>
             </a>
-            <a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">calendar_month</span>
-    <span class="nav-text">Interviews</span>
-    <span class="nav-badge"><?php echo $interviewCount; ?></span>
-</a>
+
+            <a href="interview.php" class="sidebar-main-link active">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
 
             <a href="job_search.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">search</span>
                 <span class="nav-text">Job Search</span>
             </a>
+
 
         </nav>
 
@@ -1743,10 +1526,7 @@ if ($applicantId) {
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            <a href="../../logout.php" class="logout-btn">
-                <span class="material-symbols-outlined">logout</span>
-                <span class="logout-text">Logout</span>
-            </a>
+            
         </div>
     </aside>
 
@@ -1764,28 +1544,54 @@ if ($applicantId) {
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">/</span>
-                <span style="font-weight:600; font-size:0.875rem;">Apply for Job</span>
+                <span style="font-weight:600; font-size:0.875rem;">My Interviews</span>
             </div>
 
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'] ?? 'Applicant')); ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-                <div class="profile-dropdown-menu" id="profileMenu">
-                    <div class="dropdown-header">Account</div>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+                <!-- Notification Bell -->
+                <div class="notification-wrapper">
+                    <button class="notification-btn" id="notificationBtn" aria-label="Notifications">
+                        <span class="material-symbols-outlined">notifications</span>
+                        <span class="notification-badge <?php echo $totalNotifications > 0 ? '' : 'hidden'; ?>" id="notifBadge">
+                            <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
+                        </span>
+                    </button>
+                    <div class="notification-dropdown" id="notificationDropdown">
+                        <div class="dropdown-header">
+                            <h4>Notifications</h4>
+                            <?php if ($totalNotifications > 0): ?>
+                                <button class="mark-all" onclick="markAllNotifications()">Mark all as read</button>
+                            <?php endif; ?>
+                        </div>
+                        <div class="notification-list" id="notificationList">
+                            <!-- Notifications loaded via AJAX -->
+                            <div style="text-align:center; padding:1rem; color:var(--text-on-surface-variant);">
+                                Loading...
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
-                    <button class="dropdown-item" onclick="window.location.href='settings.php'">
-                        <span class="material-symbols-outlined">settings</span>
-                        Settings
+                <!-- Profile -->
+                <div class="profile-dropdown-wrapper">
+                    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                        <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'] ?? 'Applicant')); ?></span>
+                        <span class="material-symbols-outlined">expand_more</span>
                     </button>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                        <span class="material-symbols-outlined">logout</span>
-                        Logout
-                    </button>
+                    <div class="profile-dropdown-menu" id="profileMenu">
+                        <div class="dropdown-header">Account</div>
+                        <button class="dropdown-item" onclick="window.location.href='settings.php'">
+                            <span class="material-symbols-outlined">settings</span>
+                            Settings
+                        </button>
+                        <div class="dropdown-divider"></div>
+                        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                            <span class="material-symbols-outlined">logout</span>
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -1797,11 +1603,13 @@ if ($applicantId) {
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">description</span>
-                        <span>Apply</span>
+                        <span class="material-symbols-outlined">calendar_month</span>
+                        <span>My Interviews</span>
                         <span class="status-dot"></span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">Submit Application</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            <?php echo $interviewCount; ?> interviews
+                        </span>
                     </div>
                     <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
                         <?php echo date('M d, Y H:i'); ?>
@@ -1811,196 +1619,151 @@ if ($applicantId) {
                 <!-- Page Header -->
                 <div class="page-header">
                     <div>
-                        <h1>Apply for Position</h1>
-                        <p>Submit your application for this job opportunity</p>
-                    </div>
-                    <div class="header-actions">
-                        <a href="job_search.php" class="btn btn-outline">
-                            <span class="material-symbols-outlined">arrow_back</span>
-                            Back to Jobs
-                        </a>
+                        <h1>My Interviews</h1>
+                        <p>View and manage all your scheduled interviews</p>
                     </div>
                 </div>
 
-                <!-- Success Message -->
-                <?php if (!empty($successMessage)): ?>
-                    <div class="message success">
-                        <span class="material-symbols-outlined">check_circle</span>
-                        <div>
-                            <strong><?php echo htmlspecialchars($successMessage); ?></strong>
-                            <span style="display:block; font-weight:400;">Redirecting to your applications...</span>
-                        </div>
-                        <a href="applications.php" class="btn btn-sm" style="background:rgba(22,163,74,0.15); color:#16a34a;">
-                            View Applications
-                        </a>
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-icon">
+                            <span class="material-symbols-outlined">calendar_month</span>
+                        </span>
+                        <div class="stat-number"><?php echo $interviewCount; ?></div>
+                        <div class="stat-label">Total Interviews</div>
                     </div>
-                <?php endif; ?>
-
-                <!-- Error Message -->
-                <?php if (!empty($errorMessage)): ?>
-                    <div class="message error">
-                        <span class="material-symbols-outlined">error</span>
-                        <div>
-                            <strong>Error:</strong>
-                            <span style="display:block; font-weight:400;"><?php echo $errorMessage; ?></span>
-                        </div>
+                    <div class="stat-card" style="border-left:4px solid var(--primary);">
+                        <span class="stat-icon" style="background:rgba(79,70,229,0.1); color:var(--primary);">
+                            <span class="material-symbols-outlined">upcoming</span>
+                        </span>
+                        <div class="stat-number" style="color:var(--primary);"><?php echo count($upcomingInterviews); ?></div>
+                        <div class="stat-label">Upcoming</div>
                     </div>
-                <?php endif; ?>
-
-                <!-- Job Summary -->
-                <div class="job-summary">
-                    <div class="job-title"><?php echo htmlspecialchars($job['title']); ?></div>
-                    <div class="job-company"><?php echo htmlspecialchars($job['company_name']); ?></div>
-                    <div class="job-meta">
-                        <span class="meta-item">
-                            <span class="material-symbols-outlined">work_history</span>
-                            <?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?>
+                    <div class="stat-card" style="border-left:4px solid var(--slate-500);">
+                        <span class="stat-icon" style="background:rgba(100,116,139,0.1); color:var(--slate-500);">
+                            <span class="material-symbols-outlined">history</span>
                         </span>
-                        <span class="meta-item">
-                            <span class="material-symbols-outlined">location_on</span>
-                            <?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?>
+                        <div class="stat-number" style="color:var(--slate-500);"><?php echo count($pastInterviews); ?></div>
+                        <div class="stat-label">Past</div>
+                    </div>
+                    <div class="stat-card" style="border-left:4px solid #22c55e;">
+                        <span class="stat-icon" style="background:rgba(34,197,94,0.1); color:#22c55e;">
+                            <span class="material-symbols-outlined">check_circle</span>
                         </span>
-                        <span class="meta-item">
-                            <span class="material-symbols-outlined">trending_up</span>
-                            <?php echo htmlspecialchars($job['experience_level'] ?? 'Entry'); ?>
-                        </span>
-                        <?php if (!empty($job['salary_range'])): ?>
-                            <span class="meta-item">
-                                <span class="material-symbols-outlined">payments</span>
-                                <?php echo htmlspecialchars($job['salary_range']); ?>
-                            </span>
-                        <?php endif; ?>
-                        <?php if (!empty($job['urgency'])): ?>
-                            <span class="meta-item">
-                                <span class="material-symbols-outlined">priority_high</span>
-                                <span style="text-transform:capitalize;"><?php echo htmlspecialchars($job['urgency']); ?> urgency</span>
-                            </span>
-                        <?php endif; ?>
+                        <div class="stat-number" style="color:#22c55e;">
+                            <?php 
+                            $completed = array_filter($interviews, function($i) { 
+                                return strtotime($i['interview_date']) <= time() && $i['status'] === 'interviewed';
+                            });
+                            echo count($completed);
+                            ?>
+                        </div>
+                        <div class="stat-label">Completed</div>
                     </div>
                 </div>
 
-                <!-- Application Form -->
-                <?php if ($alreadyApplied): ?>
-                    <div class="card">
-                        <div class="card-body already-applied">
-                            <span class="material-symbols-outlined">info</span>
-                            <h3>You've Already Applied</h3>
-                            <p>You have already submitted an application for this position. Please wait for the employer's response.</p>
-                            <a href="applications.php" class="btn btn-primary">
-                                <span class="material-symbols-outlined">work</span>
-                                View My Applications
-                            </a>
-                        </div>
+                <!-- Interviews List -->
+                <?php if (empty($interviews)): ?>
+                    <div class="empty-state">
+                        <span class="material-symbols-outlined">event_busy</span>
+                        <h4>No Interviews Scheduled</h4>
+                        <p>You don't have any interviews scheduled yet. Keep applying to jobs!</p>
+                        <br>
+                        <a href="job_search.php" class="btn btn-primary">
+                            <span class="material-symbols-outlined">search</span>
+                            Browse Jobs
+                        </a>
                     </div>
                 <?php else: ?>
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>
-                                <span class="material-symbols-outlined">edit_note</span>
-                                Application Form
-                            </h3>
-                            <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                Fields with <span style="color:#dc2626;">*</span> are required
-                            </span>
-                        </div>
-                        <div class="card-body">
-
-                            <form method="POST" action="" enctype="multipart/form-data" id="applyForm" novalidate>
-
-                                <!-- Cover Letter -->
-                                <div class="form-group">
-                                    <label for="coverLetter">Cover Letter <span class="required">*</span></label>
-                                    <textarea id="coverLetter" name="cover_letter" class="form-control" 
-                                              placeholder="Write a compelling cover letter explaining why you're the perfect candidate for this position..." 
-                                              rows="6" required><?php echo htmlspecialchars($coverLetter); ?></textarea>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">info</span>
-                                        Minimum 50 characters. Be specific about your skills and experience.
-                                    </div>
-                                    <div class="char-count"><span id="charCount">0</span> / 50+ characters</div>
+                    <?php foreach ($interviews as $interview): ?>
+                        <?php
+                        $isUpcoming = strtotime($interview['interview_date']) > time();
+                        $isToday = date('Y-m-d', strtotime($interview['interview_date'])) === date('Y-m-d');
+                        $statusClass = $isUpcoming ? 'upcoming' : 'past';
+                        $statusLabel = $isUpcoming ? 'Upcoming' : 'Past';
+                        if ($isToday && $isUpcoming) {
+                            $statusClass = 'today';
+                            $statusLabel = 'Today';
+                        }
+                        ?>
+                        <div class="interview-card <?php echo $isUpcoming ? 'upcoming' : 'past'; ?>">
+                            <div class="interview-header">
+                                <div>
+                                    <div class="job-title"><?php echo htmlspecialchars($interview['job_title']); ?></div>
+                                    <div class="company-name"><?php echo htmlspecialchars($interview['company_name']); ?></div>
                                 </div>
-
-                                <!-- Resume Upload -->
-                                <div class="form-group">
-                                    <label>Resume / CV <span class="required">*</span></label>
-                                    <div class="file-upload-wrapper">
-                                        <div class="file-upload-area" id="fileDropArea">
-                                            <div class="upload-icon">
-                                                <span class="material-symbols-outlined">upload_file</span>
-                                            </div>
-                                            <div class="upload-text">Drop your resume here or click to browse</div>
-                                            <div class="upload-hint">Supported formats: PDF, DOC, DOCX</div>
-                                            <div class="upload-formats">Maximum file size: 5MB</div>
-                                            
-                                            <div class="file-preview" id="filePreview">
-                                                <span class="file-icon">
-                                                    <span class="material-symbols-outlined">description</span>
-                                                </span>
-                                                <div class="file-info">
-                                                    <div class="file-name" id="fileName">resume.pdf</div>
-                                                    <div class="file-size" id="fileSize">0 KB</div>
-                                                </div>
-                                                <button type="button" class="file-remove" id="fileRemove">×</button>
+                                <span class="status-badge <?php echo $statusClass; ?>">
+                                    <?php echo $statusLabel; ?>
+                                </span>
+                            </div>
+                            <div class="interview-body">
+                                <div class="interview-details">
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">event</span>
+                                        <div>
+                                            <div class="detail-label">Date & Time</div>
+                                            <div class="detail-value"><?php echo date('l, F j, Y', strtotime($interview['interview_date'])); ?></div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo date('g:i A', strtotime($interview['interview_date'])); ?>
                                             </div>
                                         </div>
-                                        <input type="file" id="resume_file" name="resume" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
                                     </div>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">info</span>
-                                        Upload your most recent resume or CV
-                                    </div>
-                                </div>
-
-                                <!-- Profile Info -->
-                                <div class="form-group">
-                                    <label>Your Information</label>
-                                    <div class="profile-info-box">
-                                        <div class="user-details">
-                                            <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
-                                            <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">person</span>
+                                        <div>
+                                            <div class="detail-label">Interviewer</div>
+                                            <div class="detail-value"><?php echo htmlspecialchars($interview['hr_first_name'] . ' ' . $interview['hr_last_name']); ?></div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo htmlspecialchars($interview['hr_email']); ?>
+                                            </div>
                                         </div>
-                                        <?php if (empty($applicant['skills'])): ?>
-                                            <span class="status-badge incomplete">
-                                                <span class="material-symbols-outlined">warning</span>
-                                                Profile incomplete
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="status-badge complete">
-                                                <span class="material-symbols-outlined">check_circle</span>
-                                                Profile complete
-                                            </span>
-                                        <?php endif; ?>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">work</span>
+                                        <div>
+                                            <div class="detail-label">Job Details</div>
+                                            <div class="detail-value"><?php echo htmlspecialchars($interview['job_type'] ?? 'Full-time'); ?></div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo htmlspecialchars($interview['salary_range'] ?? 'Salary not specified'); ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">location_on</span>
+                                        <div>
+                                            <div class="detail-label">Location</div>
+                                            <div class="detail-value"><?php echo htmlspecialchars($interview['job_location'] ?? 'Remote'); ?></div>
+                                        </div>
                                     </div>
                                 </div>
+                            </div>
 
-                                <!-- Terms -->
-                                <div class="form-group">
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" id="agreeTerms" name="agree_terms" required>
-                                        <label for="agreeTerms">
-                                            I confirm that all the information provided is accurate and complete. 
-                                            I understand that false information may result in disqualification.
-                                            <a href="#" onclick="event.preventDefault(); alert('Terms and conditions will be displayed here.');">View Terms</a>
-                                        </label>
-                                    </div>
+                            <?php if (!empty($interview['interview_notes'])): ?>
+                                <div class="interview-notes">
+                                    <div class="notes-label">Interview Notes</div>
+                                    <div class="notes-text"><?php echo nl2br(htmlspecialchars($interview['interview_notes'])); ?></div>
                                 </div>
+                            <?php endif; ?>
 
-                                <!-- Form Actions -->
-                                <div class="form-actions">
-                                    <button type="submit" class="btn btn-success">
-                                        <span class="material-symbols-outlined">send</span>
-                                        Submit Application
+                            <div class="interview-actions">
+                                <?php if ($isUpcoming): ?>
+                                    <button class="btn btn-outline btn-sm" onclick="addToCalendar('<?php echo htmlspecialchars($interview['job_title']); ?>', '<?php echo $interview['interview_date']; ?>', '<?php echo htmlspecialchars($interview['interview_notes'] ?? ''); ?>')">
+                                        <span class="material-symbols-outlined">calendar_add_on</span>
+                                        Add to Calendar
                                     </button>
-                                    <a href="job_search.php" class="btn btn-outline">
-                                        <span class="material-symbols-outlined">cancel</span>
-                                        Cancel
-                                    </a>
-                                </div>
-
-                            </form>
-
+                                <?php endif; ?>
+                                <button class="btn btn-outline btn-sm" onclick="viewJobDetails(<?php echo $interview['job_id']; ?>)">
+                                    <span class="material-symbols-outlined">visibility</span>
+                                    View Job
+                                </button>
+                                <button class="btn btn-outline btn-sm" onclick="contactHR('<?php echo htmlspecialchars($interview['hr_email']); ?>', '<?php echo htmlspecialchars($interview['job_title']); ?>')">
+                                    <span class="material-symbols-outlined">email</span>
+                                    Contact HR
+                                </button>
+                            </div>
                         </div>
-                    </div>
+                    <?php endforeach; ?>
                 <?php endif; ?>
 
             </div>
@@ -2085,152 +1848,200 @@ if ($applicantId) {
         });
 
         // =============================================
-        // 4. CHARACTER COUNTER
+        // 4. NOTIFICATIONS
         // =============================================
-        const coverLetter = document.getElementById('coverLetter');
-        const charCount = document.getElementById('charCount');
+        const notificationBtn = document.getElementById('notificationBtn');
+        const notificationDropdown = document.getElementById('notificationDropdown');
+        const notificationList = document.getElementById('notificationList');
 
-        if (coverLetter && charCount) {
-            function updateCharCount() {
-                const length = coverLetter.value.length;
-                charCount.textContent = length;
-                if (length >= 50) {
-                    charCount.style.color = '#22c55e';
-                } else {
-                    charCount.style.color = '#dc2626';
+        notificationBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const isOpen = notificationDropdown.classList.contains('open');
+            if (!isOpen) {
+                loadNotifications();
+            }
+            notificationDropdown.classList.toggle('open');
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!notificationBtn.contains(e.target) && !notificationDropdown.contains(e.target)) {
+                notificationDropdown.classList.remove('open');
+            }
+        });
+
+        function loadNotifications() {
+            fetch('get_notifications.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.notifications.length > 0) {
+                        let html = '';
+                        data.notifications.forEach(notif => {
+                            const isUnread = !notif.is_read ? 'unread' : '';
+                            html += `
+                                <div class="notification-item ${isUnread}" onclick="markNotificationRead(${notif.id})">
+                                    <div class="notif-icon">
+                                        <span class="material-symbols-outlined">${notif.icon || 'info'}</span>
+                                    </div>
+                                    <div class="notif-content">
+                                        <div class="notif-title">${escapeHtml(notif.title)}</div>
+                                        <div class="notif-text">${escapeHtml(notif.message)}</div>
+                                        <div class="notif-time">${timeAgo(notif.created_at)}</div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        notificationList.innerHTML = html;
+                    } else {
+                        notificationList.innerHTML = `
+                            <div class="notification-empty">
+                                <span class="material-symbols-outlined">notifications_off</span>
+                                <p>No notifications yet</p>
+                            </div>
+                        `;
+                    }
+                    // Update badge
+                    const badge = document.getElementById('notifBadge');
+                    if (data.unread_count > 0) {
+                        badge.textContent = data.unread_count;
+                        badge.classList.remove('hidden');
+                    } else {
+                        badge.classList.add('hidden');
+                    }
+                })
+                .catch(error => {
+                    notificationList.innerHTML = `
+                        <div class="notification-empty">
+                            <span class="material-symbols-outlined">error</span>
+                            <p>Failed to load notifications</p>
+                        </div>
+                    `;
+                });
+        }
+
+        function markNotificationRead(id) {
+            fetch('mark_notification.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'id=' + id
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNotifications();
                 }
-            }
-            
-            coverLetter.addEventListener('input', updateCharCount);
-            updateCharCount();
+            });
+        }
+
+        function markAllNotifications() {
+            fetch('mark_notification.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=mark_all'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNotifications();
+                }
+            });
         }
 
         // =============================================
-        // 5. FILE UPLOAD
+        // 5. REAL-TIME NOTIFICATION CHECK (Polling) - 1 SECOND
         // =============================================
-        const fileInput = document.getElementById('resume_file');
-        const dropArea = document.getElementById('fileDropArea');
-        const filePreview = document.getElementById('filePreview');
-        const fileName = document.getElementById('fileName');
-        const fileSize = document.getElementById('fileSize');
-        const fileRemove = document.getElementById('fileRemove');
-
-        // Click to upload
-        dropArea.addEventListener('click', function() {
-            fileInput.click();
-        });
-
-        // File selected
-        fileInput.addEventListener('change', function() {
-            if (this.files && this.files[0]) {
-                showFilePreview(this.files[0]);
-            }
-        });
-
-        // Drag and drop
-        dropArea.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            this.classList.add('dragover');
-        });
-
-        dropArea.addEventListener('dragleave', function(e) {
-            e.preventDefault();
-            this.classList.remove('dragover');
-        });
-
-        dropArea.addEventListener('drop', function(e) {
-            e.preventDefault();
-            this.classList.remove('dragover');
-            
-            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                fileInput.files = e.dataTransfer.files;
-                showFilePreview(e.dataTransfer.files[0]);
-            }
-        });
-
-        function showFilePreview(file) {
-            const validTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-            const ext = file.name.split('.').pop().toLowerCase();
-            const validExt = ['pdf', 'doc', 'docx'];
-            
-            if (!validExt.includes(ext)) {
-                showToast('Please upload a PDF, DOC, or DOCX file.', 'error');
-                fileInput.value = '';
-                return;
-            }
-            
-            if (file.size > 5 * 1024 * 1024) {
-                showToast('File size must be less than 5MB.', 'error');
-                fileInput.value = '';
-                return;
-            }
-            
-            fileName.textContent = file.name;
-            fileSize.textContent = (file.size / 1024).toFixed(1) + ' KB';
-            filePreview.classList.add('show');
+        function checkNewNotifications() {
+            fetch('check_notifications.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.has_new) {
+                        // Update badge
+                        const badge = document.getElementById('notifBadge');
+                        badge.textContent = data.unread_count;
+                        badge.classList.remove('hidden');
+                        
+                        // Show toast for new interview notification
+                        if (data.latest && data.latest.type === 'interview_scheduled') {
+                            showToast('New interview scheduled for ' + data.latest.job_title, 'info');
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.log('Notification check failed:', error);
+                });
         }
 
-        fileRemove.addEventListener('click', function() {
-            fileInput.value = '';
-            filePreview.classList.remove('show');
+        // Check for new notifications every 1 second (1000ms)
+        setInterval(checkNewNotifications, 1000);
+
+        // Initial load of notifications
+        document.addEventListener('DOMContentLoaded', function() {
+            <?php if ($hasNewNotifications): ?>
+            setTimeout(function() {
+                showToast('You have a new interview scheduled!', 'info');
+            }, 1000);
+            <?php endif; ?>
         });
 
         // =============================================
-        // 6. FORM VALIDATION
+        // 6. ADD TO CALENDAR
         // =============================================
-        document.getElementById('applyForm').addEventListener('submit', function(e) {
-            const coverLetter = document.getElementById('coverLetter');
-            const fileInput = document.getElementById('resume_file');
-            const agreeTerms = document.getElementById('agreeTerms');
-            let errors = [];
-            let hasError = false;
-
-            // Reset styles
-            coverLetter.classList.remove('is-invalid');
-            agreeTerms.style.borderColor = '';
-
-            // Validate cover letter
-            if (!coverLetter.value.trim() || coverLetter.value.trim().length < 50) {
-                errors.push('Cover letter must be at least 50 characters.');
-                coverLetter.classList.add('is-invalid');
-                hasError = true;
-            }
-
-            // Validate file
-            if (!fileInput.files || !fileInput.files[0]) {
-                errors.push('Please upload your resume/CV.');
-                dropArea.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            // Validate terms
-            if (!agreeTerms.checked) {
-                errors.push('You must agree to the terms to proceed.');
-                agreeTerms.style.outline = '2px solid #dc2626';
-                hasError = true;
-            }
-
-            if (hasError) {
-                e.preventDefault();
-                showToast('Please fix the following errors:\n• ' + errors.join('\n• '), 'error');
-            }
-        });
-
-        // Clear error styling on input
-        document.getElementById('coverLetter').addEventListener('input', function() {
-            this.classList.remove('is-invalid');
-        });
-
-        document.getElementById('resume_file').addEventListener('change', function() {
-            document.getElementById('fileDropArea').style.borderColor = '';
-        });
-
-        document.getElementById('agreeTerms').addEventListener('change', function() {
-            this.style.outline = '';
-        });
+        function addToCalendar(jobTitle, interviewDate, notes) {
+            const date = new Date(interviewDate);
+            const formattedDate = date.toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            // Create Google Calendar link
+            const start = date.toISOString().replace(/-|:|\.\d+/g, '');
+            const end = new Date(date.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
+            const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Interview: ${encodeURIComponent(jobTitle)}&dates=${start}/${end}&details=${encodeURIComponent('Interview Notes: ' + notes)}`;
+            
+            window.open(url, '_blank');
+        }
 
         // =============================================
-        // 7. TOAST SYSTEM
+        // 7. VIEW JOB DETAILS
+        // =============================================
+        function viewJobDetails(jobId) {
+            window.location.href = 'job_details.php?id=' + jobId;
+        }
+
+        // =============================================
+        // 8. CONTACT HR
+        // =============================================
+        function contactHR(hrEmail, jobTitle) {
+            window.location.href = 'mailto:' + hrEmail + '?subject=Interview for ' + encodeURIComponent(jobTitle);
+        }
+
+        // =============================================
+        // 9. UTILITY FUNCTIONS
+        // =============================================
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function timeAgo(date) {
+            const now = new Date();
+            const past = new Date(date);
+            const diff = Math.floor((now - past) / 1000);
+            
+            if (diff < 60) return 'Just now';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+            return past.toLocaleDateString();
+        }
+
+        // =============================================
+        // 10. TOAST SYSTEM
         // =============================================
         function showToast(message, type = 'info') {
             const existingToast = document.querySelector('.toast');
@@ -2238,10 +2049,6 @@ if ($applicantId) {
 
             const toast = document.createElement('div');
             toast.className = 'toast ' + type;
-            
-            if (message.includes('\n')) {
-                toast.style.whiteSpace = 'pre-line';
-            }
             toast.textContent = message;
             document.body.appendChild(toast);
 
@@ -2254,7 +2061,7 @@ if ($applicantId) {
         }
 
         // =============================================
-        // 8. RESPONSIVE HANDLING
+        // 11. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -2278,17 +2085,18 @@ if ($applicantId) {
         });
 
         // =============================================
-        // 9. KEYBOARD ACCESSIBILITY
+        // 12. KEYBOARD ACCESSIBILITY
         // =============================================
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 closeMobileSidebar();
                 profileToggle.classList.remove('open');
                 profileMenu.classList.remove('open');
+                notificationDropdown.classList.remove('open');
             }
         });
 
-        console.log('📝 ISMERS Apply Page loaded successfully!');
+        console.log('Interview Management loaded successfully.');
     </script>
 
 </body>

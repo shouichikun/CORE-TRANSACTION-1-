@@ -1,0 +1,18 @@
+[21-Jul-2026 16:08:11 Asia/Manila] AJAX Request: action=move_stage, id=2, status=shortlisted
+[21-Jul-2026 16:08:13 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 16:08:24 Asia/Manila] AJAX Request: action=move_stage, id=2, status=interviewed
+[21-Jul-2026 16:08:26 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 16:08:35 Asia/Manila] AJAX Request: action=move_stage, id=2, status=shortlisted
+[21-Jul-2026 16:08:37 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 17:34:18 Asia/Manila] AJAX Request: action=move_stage, id=5, status=shortlisted
+[21-Jul-2026 17:34:20 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 17:34:20 Asia/Manila] AJAX Request: action=move_stage, id=5, status=pending
+[22-Jul-2026 11:37:00 Asia/Manila] AJAX Request: action=move_stage, id=4, status=scheduled
+[22-Jul-2026 11:37:03 Asia/Manila] AJAX Request: action=move_stage, id=4, status=pending
+[22-Jul-2026 12:36:55 Asia/Manila] AJAX Request: action=move_stage, id=2, status=pending
+[22-Jul-2026 12:38:33 Asia/Manila] AJAX Request: action=move_stage, id=4, status=pending
+[22-Jul-2026 12:43:49 Asia/Manila] AJAX Request: action=move_stage, id=2, status=pending
+[26-Jul-2026 16:18:23 Asia/Manila] PHP Warning:  Undefined variable $statusCounts in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[26-Jul-2026 16:18:23 Asia/Manila] PHP Warning:  Trying to access array offset on value of type null in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[26-Jul-2026 16:18:30 Asia/Manila] PHP Warning:  Undefined variable $statusCounts in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[26-Jul-2026 16:18:30 Asia/Manila] PHP Warning:  Trying to access array offset on value of type null in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020

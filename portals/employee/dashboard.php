@@ -1,8 +1,7 @@
 <?php
-// portals/applicant/apply.php - Apply for Job
+// portals/employee/dashboard.php - Employee Dashboard
 session_start();
 
-// Include configuration file
 require_once '../../app/config.php';
 
 // Check if user is logged in
@@ -12,184 +11,80 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
 }
 
 // Check if user has the correct role
-if ($_SESSION['role'] !== 'applicant') {
+if ($_SESSION['role'] !== 'employee') {
     header('Location: ../../login.php');
     exit;
 }
 
-// Get user data
 $userId = $_SESSION['user_id'];
-$fullName = $_SESSION['full_name'] ?? 'Applicant';
+$fullName = $_SESSION['full_name'] ?? 'Employee';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 
-// Database helper function (if not already in config.php)
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn;
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
-        }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
+// Get employee data
+$employee = getEmployeeByUserId($userId);
+$employeeId = $employee['id'] ?? 0;
+
+if ($employeeId <= 0) {
+    // If employee record doesn't exist, create it
+    $insertSql = "INSERT INTO employees (user_id, first_name, last_name, email, hire_date, status, created_at) 
+                  VALUES (?, ?, ?, ?, NOW(), 'active', NOW())";
+    $newId = insertRecord($insertSql, [
+        $userId,
+        $firstName,
+        $_SESSION['last_name'] ?? 'User',
+        $email
+    ], "isss");
+    
+    if ($newId) {
+        $employee = getEmployeeByUserId($userId);
+        $employeeId = $employee['id'] ?? 0;
     }
 }
 
-// Get applicant data
-$applicant = getApplicantByUserId($userId);
-$applicantId = $applicant['id'] ?? 0;
+// =============================================
+// FIXED: Get employee details with job info - removed a.hired_at
+// =============================================
+$employeeDetails = getRecord("
+    SELECT e.*, 
+           jo.id as job_id, jo.title as job_title, jo.description as job_description,
+           jo.location as job_location, jo.job_type, jo.salary_range,
+           c.company_name, c.id as company_id,
+           a.id as application_id, a.interview_date, a.applied_at as hired_at,
+           u.first_name as hr_first_name, u.last_name as hr_last_name
+    FROM employees e
+    LEFT JOIN applications a ON e.application_id = a.id
+    LEFT JOIN job_orders jo ON a.job_order_id = jo.id
+    LEFT JOIN clients c ON jo.client_id = c.id
+    LEFT JOIN users u ON jo.created_by = u.id
+    WHERE e.user_id = ?
+", [$userId], "i");
 
-// Get applications count for the badge
-$applications = [];
-if ($applicantId) {
-    $applications = getApplicationsByApplicant($applicantId);
-}
-$totalApplications = count($applications);
+// Get attendance for today
+$todayAttendance = getEmployeeTodayAttendance($userId);
 
-// Get job ID from URL
-$jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
+$hasCheckedIn = $todayAttendance && $todayAttendance['check_in_time'] && !$todayAttendance['check_out_time'];
+$hasCheckedOut = $todayAttendance && $todayAttendance['check_out_time'];
 
-// If no job ID, redirect to job search
-if ($jobId <= 0) {
-    header('Location: job_search.php');
-    exit;
-}
+// Get attendance stats for the month
+$attendanceStats = getEmployeeAttendanceStats($userId);
 
-// Get job details
-$job = getRecord("SELECT jo.*, c.company_name FROM job_orders jo 
-                  JOIN clients c ON jo.client_id = c.id 
-                  WHERE jo.id = ?", [$jobId], "i");
+// Get recent attendance records
+$recentAttendance = getEmployeeRecentAttendance($userId, 7);
 
-// If job not found or not open, redirect
-if (!$job || !in_array($job['status'], ['open', 'ongoing'])) {
-    header('Location: job_search.php');
-    exit;
-}
+// Get notification count for badge
+$notificationCount = getRecord("
+    SELECT COUNT(*) as count FROM notifications 
+    WHERE user_id = ? AND is_read = 0
+", [$userId], "i");
+$totalNotifications = $notificationCount['count'] ?? 0;
 
-// Check if already applied
-$alreadyApplied = false;
-if ($applicantId) {
-    $existingApplication = getRecord(
-        "SELECT id FROM applications WHERE applicant_id = ? AND job_order_id = ?",
-        [$applicantId, $jobId],
-        "ii"
-    );
-    if ($existingApplication) {
-        $alreadyApplied = true;
-    }
-}
-
-// Initialize variables
-$successMessage = '';
-$errorMessage = '';
-$coverLetter = '';
-$resumePath = '';
-$uploadError = '';
-
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$alreadyApplied) {
-    $coverLetter = trim($_POST['cover_letter'] ?? '');
-    $agreeTerms = isset($_POST['agree_terms']);
-    
-    // Handle file upload
-    $resumeFile = $_FILES['resume'] ?? null;
-    $uploadSuccess = false;
-    
-    // Validate
-    $errors = [];
-    
-    if (empty($coverLetter)) {
-        $errors[] = 'Please write a cover letter.';
-    }
-    if (strlen($coverLetter) < 50) {
-        $errors[] = 'Cover letter must be at least 50 characters.';
-    }
-    
-    // Resume validation
-    if (!$resumeFile || $resumeFile['error'] === UPLOAD_ERR_NO_FILE) {
-        $errors[] = 'Please upload your resume/CV.';
-    } elseif ($resumeFile['error'] !== UPLOAD_ERR_OK) {
-        $errors[] = 'Error uploading file. Please try again.';
-    } else {
-        // Validate file type
-        $allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-        $fileType = mime_content_type($resumeFile['tmp_name']);
-        
-        if (!in_array($fileType, $allowedTypes)) {
-            $errors[] = 'Please upload a PDF, DOC, or DOCX file.';
-        }
-        
-        // Validate file size (max 5MB)
-        if ($resumeFile['size'] > 5 * 1024 * 1024) {
-            $errors[] = 'File size must be less than 5MB.';
-        }
-        
-        // Upload file if no errors
-        if (empty($errors)) {
-            $uploadDir = '../../uploads/resumes/';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
-            }
-            
-            $fileExtension = pathinfo($resumeFile['name'], PATHINFO_EXTENSION);
-            $fileName = 'resume_' . $userId . '_' . $jobId . '_' . time() . '.' . $fileExtension;
-            $filePath = $uploadDir . $fileName;
-            
-            if (move_uploaded_file($resumeFile['tmp_name'], $filePath)) {
-                $resumePath = 'uploads/resumes/' . $fileName;
-                $uploadSuccess = true;
-            } else {
-                $errors[] = 'Failed to upload resume. Please try again.';
-            }
-        }
-    }
-    
-    if (!$agreeTerms) {
-        $errors[] = 'You must agree to the terms to proceed.';
-    }
-    
-    // Check if applicant has a complete profile
-    if (empty($applicant['skills'])) {
-        $errors[] = 'Please complete your profile skills before applying. <a href="edit_profile.php" style="color:var(--primary-light);">Edit Profile</a>';
-    }
-    
-    if (empty($errors) && $uploadSuccess) {
-        // Insert application
-        $sql = "INSERT INTO applications (applicant_id, job_order_id, cover_letter, resume_path, status, face_scan_verified, applied_at) 
-                VALUES (?, ?, ?, ?, 'pending', 0, NOW())";
-        
-        $result = insertRecord($sql, [$applicantId, $jobId, $coverLetter, $resumePath], "iiss");
-        
-        if ($result) {
-            $successMessage = 'Application submitted successfully!';
-            
-            // Log activity
-            logActivity($userId, 'Applied for Job', 'application', $result, 'Applied for: ' . $job['title'] . ' | Resume: ' . $resumePath);
-            
-            // Redirect after 2 seconds
-            header('Refresh: 2; URL=applications.php');
-        } else {
-            $errorMessage = 'Failed to submit application. Please try again.';
-            // Clean up uploaded file if application fails
-            if (file_exists($filePath)) {
-                unlink($filePath);
-            }
-        }
-    } else {
-        $errorMessage = implode('<br>', $errors);
-    }
-}
+// Get upcoming schedule (if any)
+$upcomingSchedule = getEmployeeSchedule($employeeId, 5);
 
 // Role labels for display
 $roleLabels = [
-    'admin' => 'Admin',
+    'admin' => 'Administrator',
     'hr_manager' => 'HR Manager',
     'recruiter' => 'Recruiter',
     'client' => 'Client',
@@ -198,13 +93,13 @@ $roleLabels = [
     'supervisor' => 'Supervisor'
 ];
 
-$interviewCount = 0;
-if ($applicantId) {
-    $interviewResult = getRecord("
-        SELECT COUNT(*) as count FROM applications 
-        WHERE applicant_id = ? AND interview_date IS NOT NULL
-    ", [$applicantId], "i");
-    $interviewCount = $interviewResult['count'] ?? 0;
+// Get current time for greeting
+$currentHour = date('H');
+$greeting = 'Good Evening';
+if ($currentHour < 12) {
+    $greeting = 'Good Morning';
+} elseif ($currentHour < 18) {
+    $greeting = 'Good Afternoon';
 }
 ?>
 <!DOCTYPE html>
@@ -212,12 +107,12 @@ if ($applicantId) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Apply for Job - ISMERS</title>
+    <title>Employee Dashboard - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - APPLY FOR JOB
+           MATERIAL 3 DESIGN SYSTEM - EMPLOYEE DASHBOARD
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -253,6 +148,7 @@ if ($applicantId) {
             --success-color: #22c55e;
             --error-color: #dc2626;
             --warning-color: #f59e0b;
+            --info-color: #2563eb;
         }
 
         * {
@@ -809,7 +705,7 @@ if ($applicantId) {
         }
 
         .main-scroll .container {
-            max-width: 56rem;
+            max-width: 80rem;
             margin: 0 auto;
         }
 
@@ -858,12 +754,6 @@ if ($applicantId) {
             height: 0.5rem;
             border-radius: 50%;
             background: #22c55e;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
         }
 
         /* =============================================
@@ -895,12 +785,6 @@ if ($applicantId) {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.25rem;
-        }
-
-        .page-header .header-actions {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
         }
 
         /* =============================================
@@ -974,66 +858,113 @@ if ($applicantId) {
             font-size: 1.125rem;
         }
 
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
-        }
-
         /* =============================================
-           JOB SUMMARY
+           WELCOME CARD
         ============================================= */
-        .job-summary {
+        .welcome-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
-            padding: 1.25rem 1.5rem;
-            margin-bottom: 1.5rem;
             box-shadow: var(--shadow-sm);
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
         }
 
-        .job-summary .job-title {
-            font-size: 1.25rem;
+        @media (min-width: 640px) {
+            .welcome-card {
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+            }
+        }
+
+        .welcome-card .welcome-text h2 {
+            font-size: 1.5rem;
             font-weight: 700;
             color: var(--text-on-surface);
         }
 
-        .job-summary .job-company {
-            font-size: 0.9375rem;
+        .welcome-card .welcome-text p {
+            font-size: 0.875rem;
             color: var(--text-on-surface-variant);
-            margin-bottom: 0.5rem;
         }
 
-        .job-summary .job-meta {
+        .welcome-card .welcome-text .company-name {
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .welcome-card .welcome-actions {
             display: flex;
+            gap: 0.75rem;
             flex-wrap: wrap;
-            gap: 0.75rem 1.25rem;
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .job-summary .job-meta .meta-item {
-            display: flex;
-            align-items: center;
-            gap: 0.375rem;
-        }
-
-        .job-summary .job-meta .meta-item .material-symbols-outlined {
-            font-size: 1rem;
         }
 
         /* =============================================
-           FORM CARD
+           STATS CARDS
         ============================================= */
-        .card {
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            padding: 1.25rem 1.5rem;
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            transition: none;
+        }
+
+        .stat-card .stat-number {
+            font-size: 1.75rem;
+            font-weight: 800;
+            color: var(--text-on-surface);
+        }
+
+        .stat-card .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+
+        .stat-card .stat-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            float: right;
+        }
+
+        .stat-card .stat-icon .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+
+        /* =============================================
+           ATTENDANCE SECTION
+        ============================================= */
+        .section-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
         }
 
-        .card-header {
+        .section-card .section-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
@@ -1043,380 +974,153 @@ if ($applicantId) {
             gap: 0.75rem;
         }
 
-        .card-header h3 {
-            font-size: 1.125rem;
+        .section-card .section-header h3 {
+            font-size: 1rem;
             font-weight: 700;
             display: flex;
             align-items: center;
             gap: 0.625rem;
         }
 
-        .card-header h3 .material-symbols-outlined {
+        .section-card .section-header h3 .material-symbols-outlined {
             font-size: 1.25rem;
             color: var(--primary);
         }
 
-        .card-body {
+        .section-card .section-body {
             padding: 1.5rem;
         }
 
-        /* =============================================
-           FORM ELEMENTS
-        ============================================= */
-        .form-group {
-            margin-bottom: 1.25rem;
+        /* ===== ATTENDANCE STATUS ===== */
+        .attendance-status {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
         }
 
-        .form-group:last-child {
-            margin-bottom: 0;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-
-        .form-group label .required {
-            color: #dc2626;
-            margin-left: 0.125rem;
-        }
-
-        .form-group .form-control {
-            width: 100%;
-            padding: 0.625rem 0.875rem;
-            border: 2px solid var(--slate-200);
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-        }
-
-        .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
-        }
-
-        .form-group .form-control::placeholder {
-            color: var(--text-on-surface-variant);
-            opacity: 0.6;
-        }
-
-        .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 150px;
-        }
-
-        .form-group .form-control.is-invalid {
-            border-color: #dc2626;
-        }
-
-        .form-group .helper-text {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
-
-        .form-group .helper-text .material-symbols-outlined {
-            font-size: 0.875rem;
-            vertical-align: middle;
-        }
-
-        .form-group .char-count {
-            text-align: right;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
-
-        /* =============================================
-           FILE UPLOAD
-        ============================================= */
-        .file-upload-wrapper {
-            position: relative;
-        }
-
-        .file-upload-area {
-            border: 2px dashed var(--slate-200);
-            border-radius: 0.75rem;
-            padding: 2rem 1.5rem;
-            text-align: center;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            background: var(--bg-surface-low);
-        }
-
-        .file-upload-area:hover {
-            border-color: var(--primary);
-            background: rgba(79, 70, 229, 0.04);
-        }
-
-        .file-upload-area.dragover {
-            border-color: var(--primary);
-            background: rgba(79, 70, 229, 0.08);
-        }
-
-        .file-upload-area .upload-icon .material-symbols-outlined {
-            font-size: 3rem;
-            color: var(--text-on-surface-variant);
-            display: block;
-            margin-bottom: 0.5rem;
-        }
-
-        .file-upload-area .upload-text {
-            font-size: 0.9375rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .file-upload-area .upload-hint {
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
-
-        .file-upload-area .upload-formats {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-            opacity: 0.6;
-        }
-
-        .file-upload-area .file-preview {
-            display: none;
+        .attendance-status .status-item {
+            display: flex;
             align-items: center;
             gap: 0.75rem;
-            padding: 0.75rem 1rem;
-            background: var(--bg-surface);
-            border-radius: 0.75rem;
-            border: 1px solid var(--success-color);
-            margin-top: 0.75rem;
         }
 
-        .file-upload-area .file-preview.show {
-            display: flex;
-        }
-
-        .file-upload-area .file-preview .file-icon .material-symbols-outlined {
-            font-size: 2rem;
-            color: var(--success-color);
-        }
-
-        .file-upload-area .file-preview .file-info {
-            flex: 1;
-            text-align: left;
-        }
-
-        .file-upload-area .file-preview .file-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .file-upload-area .file-preview .file-size {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .file-upload-area .file-preview .file-remove {
-            background: none;
-            border: none;
-            color: var(--error-color);
-            cursor: pointer;
-            padding: 0.25rem;
-            font-size: 1.25rem;
-            transition: all var(--transition-fast);
-        }
-
-        .file-upload-area .file-preview .file-remove:hover {
-            opacity: 0.7;
-            transform: scale(1.1);
-        }
-
-        #resume_file {
-            display: none;
-        }
-
-        /* =============================================
-           CHECKBOX
-        ============================================= */
-        .checkbox-group {
-            display: flex;
-            align-items: flex-start;
-            gap: 0.625rem;
-            padding: 0.5rem 0;
-        }
-
-        .checkbox-group input[type="checkbox"] {
-            width: 1.125rem;
-            height: 1.125rem;
-            margin-top: 0.125rem;
-            accent-color: var(--primary);
-            cursor: pointer;
+        .attendance-status .status-item .status-dot {
+            width: 0.75rem;
+            height: 0.75rem;
+            border-radius: 50%;
             flex-shrink: 0;
         }
 
-        .checkbox-group label {
-            font-weight: 400;
+        .attendance-status .status-item .status-dot.checked-in {
+            background: var(--success-color);
+        }
+
+        .attendance-status .status-item .status-dot.checked-out {
+            background: var(--slate-500);
+        }
+
+        .attendance-status .status-item .status-dot.absent {
+            background: var(--error-color);
+        }
+
+        .attendance-status .status-item .status-dot.late {
+            background: var(--warning-color);
+        }
+
+        .attendance-status .status-item .status-label {
             font-size: 0.875rem;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
+            color: var(--text-on-surface);
         }
 
-        .checkbox-group label a {
-            color: var(--primary);
-            font-weight: 600;
-        }
-
-        .checkbox-group label a:hover {
-            text-decoration: underline;
-        }
-
-        /* =============================================
-           PROFILE INFO BOX
-        ============================================= */
-        .profile-info-box {
-            background: var(--bg-surface-low);
-            padding: 1rem 1.25rem;
-            border-radius: 0.75rem;
-            border: 1px solid var(--slate-200);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-
-        .profile-info-box .user-details .user-name {
+        .attendance-status .status-item .status-value {
+            font-size: 0.875rem;
             font-weight: 600;
             color: var(--text-on-surface);
         }
 
-        .profile-info-box .user-details .user-email {
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .profile-info-box .status-badge {
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: var(--radius-full);
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-
-        .profile-info-box .status-badge.complete {
-            background: #f0fdf4;
-            color: #22c55e;
-        }
-
-        .profile-info-box .status-badge.incomplete {
-            background: #fef2f2;
-            color: #dc2626;
-        }
-
-        .profile-info-box .status-badge .material-symbols-outlined {
+        /* ===== ATTENDANCE TABLE ===== */
+        .attendance-table {
+            width: 100%;
+            border-collapse: collapse;
             font-size: 0.875rem;
         }
 
-        /* =============================================
-           ALREADY APPLIED
-        ============================================= */
-        .already-applied {
-            text-align: center;
-            padding: 3rem 1.5rem;
+        .attendance-table thead {
+            background: var(--bg-surface-low);
         }
 
-        .already-applied .material-symbols-outlined {
-            font-size: 4rem;
-            color: var(--warning-color);
+        .attendance-table th {
+            padding: 0.625rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            border-bottom: 2px solid var(--slate-200);
+        }
+
+        .attendance-table td {
+            padding: 0.625rem 0.75rem;
+            border-bottom: 1px solid var(--slate-200);
+            vertical-align: middle;
+        }
+
+        .attendance-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .attendance-table .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .attendance-table .status-badge.present {
+            background: #d1fae5;
+            color: #059669;
+        }
+
+        .attendance-table .status-badge.absent {
+            background: #fecaca;
+            color: #dc2626;
+        }
+
+        .attendance-table .status-badge.late {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        /* =============================================
+           EMPTY STATE
+        ============================================= */
+        .empty-state {
+            text-align: center;
+            padding: 2rem 1.5rem;
+        }
+
+        .empty-state .material-symbols-outlined {
+            font-size: 3rem;
+            color: var(--slate-200);
             display: block;
             margin-bottom: 0.75rem;
         }
 
-        .already-applied h3 {
-            font-size: 1.25rem;
+        .empty-state h4 {
+            font-size: 1rem;
             font-weight: 700;
             color: var(--text-on-surface);
             margin-bottom: 0.25rem;
         }
 
-        .already-applied p {
-            color: var(--text-on-surface-variant);
-            margin-bottom: 1rem;
-        }
-
-        /* =============================================
-           MESSAGES
-        ============================================= */
-        .message {
-            padding: 0.875rem 1.25rem;
-            border-radius: 0.75rem;
+        .empty-state p {
             font-size: 0.875rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: flex-start;
-            gap: 0.75rem;
-            border: 1px solid transparent;
-        }
-
-        .message .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-            margin-top: 0.0625rem;
-        }
-
-        .message.success {
-            background: #f0fdf4;
-            border-color: #bbf7d0;
-            color: #16a34a;
-        }
-
-        .message.success .material-symbols-outlined {
-            color: #16a34a;
-        }
-
-        .message.error {
-            background: #fef2f2;
-            border-color: #fecaca;
-            color: #dc2626;
-        }
-
-        .message.error .material-symbols-outlined {
-            color: #dc2626;
-        }
-
-        .message.info {
-            background: #dbeafe;
-            border-color: #93c5fd;
-            color: #2563eb;
-        }
-
-        .message.info .material-symbols-outlined {
-            color: #2563eb;
-        }
-
-        .message .btn {
-            margin-left: auto;
-            flex-shrink: 0;
-        }
-
-        /* =============================================
-           FORM ACTIONS
-        ============================================= */
-        .form-actions {
-            display: flex;
-            gap: 0.75rem;
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--slate-200);
-            flex-wrap: wrap;
+            color: var(--text-on-surface-variant);
         }
 
         /* =============================================
@@ -1538,35 +1242,30 @@ if ($applicantId) {
                 display: none;
             }
 
-            .job-summary {
-                padding: 1rem 1.25rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
             }
 
-            .job-summary .job-title {
-                font-size: 1.125rem;
-            }
-
-            .card-body {
-                padding: 1rem 1.25rem;
-            }
-
-            .form-actions {
+            .attendance-status {
                 flex-direction: column;
+                gap: 0.75rem;
             }
 
-            .form-actions .btn {
-                width: 100%;
-                justify-content: center;
+            .attendance-table {
+                font-size: 0.75rem;
             }
 
-            .file-upload-area {
-                padding: 1.5rem 1rem;
+            .attendance-table th,
+            .attendance-table td {
+                padding: 0.375rem 0.5rem;
             }
 
-            .message .btn {
-                margin-left: 0;
-                width: 100%;
-                justify-content: center;
+            .welcome-card {
+                padding: 1.25rem;
+            }
+
+            .welcome-card .welcome-text h2 {
+                font-size: 1.25rem;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1616,47 +1315,30 @@ if ($applicantId) {
                 font-size: 1.5rem;
             }
 
-            .job-summary .job-title {
-                font-size: 1rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.5rem;
             }
 
-            .job-summary .job-meta {
-                font-size: 0.75rem;
-                gap: 0.5rem 0.75rem;
-            }
-
-            .card-header {
+            .stat-card {
                 padding: 0.75rem 1rem;
             }
 
-            .card-header h3 {
-                font-size: 1rem;
+            .stat-card .stat-number {
+                font-size: 1.25rem;
             }
 
-            .card-body {
+            .section-card .section-header {
                 padding: 0.75rem 1rem;
             }
 
-            .form-group {
-                margin-bottom: 0.875rem;
+            .section-card .section-body {
+                padding: 0.75rem 1rem;
             }
 
-            .file-upload-area .upload-icon .material-symbols-outlined {
-                font-size: 2.5rem;
-            }
-
-            .file-upload-area .upload-text {
-                font-size: 0.875rem;
-            }
-
-            .profile-info-box {
-                flex-direction: column;
-                align-items: stretch;
-                text-align: center;
-            }
-
-            .profile-info-box .status-badge {
-                justify-content: center;
+            .attendance-table {
+                font-size: 0.6875rem;
+                min-width: 300px;
             }
 
             .toast {
@@ -1697,17 +1379,17 @@ if ($applicantId) {
         <div class="px-5 pt-6 pb-5 border-b border-slate-200">
             <div class="sidebar-brand-card">
                 <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">person</span>
+                    <span class="material-symbols-outlined">badge</span>
                 </span>
                 <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Applicant Portal</p>
+                <p class="sidebar-brand-category">Employee Portal</p>
             </div>
         </div>
 
         <nav class="sidebar-nav">
             <div class="nav-label">Main Menu</div>
 
-            <a href="dashboard.php" class="sidebar-main-link">
+            <a href="dashboard.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
@@ -1717,36 +1399,33 @@ if ($applicantId) {
                 <span class="nav-text">My Profile</span>
             </a>
 
-            <a href="applications.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">Applications</span>
-                <span class="nav-badge"><?php echo $totalApplications; ?></span>
-            </a>
-            <a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">calendar_month</span>
-    <span class="nav-text">Interviews</span>
-    <span class="nav-badge"><?php echo $interviewCount; ?></span>
-</a>
-
-            <a href="job_search.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">search</span>
-                <span class="nav-text">Job Search</span>
+            <a href="attendance.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">event_available</span>
+                <span class="nav-text">Attendance</span>
             </a>
 
+            <a href="schedule.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">schedule</span>
+                <span class="nav-text">My Schedule</span>
+            </a>
+
+            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
+
+            <a href="settings.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
         </nav>
 
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            <a href="../../logout.php" class="logout-btn">
-                <span class="material-symbols-outlined">logout</span>
-                <span class="logout-text">Logout</span>
-            </a>
+         
         </div>
     </aside>
 
@@ -1764,28 +1443,44 @@ if ($applicantId) {
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">/</span>
-                <span style="font-weight:600; font-size:0.875rem;">Apply for Job</span>
+                <span style="font-weight:600; font-size:0.875rem;">Dashboard</span>
             </div>
 
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'] ?? 'Applicant')); ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-                <div class="profile-dropdown-menu" id="profileMenu">
-                    <div class="dropdown-header">Account</div>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+                <!-- Notification Bell -->
+                <div class="notification-wrapper" style="position:relative;">
+                    <button class="notification-btn" id="notificationBtn" aria-label="Notifications" style="background:none;border:none;cursor:pointer;padding:0.5rem;border-radius:0.75rem;color:var(--text-on-surface-variant);position:relative;">
+                        <span class="material-symbols-outlined" style="font-size:1.5rem;">notifications</span>
+                        <span class="notification-badge" id="notifBadge" style="position:absolute;top:0.25rem;right:0.25rem;background:#dc2626;color:white;font-size:0.625rem;font-weight:700;min-width:1.25rem;height:1.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0 0.25rem;<?php echo $totalNotifications > 0 ? '' : 'display:none;'; ?>">
+                            <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
+                        </span>
+                    </button>
+                </div>
 
-                    <button class="dropdown-item" onclick="window.location.href='settings.php'">
-                        <span class="material-symbols-outlined">settings</span>
-                        Settings
+                <!-- Profile -->
+                <div class="profile-dropdown-wrapper">
+                    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                        <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
+                        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $_SESSION['role'] ?? 'Employee')); ?></span>
+                        <span class="material-symbols-outlined">expand_more</span>
                     </button>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                        <span class="material-symbols-outlined">logout</span>
-                        Logout
-                    </button>
+                    <div class="profile-dropdown-menu" id="profileMenu">
+                        <div class="dropdown-header">Account</div>
+                        <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                            <span class="material-symbols-outlined">person</span>
+                            Profile
+                        </button>
+                        <button class="dropdown-item" onclick="window.location.href='settings.php'">
+                            <span class="material-symbols-outlined">settings</span>
+                            Settings
+                        </button>
+                        <div class="dropdown-divider"></div>
+                        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                            <span class="material-symbols-outlined">logout</span>
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -1797,211 +1492,206 @@ if ($applicantId) {
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">description</span>
-                        <span>Apply</span>
+                        <span class="material-symbols-outlined">dashboard</span>
+                        <span>Dashboard</span>
                         <span class="status-dot"></span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">Submit Application</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            Employee Portal
+                        </span>
                     </div>
                     <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        <?php echo date('M d, Y H:i'); ?>
+                        <?php echo date('l, F j, Y'); ?>
                     </span>
                 </div>
 
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Apply for Position</h1>
-                        <p>Submit your application for this job opportunity</p>
+                <!-- Welcome Card -->
+                <div class="welcome-card">
+                    <div class="welcome-text">
+                        <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
+                        <p>
+                            Welcome to your employee dashboard. 
+                            <?php if ($employeeDetails && $employeeDetails['company_name']): ?>
+                                You are working at <span class="company-name"><?php echo htmlspecialchars($employeeDetails['company_name']); ?></span> 
+                                as <span class="company-name"><?php echo htmlspecialchars($employeeDetails['job_title'] ?? 'Employee'); ?></span>
+                            <?php else: ?>
+                                You are now part of the ISMERS team. Welcome aboard!
+                            <?php endif; ?>
+                        </p>
                     </div>
-                    <div class="header-actions">
-                        <a href="job_search.php" class="btn btn-outline">
-                            <span class="material-symbols-outlined">arrow_back</span>
-                            Back to Jobs
-                        </a>
+                    <div class="welcome-actions">
+                        <?php if (!$hasCheckedIn && !$hasCheckedOut): ?>
+                            <button class="btn btn-success" onclick="checkIn()">
+                                <span class="material-symbols-outlined">login</span>
+                                Check In
+                            </button>
+                        <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
+                            <button class="btn btn-danger" onclick="checkOut()">
+                                <span class="material-symbols-outlined">logout</span>
+                                Check Out
+                            </button>
+                            <span class="btn btn-outline" style="cursor:default;">
+                                <span class="material-symbols-outlined">verified</span>
+                                Checked In
+                            </span>
+                        <?php else: ?>
+                            <span class="btn btn-outline" style="cursor:default;">
+                                <span class="material-symbols-outlined">check_circle</span>
+                                Checked Out
+                            </span>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Success Message -->
-                <?php if (!empty($successMessage)): ?>
-                    <div class="message success">
-                        <span class="material-symbols-outlined">check_circle</span>
-                        <div>
-                            <strong><?php echo htmlspecialchars($successMessage); ?></strong>
-                            <span style="display:block; font-weight:400;">Redirecting to your applications...</span>
-                        </div>
-                        <a href="applications.php" class="btn btn-sm" style="background:rgba(22,163,74,0.15); color:#16a34a;">
-                            View Applications
-                        </a>
-                    </div>
-                <?php endif; ?>
-
-                <!-- Error Message -->
-                <?php if (!empty($errorMessage)): ?>
-                    <div class="message error">
-                        <span class="material-symbols-outlined">error</span>
-                        <div>
-                            <strong>Error:</strong>
-                            <span style="display:block; font-weight:400;"><?php echo $errorMessage; ?></span>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <!-- Job Summary -->
-                <div class="job-summary">
-                    <div class="job-title"><?php echo htmlspecialchars($job['title']); ?></div>
-                    <div class="job-company"><?php echo htmlspecialchars($job['company_name']); ?></div>
-                    <div class="job-meta">
-                        <span class="meta-item">
-                            <span class="material-symbols-outlined">work_history</span>
-                            <?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?>
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-icon">
+                            <span class="material-symbols-outlined">event_available</span>
                         </span>
-                        <span class="meta-item">
-                            <span class="material-symbols-outlined">location_on</span>
-                            <?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?>
+                        <div class="stat-number"><?php echo $attendanceStats['days_present'] ?? 0; ?></div>
+                        <div class="stat-label">Days Present</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-icon" style="background:rgba(220,38,38,0.1); color:#dc2626;">
+                            <span class="material-symbols-outlined">event_busy</span>
                         </span>
-                        <span class="meta-item">
+                        <div class="stat-number" style="color:#dc2626;"><?php echo $attendanceStats['days_absent'] ?? 0; ?></div>
+                        <div class="stat-label">Days Absent</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-icon" style="background:rgba(245,158,11,0.1); color:#f59e0b;">
+                            <span class="material-symbols-outlined">warning</span>
+                        </span>
+                        <div class="stat-number" style="color:#f59e0b;"><?php echo $attendanceStats['days_late'] ?? 0; ?></div>
+                        <div class="stat-label">Late Arrivals</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-icon" style="background:rgba(34,197,94,0.1); color:#22c55e;">
                             <span class="material-symbols-outlined">trending_up</span>
-                            <?php echo htmlspecialchars($job['experience_level'] ?? 'Entry'); ?>
                         </span>
-                        <?php if (!empty($job['salary_range'])): ?>
-                            <span class="meta-item">
-                                <span class="material-symbols-outlined">payments</span>
-                                <?php echo htmlspecialchars($job['salary_range']); ?>
-                            </span>
-                        <?php endif; ?>
-                        <?php if (!empty($job['urgency'])): ?>
-                            <span class="meta-item">
-                                <span class="material-symbols-outlined">priority_high</span>
-                                <span style="text-transform:capitalize;"><?php echo htmlspecialchars($job['urgency']); ?> urgency</span>
-                            </span>
+                        <div class="stat-number" style="color:#22c55e;">
+                            <?php 
+                            $total = $attendanceStats['total_days'] ?? 1;
+                            $present = $attendanceStats['days_present'] ?? 0;
+                            echo $total > 0 ? round(($present / $total) * 100) . '%' : '0%';
+                            ?>
+                        </div>
+                        <div class="stat-label">Attendance Rate</div>
+                    </div>
+                </div>
+
+                <!-- Recent Attendance -->
+                <div class="section-card">
+                    <div class="section-header">
+                        <h3>
+                            <span class="material-symbols-outlined">history</span>
+                            Recent Attendance
+                        </h3>
+                        <a href="attendance.php" style="font-size:0.875rem; color:var(--primary); font-weight:600;">View All</a>
+                    </div>
+                    <div class="section-body">
+                        <?php if (empty($recentAttendance)): ?>
+                            <div class="empty-state">
+                                <span class="material-symbols-outlined">inbox</span>
+                                <h4>No Attendance Records</h4>
+                                <p>Your attendance records will appear here once you start checking in.</p>
+                            </div>
+                        <?php else: ?>
+                            <div style="overflow-x:auto;">
+                                <table class="attendance-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Check In</th>
+                                            <th>Check Out</th>
+                                            <th>Hours</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($recentAttendance as $record): ?>
+                                            <?php
+                                            $status = 'present';
+                                            $statusLabel = 'Present';
+                                            if (!$record['check_in_time']) {
+                                                $status = 'absent';
+                                                $statusLabel = 'Absent';
+                                            } elseif ($record['is_late']) {
+                                                $status = 'late';
+                                                $statusLabel = 'Late';
+                                            }
+                                            $hours = 0;
+                                            if ($record['check_in_time'] && $record['check_out_time']) {
+                                                $checkIn = strtotime($record['check_in_time']);
+                                                $checkOut = strtotime($record['check_out_time']);
+                                                $hours = round(($checkOut - $checkIn) / 3600, 1);
+                                            }
+                                            ?>
+                                            <tr>
+                                                <td><?php echo date('M d, Y', strtotime($record['attendance_date'])); ?></td>
+                                                <td><?php echo $record['check_in_time'] ? date('h:i A', strtotime($record['check_in_time'])) : '—'; ?></td>
+                                                <td><?php echo $record['check_out_time'] ? date('h:i A', strtotime($record['check_out_time'])) : '—'; ?></td>
+                                                <td><?php echo $hours > 0 ? $hours . 'h' : '—'; ?></td>
+                                                <td>
+                                                    <span class="status-badge <?php echo $status; ?>">
+                                                        <?php echo $statusLabel; ?>
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
                         <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Application Form -->
-                <?php if ($alreadyApplied): ?>
-                    <div class="card">
-                        <div class="card-body already-applied">
-                            <span class="material-symbols-outlined">info</span>
-                            <h3>You've Already Applied</h3>
-                            <p>You have already submitted an application for this position. Please wait for the employer's response.</p>
-                            <a href="applications.php" class="btn btn-primary">
-                                <span class="material-symbols-outlined">work</span>
-                                View My Applications
-                            </a>
-                        </div>
+                <!-- Upcoming Schedule -->
+                <div class="section-card">
+                    <div class="section-header">
+                        <h3>
+                            <span class="material-symbols-outlined">schedule</span>
+                            Upcoming Schedule
+                        </h3>
+                        <a href="schedule.php" style="font-size:0.875rem; color:var(--primary); font-weight:600;">View All</a>
                     </div>
-                <?php else: ?>
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>
-                                <span class="material-symbols-outlined">edit_note</span>
-                                Application Form
-                            </h3>
-                            <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                Fields with <span style="color:#dc2626;">*</span> are required
-                            </span>
-                        </div>
-                        <div class="card-body">
-
-                            <form method="POST" action="" enctype="multipart/form-data" id="applyForm" novalidate>
-
-                                <!-- Cover Letter -->
-                                <div class="form-group">
-                                    <label for="coverLetter">Cover Letter <span class="required">*</span></label>
-                                    <textarea id="coverLetter" name="cover_letter" class="form-control" 
-                                              placeholder="Write a compelling cover letter explaining why you're the perfect candidate for this position..." 
-                                              rows="6" required><?php echo htmlspecialchars($coverLetter); ?></textarea>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">info</span>
-                                        Minimum 50 characters. Be specific about your skills and experience.
-                                    </div>
-                                    <div class="char-count"><span id="charCount">0</span> / 50+ characters</div>
-                                </div>
-
-                                <!-- Resume Upload -->
-                                <div class="form-group">
-                                    <label>Resume / CV <span class="required">*</span></label>
-                                    <div class="file-upload-wrapper">
-                                        <div class="file-upload-area" id="fileDropArea">
-                                            <div class="upload-icon">
-                                                <span class="material-symbols-outlined">upload_file</span>
+                    <div class="section-body">
+                        <?php if (empty($upcomingSchedule)): ?>
+                            <div class="empty-state">
+                                <span class="material-symbols-outlined">calendar_month</span>
+                                <h4>No Upcoming Schedule</h4>
+                                <p>Your schedule will appear here once it's assigned by your supervisor.</p>
+                            </div>
+                        <?php else: ?>
+                            <div style="display:grid; grid-template-columns:1fr; gap:0.75rem;">
+                                <?php foreach ($upcomingSchedule as $schedule): ?>
+                                    <div style="display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+                                        <div>
+                                            <div style="font-weight:600; font-size:0.875rem;">
+                                                <?php echo date('l, F j, Y', strtotime($schedule['schedule_date'])); ?>
                                             </div>
-                                            <div class="upload-text">Drop your resume here or click to browse</div>
-                                            <div class="upload-hint">Supported formats: PDF, DOC, DOCX</div>
-                                            <div class="upload-formats">Maximum file size: 5MB</div>
-                                            
-                                            <div class="file-preview" id="filePreview">
-                                                <span class="file-icon">
-                                                    <span class="material-symbols-outlined">description</span>
-                                                </span>
-                                                <div class="file-info">
-                                                    <div class="file-name" id="fileName">resume.pdf</div>
-                                                    <div class="file-size" id="fileSize">0 KB</div>
+                                            <div style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
+                                                <?php echo date('h:i A', strtotime($schedule['start_time'])); ?> - 
+                                                <?php echo date('h:i A', strtotime($schedule['end_time'])); ?>
+                                            </div>
+                                        </div>
+                                        <div style="text-align:right;">
+                                            <div style="font-size:0.8125rem; font-weight:600; color:var(--primary);">
+                                                <?php echo htmlspecialchars($schedule['shift_type'] ?? 'Regular Shift'); ?>
+                                            </div>
+                                            <?php if (!empty($schedule['notes'])): ?>
+                                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                    <?php echo htmlspecialchars($schedule['notes']); ?>
                                                 </div>
-                                                <button type="button" class="file-remove" id="fileRemove">×</button>
-                                            </div>
+                                            <?php endif; ?>
                                         </div>
-                                        <input type="file" id="resume_file" name="resume" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
                                     </div>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">info</span>
-                                        Upload your most recent resume or CV
-                                    </div>
-                                </div>
-
-                                <!-- Profile Info -->
-                                <div class="form-group">
-                                    <label>Your Information</label>
-                                    <div class="profile-info-box">
-                                        <div class="user-details">
-                                            <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
-                                            <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
-                                        </div>
-                                        <?php if (empty($applicant['skills'])): ?>
-                                            <span class="status-badge incomplete">
-                                                <span class="material-symbols-outlined">warning</span>
-                                                Profile incomplete
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="status-badge complete">
-                                                <span class="material-symbols-outlined">check_circle</span>
-                                                Profile complete
-                                            </span>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-
-                                <!-- Terms -->
-                                <div class="form-group">
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" id="agreeTerms" name="agree_terms" required>
-                                        <label for="agreeTerms">
-                                            I confirm that all the information provided is accurate and complete. 
-                                            I understand that false information may result in disqualification.
-                                            <a href="#" onclick="event.preventDefault(); alert('Terms and conditions will be displayed here.');">View Terms</a>
-                                        </label>
-                                    </div>
-                                </div>
-
-                                <!-- Form Actions -->
-                                <div class="form-actions">
-                                    <button type="submit" class="btn btn-success">
-                                        <span class="material-symbols-outlined">send</span>
-                                        Submit Application
-                                    </button>
-                                    <a href="job_search.php" class="btn btn-outline">
-                                        <span class="material-symbols-outlined">cancel</span>
-                                        Cancel
-                                    </a>
-                                </div>
-
-                            </form>
-
-                        </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
                     </div>
-                <?php endif; ?>
+                </div>
 
             </div>
         </main>
@@ -2085,152 +1775,66 @@ if ($applicantId) {
         });
 
         // =============================================
-        // 4. CHARACTER COUNTER
+        // 4. CHECK IN / CHECK OUT
         // =============================================
-        const coverLetter = document.getElementById('coverLetter');
-        const charCount = document.getElementById('charCount');
+        function checkIn() {
+            const btn = event.target.closest('button');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
 
-        if (coverLetter && charCount) {
-            function updateCharCount() {
-                const length = coverLetter.value.length;
-                charCount.textContent = length;
-                if (length >= 50) {
-                    charCount.style.color = '#22c55e';
+            fetch('ajax/attendance.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=check_in'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Checked in successfully at ' + data.time, 'success');
+                    setTimeout(() => location.reload(), 1500);
                 } else {
-                    charCount.style.color = '#dc2626';
+                    showToast(data.error || 'Failed to check in.', 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
                 }
-            }
-            
-            coverLetter.addEventListener('input', updateCharCount);
-            updateCharCount();
+            })
+            .catch(error => {
+                showToast('Error checking in. Please try again.', 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
+            });
+        }
+
+        function checkOut() {
+            const btn = event.target.closest('button');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
+
+            fetch('ajax/attendance.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=check_out'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Checked out successfully at ' + data.time, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast(data.error || 'Failed to check out.', 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
+                }
+            })
+            .catch(error => {
+                showToast('Error checking out. Please try again.', 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
+            });
         }
 
         // =============================================
-        // 5. FILE UPLOAD
-        // =============================================
-        const fileInput = document.getElementById('resume_file');
-        const dropArea = document.getElementById('fileDropArea');
-        const filePreview = document.getElementById('filePreview');
-        const fileName = document.getElementById('fileName');
-        const fileSize = document.getElementById('fileSize');
-        const fileRemove = document.getElementById('fileRemove');
-
-        // Click to upload
-        dropArea.addEventListener('click', function() {
-            fileInput.click();
-        });
-
-        // File selected
-        fileInput.addEventListener('change', function() {
-            if (this.files && this.files[0]) {
-                showFilePreview(this.files[0]);
-            }
-        });
-
-        // Drag and drop
-        dropArea.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            this.classList.add('dragover');
-        });
-
-        dropArea.addEventListener('dragleave', function(e) {
-            e.preventDefault();
-            this.classList.remove('dragover');
-        });
-
-        dropArea.addEventListener('drop', function(e) {
-            e.preventDefault();
-            this.classList.remove('dragover');
-            
-            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                fileInput.files = e.dataTransfer.files;
-                showFilePreview(e.dataTransfer.files[0]);
-            }
-        });
-
-        function showFilePreview(file) {
-            const validTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-            const ext = file.name.split('.').pop().toLowerCase();
-            const validExt = ['pdf', 'doc', 'docx'];
-            
-            if (!validExt.includes(ext)) {
-                showToast('Please upload a PDF, DOC, or DOCX file.', 'error');
-                fileInput.value = '';
-                return;
-            }
-            
-            if (file.size > 5 * 1024 * 1024) {
-                showToast('File size must be less than 5MB.', 'error');
-                fileInput.value = '';
-                return;
-            }
-            
-            fileName.textContent = file.name;
-            fileSize.textContent = (file.size / 1024).toFixed(1) + ' KB';
-            filePreview.classList.add('show');
-        }
-
-        fileRemove.addEventListener('click', function() {
-            fileInput.value = '';
-            filePreview.classList.remove('show');
-        });
-
-        // =============================================
-        // 6. FORM VALIDATION
-        // =============================================
-        document.getElementById('applyForm').addEventListener('submit', function(e) {
-            const coverLetter = document.getElementById('coverLetter');
-            const fileInput = document.getElementById('resume_file');
-            const agreeTerms = document.getElementById('agreeTerms');
-            let errors = [];
-            let hasError = false;
-
-            // Reset styles
-            coverLetter.classList.remove('is-invalid');
-            agreeTerms.style.borderColor = '';
-
-            // Validate cover letter
-            if (!coverLetter.value.trim() || coverLetter.value.trim().length < 50) {
-                errors.push('Cover letter must be at least 50 characters.');
-                coverLetter.classList.add('is-invalid');
-                hasError = true;
-            }
-
-            // Validate file
-            if (!fileInput.files || !fileInput.files[0]) {
-                errors.push('Please upload your resume/CV.');
-                dropArea.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            // Validate terms
-            if (!agreeTerms.checked) {
-                errors.push('You must agree to the terms to proceed.');
-                agreeTerms.style.outline = '2px solid #dc2626';
-                hasError = true;
-            }
-
-            if (hasError) {
-                e.preventDefault();
-                showToast('Please fix the following errors:\n• ' + errors.join('\n• '), 'error');
-            }
-        });
-
-        // Clear error styling on input
-        document.getElementById('coverLetter').addEventListener('input', function() {
-            this.classList.remove('is-invalid');
-        });
-
-        document.getElementById('resume_file').addEventListener('change', function() {
-            document.getElementById('fileDropArea').style.borderColor = '';
-        });
-
-        document.getElementById('agreeTerms').addEventListener('change', function() {
-            this.style.outline = '';
-        });
-
-        // =============================================
-        // 7. TOAST SYSTEM
+        // 5. TOAST SYSTEM
         // =============================================
         function showToast(message, type = 'info') {
             const existingToast = document.querySelector('.toast');
@@ -2238,10 +1842,6 @@ if ($applicantId) {
 
             const toast = document.createElement('div');
             toast.className = 'toast ' + type;
-            
-            if (message.includes('\n')) {
-                toast.style.whiteSpace = 'pre-line';
-            }
             toast.textContent = message;
             document.body.appendChild(toast);
 
@@ -2250,11 +1850,11 @@ if ($applicantId) {
                 toast.style.transform = 'translateY(20px)';
                 toast.style.transition = 'all 0.4s ease';
                 setTimeout(() => toast.remove(), 400);
-            }, 5000);
+            }, 4000);
         }
 
         // =============================================
-        // 8. RESPONSIVE HANDLING
+        // 6. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -2278,7 +1878,7 @@ if ($applicantId) {
         });
 
         // =============================================
-        // 9. KEYBOARD ACCESSIBILITY
+        // 7. KEYBOARD ACCESSIBILITY
         // =============================================
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
@@ -2288,7 +1888,7 @@ if ($applicantId) {
             }
         });
 
-        console.log('📝 ISMERS Apply Page loaded successfully!');
+        console.log('Employee Dashboard loaded successfully.');
     </script>
 
 </body>

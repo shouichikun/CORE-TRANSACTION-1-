@@ -31,13 +31,21 @@ $recentApplications = getRecentApplications($userId, 10);
 
 // Get active jobs
 $activeJobs = getActiveJobs($userId);
+
+// Get total clients count for sidebar badge
+$clientsCount = 0;
+$clientsResult = mysqli_query($conn, "SELECT COUNT(*) as count FROM clients");
+if ($clientsResult) {
+    $clientsRow = mysqli_fetch_assoc($clientsResult);
+    $clientsCount = $clientsRow['count'] ?? 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>HR Dashboard - ISMERS</title>
+    <title>HR Dashboard </title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
@@ -101,8 +109,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   SIDEBAR - FIXED
-                ============================================= */
+           SIDEBAR - FIXED
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -274,17 +282,6 @@ $activeJobs = getActiveJobs($userId);
             transition: opacity 0.3s ease;
         }
 
-        .sidebar-main-link .nav-badge {
-            margin-left: auto;
-            background: var(--primary);
-            color: white;
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 0.125rem 0.5rem;
-            border-radius: 50px;
-            transition: opacity 0.3s ease;
-        }
-
         .sidebar-footer {
             padding: 1rem 1.25rem;
             border-top: 1px solid var(--slate-200);
@@ -327,6 +324,32 @@ $activeJobs = getActiveJobs($userId);
             text-overflow: ellipsis;
         }
 
+        .sidebar-footer .logout-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            margin-top: 0.5rem;
+            border-radius: 0.75rem;
+            color: #dc2626;
+            transition: all var(--transition-fast);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.875rem;
+            border: none;
+            background: none;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        .sidebar-footer .logout-btn:hover {
+            background: #fef2f2;
+        }
+
+        .sidebar-footer .logout-btn .material-symbols-outlined {
+            font-size: 1.125rem;
+        }
+
         .sidebar-backdrop {
             display: none;
             position: fixed;
@@ -347,8 +370,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   PROFILE DROPDOWN
-                ============================================= */
+           PROFILE DROPDOWN
+        ============================================= */
         .profile-dropdown-wrapper {
             position: relative;
         }
@@ -491,8 +514,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   MAIN CONTENT - PUSHED BY SIDEBAR
-                ============================================= */
+           MAIN CONTENT - PUSHED BY SIDEBAR
+        ============================================= */
         .main-wrapper {
             flex: 1;
             display: flex;
@@ -508,8 +531,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   TOP HEADER
-                ============================================= */
+           TOP HEADER
+        ============================================= */
         .top-header {
             background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(12px);
@@ -599,8 +622,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   MAIN SCROLLABLE AREA
-                ============================================= */
+           MAIN SCROLLABLE AREA
+        ============================================= */
         .main-scroll {
             flex: 1;
             overflow-y: auto;
@@ -613,8 +636,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   BREADCRUMB
-                ============================================= */
+           BREADCRUMB
+        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface-container-lowest);
             border-radius: var(--radius-xl);
@@ -666,8 +689,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   PAGE HEADER
-                ============================================= */
+           PAGE HEADER
+        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -751,8 +774,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   STATS GRID
-                ============================================= */
+           STATS GRID
+        ============================================= */
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -857,8 +880,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   DASHBOARD GRID
-                ============================================= */
+           DASHBOARD GRID
+        ============================================= */
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -872,8 +895,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   CARDS
-                ============================================= */
+           CARDS
+        ============================================= */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -919,8 +942,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   APPLICATION ITEMS
-                ============================================= */
+           APPLICATION ITEMS
+        ============================================= */
         .app-item {
             display: flex;
             justify-content: space-between;
@@ -984,8 +1007,8 @@ $activeJobs = getActiveJobs($userId);
         .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
 
         /* =============================================
-                   JOB ITEMS
-                ============================================= */
+           JOB ITEMS
+        ============================================= */
         .job-item {
             display: flex;
             justify-content: space-between;
@@ -1010,8 +1033,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   EMPTY STATE
-                ============================================= */
+           EMPTY STATE
+        ============================================= */
         .empty-state {
             text-align: center;
             padding: 2rem 1rem;
@@ -1035,8 +1058,8 @@ $activeJobs = getActiveJobs($userId);
         }
 
         /* =============================================
-                   RESPONSIVE
-                ============================================= */
+           RESPONSIVE
+        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop {
                 display: none !important;
@@ -1224,114 +1247,104 @@ $activeJobs = getActiveJobs($userId);
 </head>
 <body>
 
-    <!-- Sidebar Backdrop (Mobile) -->
-    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-
-    <!-- =============================================
-    SIDEBAR - FIXED
-    ============================================= -->
-    <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">account_balance</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">HR Portal</p>
+   <!-- ===== SIDEBAR ===== -->
+<aside class="dashboard-sidebar" id="appSidebar">
+    <div class="sidebar-brand-card">
+        <span class="sidebar-brand-icon">
+            <span class="material-symbols-outlined">account_balance</span>
+        </span>
+        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-category">HR Portal</p>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-label">Main</div>
+        <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">dashboard</span>
+            <span class="nav-text">Dashboard</span>
+        </a>
+        <a href="clients.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'clients.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">business</span>
+            <span class="nav-text">Clients</span>
+        </a>
+        <a href="jobs.php" class="sidebar-main-link <?php echo in_array(basename($_SERVER['PHP_SELF']), ['jobs.php', 'job_view.php', 'post_job.php']) ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">work</span>
+            <span class="nav-text">My Jobs</span>
+        </a>
+        <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">people</span>
+            <span class="nav-text">Applicants</span>
+        </a>
+        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">view_kanban</span>
+            <span class="nav-text">Pipeline</span>
+        </a>
+        <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">calendar_month</span>
+            <span class="nav-text">Interviews</span>
+        </a>
+        <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">description</span>
+            <span class="nav-text">Offers</span>
+        </a>
+        <!-- NO "System" section with Settings -->
+    </nav>
+    <div class="sidebar-footer">
+        <div class="user-card">
+            <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+            <div class="user-info">
+                <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
+                <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
-
-        <nav class="sidebar-nav">
-            <div class="nav-label">Main Menu</div>
-
-            <a href="dashboard.php" class="sidebar-main-link active">
-                <span class="material-symbols-outlined">dashboard</span>
-                <span class="nav-text">Dashboard</span>
-            </a>
-
-            <a href="jobs.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">My Jobs</span>
-                <span class="nav-badge"><?php echo $stats['active_jobs']; ?></span>
-            </a>
-
-            <a href="applicants.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">people</span>
-                <span class="nav-text">Applicants</span>
-                <span class="nav-badge"><?php echo $stats['total_applicants']; ?></span>
-            </a>
-
-            <a href="post_job.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">add_circle</span>
-                <span class="nav-text">Post Job</span>
-            </a>
-
-            <div class="nav-label" style="margin-top:1.5rem;">Settings</div>
-
-            <a href="settings.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">settings</span>
-                <span class="nav-text">Settings</span>
-            </a>
-        </nav>
-
-        <div class="sidebar-footer">
-            <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-                <div class="user-info">
-                    <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
-                    <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
-                </div>
-            </div>
-        </div>
-    </aside>
+        <!-- NO logout-btn here - only in profile dropdown -->
+    </div>
+</aside>
 
     <!-- =============================================
     MAIN CONTENT - PUSHED BY SIDEBAR
     ============================================= -->
     <div class="main-wrapper" id="mainWrapper">
 
-        <!-- Top Header -->
-        <header class="top-header">
-            <div class="top-header-left">
-                <div class="logo">I</div>
-                <span class="separator">|</span>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
-                    <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
-                </button>
-                <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" title="Open Menu">
-                    <span class="material-symbols-outlined">menu</span>
-                </button>
-                <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
-            </div>
-
-            <!-- Profile Dropdown -->
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
-                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></div>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-                    <span class="profile-role"><?php echo $roleLabel; ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-
-                <!-- Dropdown Menu -->
-                <div class="profile-dropdown-menu" id="profileDropdownMenu">
-                    <div class="dropdown-header">Account</div>
-                    <a href="profile.php" class="dropdown-item">
-                        <span class="material-symbols-outlined">person</span>
-                        My Profile
-                    </a>
-                    <a href="settings.php" class="dropdown-item">
-                        <span class="material-symbols-outlined">settings</span>
-                        Settings
-                    </a>
-                    <div class="dropdown-divider"></div>
-                    <a href="../../logout.php" class="dropdown-item danger">
-                        <span class="material-symbols-outlined">logout</span>
-                        Log Out
-                    </a>
-                </div>
-            </div>
-        </header>
+     <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined">chevron_left</span>
+        </button>
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
+    <!-- Profile Dropdown -->
+<div class="profile-dropdown-wrapper">
+    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+        <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+        <span class="material-symbols-outlined">expand_more</span>
+    </button>
+    <div class="profile-dropdown-menu" id="profileMenu">
+        <div class="dropdown-header">Account</div>
+        <button class="dropdown-item" onclick="window.location.href='profile.php'">
+            <span class="material-symbols-outlined">person</span> Profile
+        </button>
+        <button class="dropdown-item" onclick="window.location.href='settings.php'">
+            <span class="material-symbols-outlined">settings</span> Settings
+        </button>
+        <div class="dropdown-divider"></div>
+        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+            <span class="material-symbols-outlined">logout</span> Logout
+        </button>
+    </div>
+</div>
+</header>
 
         <!-- Main Scrollable Area -->
         <main class="main-scroll" id="mainScroll">
@@ -1508,133 +1521,126 @@ $activeJobs = getActiveJobs($userId);
     <!-- =============================================
     JAVASCRIPT (Internal)
     ============================================= -->
-    <script>
-        (function() {
-            'use strict';
+   <script>
+    (function() {
+        'use strict';
 
-            // =============================================
-            // 1. SIDEBAR TOGGLE (Desktop Collapse)
-            // =============================================
-            const sidebar = document.getElementById('appSidebar');
-            const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-            const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
-            const sidebarBackdrop = document.getElementById('sidebarBackdrop');
-            const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        // =============================================
+        // 1. SIDEBAR TOGGLE (Desktop Collapse)
+        // =============================================
+        const sidebar = document.getElementById('appSidebar');
+        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
 
-            const savedState = localStorage.getItem('sidebarCollapsed');
-            const isDesktop = window.innerWidth >= 768;
+        const savedState = localStorage.getItem('sidebarCollapsed');
+        const isDesktop = window.innerWidth >= 768;
 
-            if (savedState === 'true' && isDesktop) {
-                sidebar.classList.add('collapsed');
-                sidebarToggleIcon.textContent = 'menu';
+        if (savedState === 'true' && isDesktop) {
+            sidebar.classList.add('collapsed');
+        }
+
+        sidebarToggleBtn.addEventListener('click', function() {
+            if (window.innerWidth < 768) return;
+            sidebar.classList.toggle('collapsed');
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            // Update the icon text
+            const icon = this.querySelector('.material-symbols-outlined');
+            if (icon) {
+                icon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
             }
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
+        });
 
-            sidebarToggleBtn.addEventListener('click', function() {
-                if (window.innerWidth < 768) return;
-                sidebar.classList.toggle('collapsed');
-                const isCollapsed = sidebar.classList.contains('collapsed');
-                sidebarToggleIcon.textContent = isCollapsed ? 'menu' : 'menu_open';
-                localStorage.setItem('sidebarCollapsed', isCollapsed);
-            });
+        // =============================================
+        // 2. MOBILE SIDEBAR TOGGLE
+        // =============================================
+        function openMobileSidebar() {
+            sidebar.classList.add('mobile-open');
+            sidebar.classList.remove('mobile-hidden');
+            sidebarBackdrop.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
 
-            // =============================================
-            // 2. MOBILE SIDEBAR TOGGLE
-            // =============================================
-            function openMobileSidebar() {
-                sidebar.classList.add('mobile-open');
-                sidebar.classList.remove('mobile-hidden');
-                sidebarBackdrop.classList.add('active');
-                document.body.style.overflow = 'hidden';
-            }
+        function closeMobileSidebar() {
+            sidebar.classList.remove('mobile-open');
+            sidebar.classList.add('mobile-hidden');
+            sidebarBackdrop.classList.remove('active');
+            document.body.style.overflow = '';
+        }
 
-            function closeMobileSidebar() {
-                sidebar.classList.remove('mobile-open');
-                sidebar.classList.add('mobile-hidden');
-                sidebarBackdrop.classList.remove('active');
-                document.body.style.overflow = '';
-            }
-
+        if (mobileMenuBtn) {
             mobileMenuBtn.addEventListener('click', openMobileSidebar);
+        }
+        if (sidebarBackdrop) {
             sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        }
 
-            document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
-                link.addEventListener('click', function() {
-                    if (window.innerWidth < 768) {
-                        closeMobileSidebar();
-                    }
-                });
+        document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
+            link.addEventListener('click', function() {
+                if (window.innerWidth < 768) {
+                    closeMobileSidebar();
+                }
             });
+        });
 
-            // =============================================
-            // 3. PROFILE DROPDOWN TOGGLE
-            // =============================================
-            const profileToggle = document.getElementById('profileDropdownToggle');
-            const profileMenu = document.getElementById('profileDropdownMenu');
+        // =============================================
+        // 3. PROFILE DROPDOWN
+        // =============================================
+        const profileToggle = document.getElementById('profileToggle');
+        const profileMenu = document.getElementById('profileMenu');
 
+        if (profileToggle && profileMenu) {
             profileToggle.addEventListener('click', function(e) {
                 e.stopPropagation();
                 this.classList.toggle('open');
                 profileMenu.classList.toggle('open');
             });
 
-            // Close dropdown when clicking outside
             document.addEventListener('click', function(e) {
                 if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
                     profileToggle.classList.remove('open');
                     profileMenu.classList.remove('open');
                 }
             });
+        }
 
-            // Close dropdown on Escape
-            document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape') {
-                    profileToggle.classList.remove('open');
-                    profileMenu.classList.remove('open');
-                    if (window.innerWidth < 768) {
-                        closeMobileSidebar();
-                    }
-                }
-            });
+        // =============================================
+        // 4. RESPONSIVE HANDLING
+        // =============================================
+        let resizeTimer;
 
-            // =============================================
-            // 4. RESPONSIVE HANDLING
-            // =============================================
-            let resizeTimer;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function() {
+                const width = window.innerWidth;
 
-            window.addEventListener('resize', function() {
-                clearTimeout(resizeTimer);
-                resizeTimer = setTimeout(function() {
-                    const width = window.innerWidth;
-
-                    if (width >= 768) {
-                        closeMobileSidebar();
-                        sidebar.classList.remove('mobile-open', 'mobile-hidden');
-                        const saved = localStorage.getItem('sidebarCollapsed');
-                        if (saved === 'true') {
-                            sidebar.classList.add('collapsed');
-                            sidebarToggleIcon.textContent = 'menu';
-                        } else {
-                            sidebar.classList.remove('collapsed');
-                            sidebarToggleIcon.textContent = 'menu_open';
-                        }
+                if (width >= 768) {
+                    closeMobileSidebar();
+                    sidebar.classList.remove('mobile-open', 'mobile-hidden');
+                    const saved = localStorage.getItem('sidebarCollapsed');
+                    if (saved === 'true') {
+                        sidebar.classList.add('collapsed');
                     } else {
-                        sidebar.classList.add('mobile-hidden');
                         sidebar.classList.remove('collapsed');
-                        sidebarToggleIcon.textContent = 'menu_open';
                     }
-                }, 250);
-            });
+                } else {
+                    sidebar.classList.add('mobile-hidden');
+                    sidebar.classList.remove('collapsed');
+                }
+            }, 250);
+        });
 
-            // =============================================
-            // 5. INITIAL STATE
-            // =============================================
-            if (window.innerWidth < 768) {
-                sidebar.classList.add('mobile-hidden');
-            }
+        // =============================================
+        // 5. INITIAL STATE
+        // =============================================
+        if (window.innerWidth < 768) {
+            sidebar.classList.add('mobile-hidden');
+        }
 
-            console.log('ISMERS HR Dashboard loaded successfully.');
-        })();
-    </script>
+        console.log('ISMERS HR Dashboard loaded successfully.');
+    })();
+</script>
 
 </body>
 </html>

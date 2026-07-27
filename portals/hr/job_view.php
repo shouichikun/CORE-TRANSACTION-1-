@@ -1,5 +1,5 @@
 <?php
-// portals/hr/post_job.php - Post New Job
+// portals/hr/job_view.php - View Job Details
 session_start();
 
 require_once '../../app/config.php';
@@ -21,8 +21,17 @@ $fullName = $_SESSION['full_name'] ?? 'HR User';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
+$isHRManager = $role === 'hr_manager';
 
-// Database helper function (if not already in config.php)
+// Get job ID from URL
+$jobId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+
+if ($jobId <= 0) {
+    header('Location: jobs.php');
+    exit;
+}
+
+// Database helper function
 if (!function_exists('getRecord')) {
     function getRecord($sql, $params = [], $types = "") {
         global $conn;
@@ -41,108 +50,98 @@ if (!function_exists('getRecord')) {
     }
 }
 
-// Get user's clients (companies they manage)
-$clients = getRecords("SELECT id, company_name FROM clients WHERE user_id = ? OR is_active = 1", [$userId], "i");
+// Get job details with company info
+$sql = "SELECT jo.*, c.company_name, c.id as company_id,
+        (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id) as application_count,
+        (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'pending') as pending_count,
+        (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'shortlisted') as shortlisted_count,
+        (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'interviewed') as interviewed_count,
+        (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'hired') as hired_count,
+        (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'rejected') as rejected_count
+        FROM job_orders jo
+        JOIN clients c ON jo.client_id = c.id
+        WHERE jo.id = ? AND jo.created_by = ?";
 
-// If no clients, show a message
-$hasClients = !empty($clients);
+$job = getRecord($sql, [$jobId, $userId], "ii");
 
-// Initialize variables
-$successMessage = '';
-$errorMessage = '';
-$formData = [];
-
-// Job types and levels
-$jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship', 'Freelance'];
-$experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead', 'Manager'];
-$jobStatuses = ['draft', 'open', 'ongoing', 'filled', 'cancelled'];
-$urgencyLevels = ['low', 'medium', 'high'];
-
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $formData = [
-        'client_id' => (int)$_POST['client_id'] ?? 0,
-        'title' => trim($_POST['title'] ?? ''),
-        'description' => trim($_POST['description'] ?? ''),
-        'skills_required' => trim($_POST['skills_required'] ?? ''),
-        'salary_range' => trim($_POST['salary_range'] ?? ''),
-        'location' => trim($_POST['location'] ?? ''),
-        'job_type' => $_POST['job_type'] ?? 'Full-time',
-        'experience_level' => $_POST['experience_level'] ?? 'Entry',
-        'status' => $_POST['status'] ?? 'open',
-        'urgency' => $_POST['urgency'] ?? 'medium',
-        'positions_available' => (int)($_POST['positions_available'] ?? 1),
-        'application_deadline' => $_POST['application_deadline'] ?? ''
-    ];
-    
-    // Validate
-    $errors = [];
-    if (empty($formData['client_id'])) $errors[] = 'Please select a client company.';
-    if (empty($formData['title'])) $errors[] = 'Job title is required.';
-    if (empty($formData['description'])) $errors[] = 'Job description is required.';
-    if (empty($formData['skills_required'])) $errors[] = 'Skills required is required.';
-    
-    if (empty($errors)) {
-        // Insert job - WITHOUT work_arrangement
-        $sql = "INSERT INTO job_orders (
-            client_id, title, description, skills_required, salary_range, 
-            location, job_type, experience_level, status, urgency, 
-            positions_available, application_deadline, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-        
-        // 13 parameters (removed work_arrangement)
-        $jobId = insertRecord($sql, [
-            $formData['client_id'],
-            $formData['title'],
-            $formData['description'],
-            $formData['skills_required'],
-            $formData['salary_range'],
-            $formData['location'],
-            $formData['job_type'],
-            $formData['experience_level'],
-            $formData['status'],
-            $formData['urgency'],
-            $formData['positions_available'],
-            $formData['application_deadline'],
-            $userId
-        ], "issssssssssis");
-        // Types: i + 10s + i + s + i = "issssssssssis" (13 characters)
-        
-        if ($jobId) {
-            logActivity($userId, 'Job Posted', 'job_orders', $jobId, 'Posted job: ' . $formData['title']);
-            $successMessage = 'Job posted successfully!';
-            
-            // Reset form data
-            $formData = [];
-            
-            // Redirect after 2 seconds
-            header('Refresh: 2; URL=jobs.php');
-        } else {
-            $errorMessage = 'Failed to post job. Please try again.';
-        }
-    } else {
-        $errorMessage = implode('<br>', $errors);
-    }
+if (!$job) {
+    header('Location: jobs.php');
+    exit;
 }
 
-// Get client list for dropdown
-$clientOptions = '';
-foreach ($clients as $client) {
-    $selected = ($formData['client_id'] ?? '') == $client['id'] ? 'selected' : '';
-    $clientOptions .= "<option value=\"{$client['id']}\" $selected>" . htmlspecialchars($client['company_name']) . "</option>";
-}
+// =============================================
+// FIXED: Correct SQL query with proper joins for applicants
+// The chain is: applications → applicants → users
+// applications.applicant_id = applicants.id
+// applicants.user_id = users.id
+// =============================================
+$recentApplicants = getRecords("
+    SELECT a.id, a.status, a.applied_at, a.resume_path,
+           u.id as user_id, u.first_name, u.last_name, u.email,
+           ap.skills, ap.profile_picture
+    FROM applications a
+    JOIN applicants ap ON a.applicant_id = ap.id
+    JOIN users u ON ap.user_id = u.id
+    WHERE a.job_order_id = ?
+    ORDER BY a.applied_at DESC
+    LIMIT 5
+", [$jobId], "i");
+
+// Status badge mapping
+$statusBadges = [
+    'open' => 'badge-open',
+    'ongoing' => 'badge-ongoing',
+    'filled' => 'badge-filled',
+    'cancelled' => 'badge-cancelled',
+    'draft' => 'badge-draft'
+];
+
+$statusLabels = [
+    'open' => 'Open',
+    'ongoing' => 'Ongoing',
+    'filled' => 'Filled',
+    'cancelled' => 'Cancelled',
+    'draft' => 'Draft'
+];
+
+$applicationStatusBadges = [
+    'pending' => 'badge-pending',
+    'shortlisted' => 'badge-shortlisted',
+    'interviewed' => 'badge-interviewed',
+    'hired' => 'badge-hired',
+    'rejected' => 'badge-rejected',
+    'withdrawn' => 'badge-withdrawn'
+];
+
+$applicationStatusLabels = [
+    'pending' => 'Pending Review',
+    'shortlisted' => 'Shortlisted',
+    'interviewed' => 'Interviewed',
+    'hired' => 'Hired',
+    'rejected' => 'Rejected',
+    'withdrawn' => 'Withdrawn'
+];
+
+$urgencyBadges = [
+    'low' => 'badge-urgency-low',
+    'medium' => 'badge-urgency-medium',
+    'high' => 'badge-urgency-high'
+];
+
+// Get skills as array
+$skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']) : [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Post Job - ISMERS</title>
+    <title><?php echo htmlspecialchars($job['title']); ?> - Job Details</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - POST JOB
+           MATERIAL 3 DESIGN SYSTEM - JOB VIEW
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -731,7 +730,7 @@ foreach ($clients as $client) {
         }
 
         .main-scroll .container {
-            max-width: 56rem;
+            max-width: 80rem;
             margin: 0 auto;
         }
 
@@ -806,23 +805,17 @@ foreach ($clients as $client) {
             }
         }
 
-        .page-header h1 {
+        .page-header .header-left h1 {
             font-size: 1.875rem;
             font-weight: 700;
             color: var(--text-on-surface);
             letter-spacing: -0.025em;
         }
 
-        .page-header p {
+        .page-header .header-left p {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.25rem;
-        }
-
-        .page-header .header-actions {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
         }
 
         /* =============================================
@@ -852,12 +845,6 @@ foreach ($clients as $client) {
             background: var(--on-primary-fixed-variant);
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
-        }
-
-        .btn-primary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
         }
 
         .btn-outline {
@@ -902,270 +889,299 @@ foreach ($clients as $client) {
             font-size: 1.125rem;
         }
 
-        /* =============================================
-           MESSAGES
-        ============================================= */
-        .message {
-            padding: 0.875rem 1.25rem;
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: flex-start;
-            gap: 0.75rem;
-            border: 1px solid transparent;
-        }
-
-        .message .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-            margin-top: 0.0625rem;
-        }
-
-        .message.success {
-            background: #f0fdf4;
-            border-color: #bbf7d0;
-            color: #16a34a;
-        }
-
-        .message.success .material-symbols-outlined {
-            color: #16a34a;
-        }
-
-        .message.error {
-            background: #fef2f2;
-            border-color: #fecaca;
-            color: #dc2626;
-        }
-
-        .message.error .material-symbols-outlined {
-            color: #dc2626;
-        }
-
-        .message.info {
-            background: #dbeafe;
-            border-color: #93c5fd;
-            color: #2563eb;
-        }
-
-        .message.info .material-symbols-outlined {
-            color: #2563eb;
+        .btn-sm .material-symbols-outlined {
+            font-size: 1rem;
         }
 
         /* =============================================
-           FORM CARD
+           JOB DETAILS CARD
         ============================================= */
-        .card {
+        .job-details-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
         }
 
-        .card-header {
-            padding: 1.25rem 1.5rem;
+        .job-header {
+            padding: 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
             flex-wrap: wrap;
-            gap: 0.75rem;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
         }
 
-        .card-header h3 {
-            font-size: 1.125rem;
+        .job-header .job-title-section h2 {
+            font-size: 1.5rem;
             font-weight: 700;
+            color: var(--text-on-surface);
+        }
+
+        .job-header .job-title-section .company-name {
+            font-size: 1rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        .job-header .job-title-section .company-name .material-symbols-outlined {
+            font-size: 1rem;
+            vertical-align: middle;
+        }
+
+        .job-header .job-status {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .job-body {
+            padding: 1.5rem;
+        }
+
+        /* ===== JOB META GRID ===== */
+        .job-meta-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+        }
+
+        .meta-item {
             display: flex;
             align-items: center;
             gap: 0.625rem;
         }
 
-        .card-header h3 .material-symbols-outlined {
+        .meta-item .material-symbols-outlined {
             font-size: 1.25rem;
             color: var(--primary);
         }
 
-        .card-header .required-label {
+        .meta-item .meta-label {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
         }
 
-        .card-body {
-            padding: 1.5rem;
-        }
-
-        /* =============================================
-           FORM ELEMENTS
-        ============================================= */
-        .form-group {
-            margin-bottom: 1.25rem;
-        }
-
-        .form-group:last-child {
-            margin-bottom: 0;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 0.8125rem;
+        .meta-item .meta-value {
+            font-size: 0.875rem;
             font-weight: 600;
             color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
         }
 
-        .form-group label .required {
-            color: #dc2626;
-            margin-left: 0.125rem;
+        /* ===== BADGES ===== */
+        .badge {
+            display: inline-block;
+            padding: 0.1875rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        .form-group .form-control {
-            width: 100%;
-            padding: 0.625rem 0.875rem;
-            border: 2px solid var(--slate-200);
-            border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
+        .badge-open { background: #d1fae5; color: #059669; }
+        .badge-ongoing { background: #dbeafe; color: #2563eb; }
+        .badge-filled { background: #f3e8ff; color: #7c3aed; }
+        .badge-cancelled { background: #fecaca; color: #dc2626; }
+        .badge-draft { background: #f3f4f6; color: #6b7280; }
+
+        .badge-urgency-low { background: #f3f4f6; color: #6b7280; }
+        .badge-urgency-medium { background: #fef3c7; color: #d97706; }
+        .badge-urgency-high { background: #fecaca; color: #dc2626; }
+
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-shortlisted { background: #dbeafe; color: #2563eb; }
+        .badge-interviewed { background: #e0e7ff; color: #4f46e5; }
+        .badge-hired { background: #d1fae5; color: #059669; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
+        .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
+
+        .badge-lg {
+            padding: 0.375rem 1rem;
+            font-size: 0.8125rem;
+        }
+
+        /* ===== SKILLS ===== */
+        .skills-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .skills-section .section-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .skills-section .skill-tag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: rgba(79, 70, 229, 0.08);
+            color: var(--primary);
+            border-radius: var(--radius-full);
+            font-size: 0.8125rem;
+            font-weight: 500;
+            border: 1px solid rgba(79, 70, 229, 0.15);
+            margin-right: 0.375rem;
+            margin-bottom: 0.375rem;
+        }
+
+        /* ===== DESCRIPTION ===== */
+        .description-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .description-section .section-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .description-section .description-text {
+            font-size: 0.9375rem;
+            color: var(--text-on-surface);
+            line-height: 1.8;
+            white-space: pre-wrap;
+        }
+
+        /* ===== STATS ===== */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0;
+            padding: 1rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-item .stat-number {
+            font-size: 1.5rem;
+            font-weight: 800;
             color: var(--text-on-surface);
         }
 
-        .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
-        }
-
-        .form-group .form-control::placeholder {
-            color: var(--text-on-surface-variant);
-            opacity: 0.6;
-        }
-
-        .form-group .form-control:disabled {
-            background: var(--bg-surface-low);
-            cursor: not-allowed;
-            opacity: 0.7;
-        }
-
-        .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 120px;
-        }
-
-        .form-group select.form-control {
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 1rem center;
-            padding-right: 2.5rem;
-        }
-
-        .form-group .helper-text {
+        .stat-item .stat-label {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
         }
 
-        .form-group .helper-text .material-symbols-outlined {
-            font-size: 0.875rem;
-            vertical-align: middle;
-        }
-
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }
-
-        .form-row-3 {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 1rem;
-        }
-
-        @media (max-width: 640px) {
-            .form-row,
-            .form-row-3 {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        .form-actions {
-            display: flex;
-            gap: 0.75rem;
+        /* ===== RECENT APPLICANTS ===== */
+        .applicants-section {
             margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--slate-200);
-            flex-wrap: wrap;
         }
 
-        /* =============================================
-           EMPTY STATE
-        ============================================= */
-        .empty-state {
+        .applicants-section .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .applicants-section .section-header h3 {
+            font-size: 1rem;
+            font-weight: 700;
+        }
+
+        .applicants-section .section-header a {
+            font-size: 0.875rem;
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .applicants-section .section-header a:hover {
+            text-decoration: underline;
+        }
+
+        .applicant-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--slate-200);
+            transition: all var(--transition-fast);
+        }
+
+        .applicant-item:hover {
+            background: var(--bg-surface-low);
+        }
+
+        .applicant-item:last-child {
+            border-bottom: none;
+        }
+
+        .applicant-item .applicant-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .applicant-item .applicant-info .avatar {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
+
+        .applicant-item .applicant-info .details .name {
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+        }
+
+        .applicant-item .applicant-info .details .email {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .applicant-item .applicant-status {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .applicant-item .applicant-status .applied-date {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .empty-applicants {
             text-align: center;
-            padding: 2.5rem 1.5rem;
+            padding: 1.5rem;
+            color: var(--text-on-surface-variant);
         }
 
-        .empty-state .material-symbols-outlined {
-            font-size: 3rem;
+        .empty-applicants .material-symbols-outlined {
+            font-size: 2.5rem;
             color: var(--slate-200);
             display: block;
-            margin-bottom: 0.75rem;
-        }
-
-        .empty-state h4 {
-            font-size: 1.125rem;
-            font-weight: 700;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-
-        .empty-state p {
-            font-size: 0.875rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        /* =============================================
-           TOAST
-        ============================================= */
-        .toast {
-            position: fixed;
-            bottom: 1.5rem;
-            right: 1.5rem;
-            padding: 0.875rem 1.5rem;
-            border-radius: 0.75rem;
-            color: white;
-            font-weight: 600;
-            font-size: 0.875rem;
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
-            z-index: 10000;
-            animation: slideUp 0.4s ease-out;
-            max-width: 400px;
-        }
-
-        .toast.success {
-            background: #22c55e;
-        }
-
-        .toast.error {
-            background: #dc2626;
-        }
-
-        .toast.info {
-            background: var(--primary);
-        }
-
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px) scale(0.95);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0) scale(1);
-            }
+            margin-bottom: 0.5rem;
         }
 
         /* =============================================
@@ -1246,17 +1262,28 @@ foreach ($clients as $client) {
                 display: none;
             }
 
-            .card-body {
-                padding: 1rem 1.25rem;
-            }
-
-            .form-actions {
+            .job-header {
                 flex-direction: column;
+                align-items: flex-start;
             }
 
-            .form-actions .btn {
+            .job-meta-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .applicant-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
+            }
+
+            .applicant-item .applicant-status {
                 width: 100%;
-                justify-content: center;
+                justify-content: space-between;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1302,30 +1329,28 @@ foreach ($clients as $client) {
                 padding: 0.75rem 1rem;
             }
 
-            .page-header h1 {
+            .page-header .header-left h1 {
                 font-size: 1.5rem;
             }
 
-            .card-header {
-                padding: 1rem 1.25rem;
+            .job-header .job-title-section h2 {
+                font-size: 1.25rem;
             }
 
-            .card-header h3 {
-                font-size: 1rem;
+            .job-meta-grid {
+                grid-template-columns: 1fr;
             }
 
-            .card-body {
-                padding: 0.75rem 1rem;
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
             }
 
-            .form-group {
-                margin-bottom: 0.875rem;
+            .stat-item .stat-number {
+                font-size: 1.25rem;
             }
 
-            .toast {
-                max-width: 90%;
-                bottom: 1rem;
-                right: 1rem;
+            .job-body {
+                padding: 1rem;
             }
         }
 
@@ -1349,7 +1374,6 @@ foreach ($clients as $client) {
     </style>
 </head>
 <body>
-
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
@@ -1445,7 +1469,6 @@ foreach ($clients as $client) {
         </div>
     </div>
 </header>
-
         <!-- Scrollable Content -->
         <main class="main-scroll">
             <div class="container">
@@ -1453,223 +1476,189 @@ foreach ($clients as $client) {
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">add_circle</span>
-                        <span>Post Job</span>
+                        <span class="material-symbols-outlined">work</span>
+                        <span>Job Details</span>
                         <span class="status-dot"></span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">New Job Posting</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            <?php echo htmlspecialchars($job['title']); ?>
+                        </span>
                     </div>
                     <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        <?php echo date('M d, Y H:i'); ?>
+                        Posted: <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
                     </span>
                 </div>
 
                 <!-- Page Header -->
                 <div class="page-header">
-                    <div>
-                        <h1>Post New Job</h1>
-                        <p>Create a new job posting to find the best candidates</p>
+                    <div class="header-left">
+                        <h1>Job Details</h1>
+                        <p>Full overview of the job posting</p>
                     </div>
                     <div class="header-actions">
                         <a href="jobs.php" class="btn btn-outline">
                             <span class="material-symbols-outlined">arrow_back</span>
                             Back to Jobs
                         </a>
+                        <a href="edit_job.php?id=<?php echo $job['id']; ?>" class="btn btn-primary">
+                            <span class="material-symbols-outlined">edit</span>
+                            Edit Job
+                        </a>
                     </div>
                 </div>
 
-                <!-- Messages -->
-                <?php if (!empty($successMessage)): ?>
-                    <div class="message success">
-                        <span class="material-symbols-outlined">check_circle</span>
-                        <div>
-                            <strong><?php echo htmlspecialchars($successMessage); ?></strong>
-                            <span style="display:block; font-weight:400;">Redirecting to jobs list...</span>
+                <!-- Job Details Card -->
+                <div class="job-details-card">
+                    <!-- Header -->
+                    <div class="job-header">
+                        <div class="job-title-section">
+                            <h2><?php echo htmlspecialchars($job['title']); ?></h2>
+                            <div class="company-name">
+                                <span class="material-symbols-outlined">business</span>
+                                <?php echo htmlspecialchars($job['company_name']); ?>
+                            </div>
+                        </div>
+                        <div class="job-status">
+                            <span class="badge badge-lg <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
+                                <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
+                            </span>
+                            <span class="badge badge-lg <?php echo $urgencyBadges[$job['urgency']] ?? 'badge-urgency-low'; ?>">
+                                <?php echo ucfirst($job['urgency'] ?? 'Low'); ?> Urgency
+                            </span>
                         </div>
                     </div>
-                <?php endif; ?>
 
-                <?php if (!empty($errorMessage)): ?>
-                    <div class="message error">
-                        <span class="material-symbols-outlined">error</span>
-                        <div>
-                            <strong>Error:</strong>
-                            <span style="display:block; font-weight:400;"><?php echo $errorMessage; ?></span>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <!-- No Clients Message -->
-                <?php if (!$hasClients): ?>
-                    <div class="message info">
-                        <span class="material-symbols-outlined">info</span>
-                        <div>
-                            <strong>No clients available.</strong>
-                            <span style="display:block; font-weight:400;">Please contact an admin to add client companies before posting jobs.</span>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <!-- Post Job Form -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">description</span>
-                            Job Details
-                        </h3>
-                        <span class="required-label">Fields with <span style="color:#dc2626;">*</span> are required</span>
-                    </div>
-                    <div class="card-body">
-                        <form method="POST" action="" id="postJobForm" novalidate>
-
-                            <!-- Client -->
-                            <div class="form-group">
-                                <label>Client Company <span class="required">*</span></label>
-                                <select name="client_id" class="form-control" required <?php echo !$hasClients ? 'disabled' : ''; ?>>
-                                    <option value="">Select a client company</option>
-                                    <?php echo $clientOptions; ?>
-                                </select>
-                                <?php if (!$hasClients): ?>
-                                    <div class="helper-text">
-                                        <span class="material-symbols-outlined">warning</span>
-                                        No clients available. Please contact admin.
+                    <!-- Body -->
+                    <div class="job-body">
+                        <!-- Meta Grid -->
+                        <div class="job-meta-grid">
+                            <div class="meta-item">
+                                <span class="material-symbols-outlined">work_history</span>
+                                <div>
+                                    <div class="meta-label">Job Type</div>
+                                    <div class="meta-value"><?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?></div>
+                                </div>
+                            </div>
+                            <div class="meta-item">
+                                <span class="material-symbols-outlined">trending_up</span>
+                                <div>
+                                    <div class="meta-label">Experience Level</div>
+                                    <div class="meta-value"><?php echo htmlspecialchars($job['experience_level'] ?? 'Entry'); ?></div>
+                                </div>
+                            </div>
+                            <div class="meta-item">
+                                <span class="material-symbols-outlined">location_on</span>
+                                <div>
+                                    <div class="meta-label">Location</div>
+                                    <div class="meta-value"><?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?></div>
+                                </div>
+                            </div>
+                            <div class="meta-item">
+                                <span class="material-symbols-outlined">payments</span>
+                                <div>
+                                    <div class="meta-label">Salary Range</div>
+                                    <div class="meta-value"><?php echo htmlspecialchars($job['salary_range'] ?? 'Not specified'); ?></div>
+                                </div>
+                            </div>
+                            <div class="meta-item">
+                                <span class="material-symbols-outlined">groups</span>
+                                <div>
+                                    <div class="meta-label">Positions Available</div>
+                                    <div class="meta-value"><?php echo $job['positions_available'] ?? 1; ?></div>
+                                </div>
+                            </div>
+                            <div class="meta-item">
+                                <span class="material-symbols-outlined">calendar_today</span>
+                                <div>
+                                    <div class="meta-label">Application Deadline</div>
+                                    <div class="meta-value">
+                                        <?php echo !empty($job['application_deadline']) ? date('M d, Y', strtotime($job['application_deadline'])) : 'Ongoing'; ?>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Skills -->
+                        <?php if (!empty($skills)): ?>
+                        <div class="skills-section">
+                            <div class="section-label">Required Skills</div>
+                            <?php foreach ($skills as $skill): ?>
+                                <?php $skill = trim($skill); if (!empty($skill)): ?>
+                                    <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
                                 <?php endif; ?>
-                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
 
-                            <!-- Job Title -->
-                            <div class="form-group">
-                                <label>Job Title <span class="required">*</span></label>
-                                <input type="text" name="title" class="form-control" 
-                                       placeholder="e.g., Senior PHP Developer" 
-                                       value="<?php echo htmlspecialchars($formData['title'] ?? ''); ?>" required>
-                            </div>
+                        <!-- Description -->
+                        <div class="description-section">
+                            <div class="section-label">Job Description</div>
+                            <div class="description-text"><?php echo nl2br(htmlspecialchars($job['description'] ?? 'No description provided.')); ?></div>
+                        </div>
 
-                            <!-- Description -->
-                            <div class="form-group">
-                                <label>Job Description <span class="required">*</span></label>
-                                <textarea name="description" class="form-control" 
-                                          placeholder="Describe the role, responsibilities, and requirements" 
-                                          rows="5" required><?php echo htmlspecialchars($formData['description'] ?? ''); ?></textarea>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Provide a clear and detailed description of the job
-                                </div>
+                        <!-- Stats -->
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-number"><?php echo $job['application_count'] ?? 0; ?></div>
+                                <div class="stat-label">Total Applications</div>
                             </div>
-
-                            <!-- Skills Required -->
-                            <div class="form-group">
-                                <label>Skills Required <span class="required">*</span></label>
-                                <input type="text" name="skills_required" class="form-control" 
-                                       placeholder="e.g., PHP, Laravel, MySQL, JavaScript, React" 
-                                       value="<?php echo htmlspecialchars($formData['skills_required'] ?? ''); ?>" required>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Separate skills with commas
-                                </div>
+                            <div class="stat-item">
+                                <div class="stat-number" style="color:#d97706;"><?php echo $job['pending_count'] ?? 0; ?></div>
+                                <div class="stat-label">Pending</div>
                             </div>
-
-                            <!-- Job Type + Experience Level -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Job Type</label>
-                                    <select name="job_type" class="form-control">
-                                        <?php foreach ($jobTypes as $type): ?>
-                                            <option value="<?php echo $type; ?>" <?php echo ($formData['job_type'] ?? 'Full-time') === $type ? 'selected' : ''; ?>>
-                                                <?php echo $type; ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Experience Level</label>
-                                    <select name="experience_level" class="form-control">
-                                        <?php foreach ($experienceLevels as $level): ?>
-                                            <option value="<?php echo $level; ?>" <?php echo ($formData['experience_level'] ?? 'Entry') === $level ? 'selected' : ''; ?>>
-                                                <?php echo $level; ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
+                            <div class="stat-item">
+                                <div class="stat-number" style="color:#2563eb;"><?php echo $job['shortlisted_count'] ?? 0; ?></div>
+                                <div class="stat-label">Shortlisted</div>
                             </div>
-
-                            <!-- Positions Available -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Positions Available</label>
-                                    <input type="number" name="positions_available" class="form-control" 
-                                           value="<?php echo htmlspecialchars($formData['positions_available'] ?? 1); ?>" min="1">
-                                </div>
+                            <div class="stat-item">
+                                <div class="stat-number" style="color:#4f46e5;"><?php echo $job['interviewed_count'] ?? 0; ?></div>
+                                <div class="stat-label">Interviewed</div>
                             </div>
-
-                            <!-- Location + Salary -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Location</label>
-                                    <input type="text" name="location" class="form-control" 
-                                           placeholder="e.g., Makati, Philippines" 
-                                           value="<?php echo htmlspecialchars($formData['location'] ?? ''); ?>">
-                                </div>
-                                <div class="form-group">
-                                    <label>Salary Range</label>
-                                    <input type="text" name="salary_range" class="form-control" 
-                                           placeholder="e.g., ₱50,000 - ₱80,000" 
-                                           value="<?php echo htmlspecialchars($formData['salary_range'] ?? ''); ?>">
-                                </div>
+                            <div class="stat-item">
+                                <div class="stat-number" style="color:#059669;"><?php echo $job['hired_count'] ?? 0; ?></div>
+                                <div class="stat-label">Hired</div>
                             </div>
-
-                            <!-- Application Deadline -->
-                            <div class="form-group">
-                                <label>Application Deadline</label>
-                                <input type="date" name="application_deadline" class="form-control" 
-                                       value="<?php echo htmlspecialchars($formData['application_deadline'] ?? ''); ?>">
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">calendar_today</span>
-                                    Leave empty for ongoing applications
-                                </div>
+                            <div class="stat-item">
+                                <div class="stat-number" style="color:#dc2626;"><?php echo $job['rejected_count'] ?? 0; ?></div>
+                                <div class="stat-label">Rejected</div>
                             </div>
+                        </div>
 
-                            <!-- Status + Urgency -->
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Status</label>
-                                    <select name="status" class="form-control">
-                                        <?php foreach ($jobStatuses as $status): ?>
-                                            <option value="<?php echo $status; ?>" <?php echo ($formData['status'] ?? 'open') === $status ? 'selected' : ''; ?>>
-                                                <?php echo ucfirst($status); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Urgency</label>
-                                    <select name="urgency" class="form-control">
-                                        <?php foreach ($urgencyLevels as $urgency): ?>
-                                            <option value="<?php echo $urgency; ?>" <?php echo ($formData['urgency'] ?? 'medium') === $urgency ? 'selected' : ''; ?>>
-                                                <?php echo ucfirst($urgency); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- Form Actions -->
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary" <?php echo !$hasClients ? 'disabled' : ''; ?>>
-                                    <span class="material-symbols-outlined">publish</span>
-                                    Publish Job
-                                </button>
-                                <button type="reset" class="btn btn-outline">
-                                    <span class="material-symbols-outlined">clear</span>
-                                    Clear All
-                                </button>
-                                <a href="jobs.php" class="btn btn-outline">
-                                    <span class="material-symbols-outlined">cancel</span>
-                                    Cancel
+                        <!-- Recent Applicants -->
+                        <div class="applicants-section">
+                            <div class="section-header">
+                                <h3>Recent Applicants</h3>
+                                <a href="applicants.php?job_id=<?php echo $job['id']; ?>">
+                                    View All <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">arrow_forward</span>
                                 </a>
                             </div>
-
-                        </form>
+                            <?php if (!empty($recentApplicants)): ?>
+                                <?php foreach ($recentApplicants as $applicant): ?>
+                                    <div class="applicant-item">
+                                        <div class="applicant-info">
+                                            <span class="avatar">
+                                                <?php echo strtoupper(substr($applicant['first_name'] ?? 'A', 0, 1)); ?>
+                                            </span>
+                                            <div class="details">
+                                                <div class="name"><?php echo htmlspecialchars($applicant['first_name'] . ' ' . $applicant['last_name']); ?></div>
+                                                <div class="email"><?php echo htmlspecialchars($applicant['email']); ?></div>
+                                            </div>
+                                        </div>
+                                        <div class="applicant-status">
+                                            <span class="badge <?php echo $applicationStatusBadges[$applicant['status']] ?? 'badge-pending'; ?>">
+                                                <?php echo $applicationStatusLabels[$applicant['status']] ?? ucfirst($applicant['status']); ?>
+                                            </span>
+                                            <span class="applied-date"><?php echo date('M d, Y', strtotime($applicant['applied_at'])); ?></span>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="empty-applicants">
+                                    <span class="material-symbols-outlined">person_off</span>
+                                    <p>No applicants have applied to this job yet.</p>
+                                </div>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
 
@@ -1680,7 +1669,7 @@ foreach ($clients as $client) {
     <!-- =============================================
     JAVASCRIPT
     ============================================= -->
-  <script>
+   <script>
     // =============================================
     // 1. SIDEBAR TOGGLE
     // =============================================
@@ -1707,20 +1696,20 @@ foreach ($clients as $client) {
     });
 
     // =============================================
-    // 2. MOBILE SIDEBAR - FIXED WITH NULL CHECKS
+    // 2. MOBILE SIDEBAR
     // =============================================
     const mobileMenuBtn = document.getElementById('mobileMenuBtn');
     const sidebarBackdrop = document.getElementById('sidebarBackdrop');
 
     function openMobileSidebar() {
         sidebar.classList.add('mobile-open');
-        if (sidebarBackdrop) sidebarBackdrop.classList.add('active');
+        sidebarBackdrop.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
 
     function closeMobileSidebar() {
         sidebar.classList.remove('mobile-open');
-        if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+        sidebarBackdrop.classList.remove('active');
         document.body.style.overflow = '';
     }
 
@@ -1761,97 +1750,7 @@ foreach ($clients as $client) {
     }
 
     // =============================================
-    // 4. FORM VALIDATION - FIXED WITH NULL CHECKS
-    // =============================================
-    const postJobForm = document.getElementById('postJobForm');
-    if (postJobForm) {
-        postJobForm.addEventListener('submit', function(e) {
-            const clientSelect = this.querySelector('select[name="client_id"]');
-            const titleInput = this.querySelector('input[name="title"]');
-            const descInput = this.querySelector('textarea[name="description"]');
-            const skillsInput = this.querySelector('input[name="skills_required"]');
-            let errors = [];
-            let hasError = false;
-
-            // Reset styles
-            [clientSelect, titleInput, descInput, skillsInput].forEach(el => {
-                if (el) el.style.borderColor = '';
-            });
-
-            if (!clientSelect || !clientSelect.value) {
-                errors.push('Please select a client company.');
-                if (clientSelect) clientSelect.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!titleInput || !titleInput.value.trim()) {
-                errors.push('Please enter a job title.');
-                if (titleInput) titleInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!descInput || !descInput.value.trim()) {
-                errors.push('Please enter a job description.');
-                if (descInput) descInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (!skillsInput || !skillsInput.value.trim()) {
-                errors.push('Please enter required skills.');
-                if (skillsInput) skillsInput.style.borderColor = '#dc2626';
-                hasError = true;
-            }
-
-            if (hasError) {
-                e.preventDefault();
-                showToast('Please fix the following errors:\n• ' + errors.join('\n• '), 'error');
-                
-                // Focus on first error
-                const firstError = [clientSelect, titleInput, descInput, skillsInput].find(el => 
-                    el && el.style.borderColor === '#dc2626'
-                );
-                if (firstError) firstError.focus();
-            }
-        });
-    }
-
-    // Clear error styling on input
-    document.querySelectorAll('.form-control').forEach(el => {
-        el.addEventListener('input', function() {
-            this.style.borderColor = '';
-        });
-        el.addEventListener('change', function() {
-            this.style.borderColor = '';
-        });
-    });
-
-    // =============================================
-    // 5. TOAST SYSTEM
-    // =============================================
-    function showToast(message, type = 'info') {
-        const existingToast = document.querySelector('.toast');
-        if (existingToast) existingToast.remove();
-
-        const toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        
-        // Handle multi-line messages
-        if (message.includes('\n')) {
-            toast.style.whiteSpace = 'pre-line';
-        }
-        toast.textContent = message;
-        document.body.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(20px)';
-            toast.style.transition = 'all 0.4s ease';
-            setTimeout(() => toast.remove(), 400);
-        }, 5000);
-    }
-
-    // =============================================
-    // 6. RESPONSIVE HANDLING
+    // 4. RESPONSIVE HANDLING
     // =============================================
     let resizeTimer;
     window.addEventListener('resize', function() {
@@ -1862,7 +1761,7 @@ foreach ($clients as $client) {
                 sidebar.classList.remove('collapsed');
             } else {
                 sidebar.classList.remove('mobile-open');
-                if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+                sidebarBackdrop.classList.remove('active');
                 document.body.style.overflow = '';
                 const saved = localStorage.getItem('sidebarCollapsed');
                 if (saved === 'true') {
@@ -1875,7 +1774,7 @@ foreach ($clients as $client) {
     });
 
     // =============================================
-    // 7. KEYBOARD ACCESSIBILITY - FIXED
+    // 5. KEYBOARD ACCESSIBILITY - FIXED
     // =============================================
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
@@ -1885,7 +1784,7 @@ foreach ($clients as $client) {
         }
     });
 
-    console.log('📝 ISMERS Post Job page loaded successfully!');
+    console.log('📄 ISMERS Job View loaded successfully!');
 </script>
 
 </body>
