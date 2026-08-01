@@ -1,5 +1,5 @@
 <?php
-// portals/client/jobs.php - Client Job Management
+// portals/client/jobs.php - Client Job Management with Recruitment Agency Selection
 session_start();
 
 require_once '../../app/config.php';
@@ -19,8 +19,7 @@ if ($_SESSION['role'] !== 'client') {
 $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
-$role = $_SESSION['role'] ?? 'client'; // ADD THIS LINE
-
+$role = $_SESSION['role'] ?? 'client';
 
 // Get client profile
 $client = getRecord("
@@ -37,6 +36,32 @@ if (!$client) {
 $companyName = $client['company_name'] ?? 'Your Company';
 $clientId = $client['id'] ?? 0;
 
+// =============================================
+// GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
+// =============================================
+$pendingAgencyCount = 0;
+$pendingAgencies = getRecords("
+    SELECT COUNT(*) as count FROM agency_applications 
+    WHERE client_id = ? AND status = 'pending'
+", [$clientId], "i");
+
+if (!empty($pendingAgencies)) {
+    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+}
+
+// =============================================
+// GET RECRUITMENT AGENCIES APPROVED FOR THIS CLIENT
+// =============================================
+$agencies = getRecords("
+    SELECT ra.*, 
+           (SELECT COUNT(*) FROM job_orders WHERE agency_id = ra.id) as job_count
+    FROM recruitment_agencies ra
+    WHERE ra.client_id = ? 
+    AND ra.is_active = 1
+    AND ra.application_status = 'approved'
+    ORDER BY ra.agency_name ASC
+", [$clientId], "i");
+
 // Handle Job Posting
 $message = '';
 $messageType = '';
@@ -46,30 +71,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         // Validate inputs
         $title = trim($_POST['title'] ?? '');
         $description = trim($_POST['description'] ?? '');
-        $requirements = trim($_POST['requirements'] ?? '');
         $location = trim($_POST['location'] ?? '');
-        $job_type = trim($_POST['job_type'] ?? 'full-time');
+        $job_type = trim($_POST['job_type'] ?? 'Full-time');
         $salary_min = floatval($_POST['salary_min'] ?? 0);
         $salary_max = floatval($_POST['salary_max'] ?? 0);
         $positions = intval($_POST['positions'] ?? 1);
+        $experience_level = trim($_POST['experience_level'] ?? 'Entry');
+        $urgency = trim($_POST['urgency'] ?? 'medium');
+        $application_deadline = trim($_POST['application_deadline'] ?? '');
+        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : null;
         $status = 'open';
         
+        // Get selected items from checklists
+        $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
+        $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
+        $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
+        
+        // Get custom input values
+        $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
+        $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
+        $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
+        
+        // Merge selected + custom
+        $allSkills = array_merge($selectedSkills, array_filter($customSkills));
+        $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
+        $allExperience = array_merge($selectedExperience, array_filter($customExperience));
+        
+        // Convert to JSON for storage in skills_required
+        $skillsData = [
+            'skills' => array_values(array_unique($allSkills)),
+            'qualifications' => array_values(array_unique($allQualifications)),
+            'experience' => array_values(array_unique($allExperience))
+        ];
+        $skillsJson = json_encode($skillsData);
+        
+        // Build salary range string
+        $salaryRange = '';
+        if ($salary_min > 0 && $salary_max > 0) {
+            $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
+        } elseif ($salary_min > 0) {
+            $salaryRange = '₱' . number_format($salary_min) . ' and up';
+        } elseif ($salary_max > 0) {
+            $salaryRange = 'Up to ₱' . number_format($salary_max);
+        }
+        
         // Validate required fields
-        if (empty($title) || empty($description) || empty($requirements) || empty($location)) {
-            $message = 'Please fill in all required fields.';
-            $messageType = 'error';
-        } else {
-            // Insert job
+        $errors = [];
+        if (empty($title)) $errors[] = 'Job title is required.';
+        if (empty($description)) $errors[] = 'Job description is required.';
+        if (empty($location)) $errors[] = 'Location is required.';
+        if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
+        if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
+        if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
+        if (empty($agency_id)) $errors[] = 'Please select a recruitment agency.';
+        
+        if (empty($errors)) {
+            // Insert job - with agency_id
             $insertSql = "INSERT INTO job_orders (
-                client_id, title, description, requirements, location, 
-                job_type, salary_min, salary_max, positions, status, 
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())";
+                client_id, agency_id, title, description, skills_required, location, 
+                job_type, salary_min, salary_max, salary_range, experience_level,
+                positions_available, status, urgency, application_deadline,
+                created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())";
             
             $stmt = mysqli_prepare($conn, $insertSql);
-            mysqli_stmt_bind_param($stmt, 'isssssddss', 
-                $clientId, $title, $description, $requirements, $location,
-                $job_type, $salary_min, $salary_max, $positions, $status
+            mysqli_stmt_bind_param($stmt, 'iisssssddsssisis', 
+                $clientId,
+                $agency_id,
+                $title, 
+                $description, 
+                $skillsJson, 
+                $location,
+                $job_type, 
+                $salary_min, 
+                $salary_max, 
+                $salaryRange,
+                $experience_level,
+                $positions, 
+                $status,
+                $urgency,
+                $application_deadline,
+                $userId
             );
             
             if (mysqli_stmt_execute($stmt)) {
@@ -80,6 +162,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $messageType = 'error';
             }
             mysqli_stmt_close($stmt);
+        } else {
+            $message = implode('<br>', $errors);
+            $messageType = 'error';
         }
     }
     
@@ -108,8 +193,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 // Get all jobs for this client
 $jobsSql = "SELECT j.*, 
+            a.agency_name, a.agency_code,
             (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as applicant_count
             FROM job_orders j
+            LEFT JOIN recruitment_agencies a ON j.agency_id = a.id
             WHERE j.client_id = ?
             ORDER BY j.created_at DESC";
 $stmt = mysqli_prepare($conn, $jobsSql);
@@ -128,7 +215,10 @@ $statusCounts = [
     'open' => 0,
     'ongoing' => 0,
     'closed' => 0,
-    'on_hold' => 0
+    'on_hold' => 0,
+    'draft' => 0,
+    'filled' => 0,
+    'cancelled' => 0
 ];
 
 foreach ($jobs as $job) {
@@ -147,8 +237,61 @@ if ($filter !== 'all') {
     });
 }
 
-// Get job types for dropdown
-$jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'freelance'];
+// Get job types for dropdown (match enum values)
+$jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship'];
+
+// Experience levels (match enum values)
+$experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead'];
+
+// Urgency levels
+$urgencyLevels = ['low', 'medium', 'high'];
+
+// Pre-defined suggestions for skills - customizable by client
+$suggestedSkills = [
+    'PHP', 'JavaScript', 'Python', 'Java', 'C#', 'C++', 'Ruby', 'Go', 'Rust', 'Swift', 'Kotlin',
+    'TypeScript', 'HTML5', 'CSS3', 'Sass', 'LESS', 'SQL',
+    'Laravel', 'React', 'Vue.js', 'Angular', 'Node.js', 'Express.js', 'Django', 'Flask', 'Spring Boot',
+    'MySQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Firebase',
+    'AWS', 'Azure', 'Google Cloud', 'Docker', 'Kubernetes', 'Git', 'GitHub', 'GitLab',
+    'Figma', 'Adobe XD', 'Photoshop', 'UI Design', 'UX Design',
+    'Project Management', 'Agile', 'Scrum', 'Leadership', 'Communication',
+    'REST APIs', 'GraphQL', 'Microservices', 'Serverless',
+    'English', 'Filipino', 'Spanish', 'Mandarin', 'Japanese'
+];
+
+$suggestedQualifications = [
+    "Bachelor's Degree in Computer Science",
+    "Bachelor's Degree in Information Technology",
+    "Bachelor's Degree in Engineering",
+    "Bachelor's Degree in Business Administration",
+    "Master's Degree in related field",
+    "PhD in related field",
+    "Professional Certification (e.g., PMP, AWS, etc.)",
+    "Licensed Professional",
+    "Vocational / Technical Certificate",
+    "High School Diploma",
+    "College Graduate",
+    "Post Graduate Studies"
+];
+
+$suggestedExperience = [
+    '0-1 year experience',
+    '1-3 years experience',
+    '3-5 years experience',
+    '5-8 years experience',
+    '8+ years experience',
+    'Fresh Graduate / Entry Level',
+    'Junior Level',
+    'Mid Level',
+    'Senior Level',
+    'Lead / Manager Level',
+    'Executive Level',
+    'Internship / OJT'
+];
+
+sort($suggestedSkills);
+sort($suggestedQualifications);
+sort($suggestedExperience);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -159,7 +302,9 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* Same base styles as dashboard.php */
+        /* ==========================================================================
+           MATERIAL 3 DESIGN SYSTEM - CLIENT JOBS
+           ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -215,7 +360,9 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         }
         a { text-decoration: none; color: inherit; }
 
-        /* Sidebar Styles - Same as dashboard */
+        /* =============================================
+           SIDEBAR
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -642,7 +789,7 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         .modal {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
-            max-width: 720px;
+            max-width: 820px;
             width: 100%;
             max-height: 90vh;
             overflow-y: auto;
@@ -659,6 +806,10 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
             display: flex;
             justify-content: space-between;
             align-items: center;
+            position: sticky;
+            top: 0;
+            background: var(--bg-surface);
+            z-index: 10;
         }
         .modal-header h2 { font-size: 1.25rem; font-weight: 700; }
         .modal-close {
@@ -679,6 +830,10 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
             display: flex;
             gap: 0.75rem;
             justify-content: flex-end;
+            position: sticky;
+            bottom: 0;
+            background: var(--bg-surface);
+            z-index: 10;
         }
 
         .form-group { margin-bottom: 1.25rem; }
@@ -716,7 +871,280 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         }
         @media (max-width: 480px) { .form-row { grid-template-columns: 1fr; } }
 
-        /* Job Cards */
+        /* =============================================
+           RECRUITMENT AGENCY SELECTION
+        ============================================= */
+        .agency-selection {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.5rem;
+            border: 1.5px solid var(--slate-200);
+            transition: all var(--transition-fast);
+        }
+        .agency-selection:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .agency-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.375rem 0.625rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--slate-200);
+            background: var(--bg-surface);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-size: 0.8125rem;
+        }
+        .agency-option:hover {
+            border-color: var(--primary);
+            background: var(--primary-container);
+        }
+        .agency-option.selected {
+            border-color: var(--primary);
+            background: var(--primary-container);
+            box-shadow: 0 0 0 2px var(--primary);
+        }
+        .agency-option input[type="radio"] {
+            accent-color: var(--primary);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .agency-option .agency-info {
+            display: flex;
+            flex-direction: column;
+        }
+        .agency-option .agency-name {
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+        .agency-option .agency-code {
+            font-size: 0.625rem;
+            color: var(--text-on-surface-variant);
+        }
+        .agency-option .agency-logo {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.375rem;
+            background: var(--primary-container);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            color: var(--primary);
+            flex-shrink: 0;
+        }
+        .agency-option .agency-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 0.375rem;
+        }
+
+        /* =============================================
+           CUSTOM CHECKLIST - Skills, Qualifications, Experience
+           ============================================= */
+        .checklist-section {
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+        }
+
+        .checklist-section:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        .checklist-section .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .checklist-section .section-header .section-title {
+            font-weight: 600;
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+
+        .checklist-section .section-header .section-title .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--primary);
+        }
+
+        .checklist-section .section-header .count-badge {
+            font-size: 0.6875rem;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.0625rem 0.5rem;
+            border-radius: var(--radius-full);
+        }
+
+        .checklist-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.25rem;
+            max-height: 150px;
+            overflow-y: auto;
+            padding: 0.125rem;
+        }
+
+        .checklist-grid::-webkit-scrollbar { width: 4px; }
+        .checklist-grid::-webkit-scrollbar-track { background: transparent; }
+        .checklist-grid::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
+
+        .checklist-item {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.1875rem 0.375rem;
+            border-radius: 0.25rem;
+            transition: all var(--transition-fast);
+            cursor: pointer;
+            font-size: 0.75rem;
+            color: var(--text-on-surface);
+        }
+
+        .checklist-item:hover {
+            background: var(--bg-surface-low);
+        }
+
+        .checklist-item input[type="checkbox"] {
+            width: 0.8125rem;
+            height: 0.8125rem;
+            accent-color: var(--primary);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .checklist-item .item-label {
+            user-select: none;
+            cursor: pointer;
+        }
+
+        .checklist-item.checked {
+            background: var(--primary-container);
+        }
+
+        .checklist-item.checked .item-label {
+            color: var(--primary);
+            font-weight: 500;
+        }
+
+        .custom-input-row {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .custom-input-row .form-control {
+            flex: 1;
+            padding: 0.375rem 0.625rem;
+            font-size: 0.75rem;
+            border-radius: 0.375rem;
+        }
+
+        .custom-input-row .btn-add {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: 0.375rem;
+            background: var(--primary);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            white-space: nowrap;
+        }
+
+        .custom-input-row .btn-add:hover {
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-1px);
+        }
+
+        .selected-items-display {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.375rem;
+            margin-top: 0.5rem;
+            min-height: 2rem;
+            padding: 0.375rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.375rem;
+            border: 1px dashed var(--slate-200);
+            align-items: center;
+        }
+
+        .selected-items-display .item-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            background: var(--primary);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 500;
+            animation: tagAppear 0.2s ease-out;
+        }
+
+        .selected-items-display .item-tag .remove-item {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            font-size: 0.875rem;
+            padding: 0 0.125rem;
+            transition: all var(--transition-fast);
+            line-height: 1;
+        }
+
+        .selected-items-display .item-tag .remove-item:hover {
+            color: white;
+            transform: scale(1.2);
+        }
+
+        @keyframes tagAppear {
+            from { opacity: 0; transform: scale(0.8); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        /* Responsive checklist */
+        @media (max-width: 768px) {
+            .checklist-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .agency-selection {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            }
+        }
+
+        @media (max-width: 480px) {
+            .checklist-grid {
+                grid-template-columns: 1fr;
+            }
+            .custom-input-row {
+                flex-direction: column;
+            }
+            .agency-selection {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* =============================================
+           JOB CARDS
+        ============================================= */
         .job-filters {
             display: flex;
             gap: 0.5rem;
@@ -792,6 +1220,20 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
             -webkit-box-orient: vertical;
             overflow: hidden;
         }
+        .job-card-skills {
+            margin-top: 0.625rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        .job-card-skills .skill-tag {
+            padding: 0.0625rem 0.5rem;
+            background: var(--bg-surface-low);
+            border: 1px solid var(--slate-200);
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            color: var(--text-on-surface-variant);
+        }
         .job-card-footer {
             display: flex;
             justify-content: space-between;
@@ -811,6 +1253,17 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         .job-card-stats span { display: flex; align-items: center; gap: 0.25rem; }
         .job-card-stats .material-symbols-outlined { font-size: 0.875rem; }
         .job-card-actions { display: flex; gap: 0.375rem; }
+        .job-card-agency {
+            font-size: 0.6875rem;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.0625rem 0.5rem;
+            border-radius: var(--radius-full);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .job-card-agency .material-symbols-outlined { font-size: 0.875rem; color: var(--primary); }
 
         .badge {
             display: inline-block;
@@ -825,6 +1278,9 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         .badge-ongoing { background: #e0e7ff; color: #4f46e5; }
         .badge-closed { background: #f1f5f9; color: #64748b; }
         .badge-on_hold { background: #fef3c7; color: #d97706; }
+        .badge-draft { background: #f1f5f9; color: #64748b; }
+        .badge-filled { background: #d1fae5; color: #059669; }
+        .badge-cancelled { background: #fecaca; color: #dc2626; }
 
         .empty-state {
             text-align: center;
@@ -840,6 +1296,37 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
+        /* Profile Picture Styles */
+        .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            background: var(--primary-container);
+        }
+        .avatar-small {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+            object-fit: cover;
+        }
+        .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
+        /* Responsive */
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -866,81 +1353,20 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
             .job-card-header { flex-direction: column; }
             .job-card-footer { flex-direction: column; align-items: stretch; }
             .job-card-actions { justify-content: flex-end; }
+            .modal { max-height: 95vh; }
+            .modal-body { padding: 1rem; }
         }
         .main-scroll::-webkit-scrollbar { width: 5px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
-  /* Profile Picture Styles */
-.avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-    background: var(--primary-container);
-}
-
-.avatar-small {
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
-    background: var(--primary);
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-    object-fit: cover;
-}
-
-.avatar-small img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    object-fit: cover;
-}
-
-.avatar-img-large {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-/* Sidebar user card with profile picture */
-.sidebar-footer .user-card .avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-}
     </style>
 </head>
 <body>
-
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
+    <!-- ===== SIDEBAR - FIXED ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -951,62 +1377,69 @@ $jobTypes = ['full-time', 'part-time', 'contract', 'temporary', 'internship', 'f
         </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link active">
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link">
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">work</span>
                 <span class="nav-text">My Jobs</span>
             </a>
-            <a href="employees.php" class="sidebar-main-link">
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Employees</span>
             </a>
-            <a href="applicants.php" class="sidebar-main-link">
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person_search</span>
                 <span class="nav-text">Applicants</span>
             </a>
-            <a href="invoices.php" class="sidebar-main-link">
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">receipt</span>
                 <span class="nav-text">Invoices</span>
             </a>
-            <a href="support.php" class="sidebar-main-link">
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">support_agent</span>
                 <span class="nav-text">Support</span>
             </a>
             <div class="nav-label" style="margin-top:1rem;">Settings</div>
-            <a href="profile.php" class="sidebar-main-link">
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person</span>
                 <span class="nav-text">Profile</span>
             </a>
-            <a href="settings.php" class="sidebar-main-link">
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-      <?php
-// Get user profile data for sidebar
-$userProfile = getUserProfileData($userId);
-?>
-<!-- Sidebar Footer -->
-<div class="sidebar-footer">
-    <div class="user-card">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-img" 
-                 style="width:2.25rem; height:2.25rem; border-radius:50%; object-fit:cover; flex-shrink:0;">
-        <?php else: ?>
-            <span class="avatar"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <div class="user-info">
-            <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
-            <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+
+        <!-- =============================================
+        SIDEBAR FOOTER
+        ============================================= -->
+        <?php
+        $userProfile = getUserProfileData($userId);
+        ?>
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
+                <div class="user-info">
+                    <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+                </div>
+            </div>
         </div>
-    </div>
- 
-</div>
     </aside>
 
     <!-- ===== MAIN CONTENT ===== -->
@@ -1020,36 +1453,34 @@ $userProfile = getUserProfileData($userId);
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Dashboard</span>
+                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Jobs</span>
             </div>
-         <?php
-// Get user profile data for dropdown
-$userProfile = getUserProfileData($userId);
-?>
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-small" 
-                 style="width:2rem; height:2rem; border-radius:50%; object-fit:cover; flex-shrink:0; background:var(--primary);">
-        <?php else: ?>
-            <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
-        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
-    <div class="profile-dropdown-menu" id="profileMenu">
-        <div class="dropdown-header">Account</div>
-
-        <div class="dropdown-divider"></div>
-        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-            <span class="material-symbols-outlined">logout</span> Logout
-        </button>
-    </div>
-</div>
+            <?php
+            $userProfile = getUserProfileData($userId);
+            ?>
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                    <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                        <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                             alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                             class="avatar-small">
+                    <?php else: ?>
+                        <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
+                    <?php endif; ?>
+                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
+                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
+                <div class="profile-dropdown-menu" id="profileMenu">
+                    <div class="dropdown-header">Account</div>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                        <span class="material-symbols-outlined">logout</span> Logout
+                    </button>
+                </div>
+            </div>
         </header>
+
         <main class="main-scroll">
             <div class="container">
                 <!-- Toast Messages -->
@@ -1129,7 +1560,12 @@ $userProfile = getUserProfileData($userId);
                         </p>
                     </div>
                 <?php else: ?>
-                    <?php foreach ($filteredJobs as $job): ?>
+                    <?php foreach ($filteredJobs as $job): 
+                        $skillsData = json_decode($job['skills_required'] ?? '{}', true);
+                        $displaySkills = $skillsData['skills'] ?? [];
+                        $displayQualifications = $skillsData['qualifications'] ?? [];
+                        $displayExperience = $skillsData['experience'] ?? [];
+                    ?>
                         <div class="job-card">
                             <div class="job-card-header">
                                 <div>
@@ -1145,7 +1581,7 @@ $userProfile = getUserProfileData($userId);
                                         </span>
                                         <span>
                                             <span class="material-symbols-outlined">work</span>
-                                            <?php echo ucfirst(str_replace('_', ' ', $job['job_type'] ?? 'Full-time')); ?>
+                                            <?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?>
                                         </span>
                                         <?php if ($job['salary_min'] > 0 || $job['salary_max'] > 0): ?>
                                             <span>
@@ -1157,7 +1593,20 @@ $userProfile = getUserProfileData($userId);
                                             <span class="material-symbols-outlined">calendar_today</span>
                                             Posted <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
                                         </span>
+                                        <?php if ($job['experience_level']): ?>
+                                            <span>
+                                                <span class="material-symbols-outlined">trending_up</span>
+                                                <?php echo htmlspecialchars($job['experience_level']); ?>
+                                            </span>
+                                        <?php endif; ?>
                                     </div>
+                                    <?php if ($job['agency_name']): ?>
+                                        <div class="job-card-agency" style="margin-top:0.25rem;">
+                                            <span class="material-symbols-outlined">apartment</span>
+                                            Agency: <?php echo htmlspecialchars($job['agency_name']); ?>
+                                            <span style="font-size:0.625rem; color:var(--text-on-surface-variant);">(<?php echo htmlspecialchars($job['agency_code']); ?>)</span>
+                                        </div>
+                                    <?php endif; ?>
                                 </div>
                                 <span class="badge badge-<?php echo $job['status']; ?>">
                                     <?php echo ucfirst(str_replace('_', ' ', $job['status'])); ?>
@@ -1165,8 +1614,20 @@ $userProfile = getUserProfileData($userId);
                             </div>
 
                             <div class="job-card-description">
-                                <?php echo htmlspecialchars(substr($job['description'] ?? '', 0, 200)) . '...'; ?>
+                                <?php echo htmlspecialchars(substr($job['description'] ?? '', 0, 200)); ?>
+                                <?php if (strlen($job['description'] ?? '') > 200): ?>...<?php endif; ?>
                             </div>
+
+                            <?php if (!empty($displaySkills)): ?>
+                                <div class="job-card-skills">
+                                    <?php foreach (array_slice($displaySkills, 0, 6) as $skill): ?>
+                                        <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
+                                    <?php endforeach; ?>
+                                    <?php if (count($displaySkills) > 6): ?>
+                                        <span class="skill-tag">+<?php echo count($displaySkills) - 6; ?> more</span>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
 
                             <div class="job-card-footer">
                                 <div class="job-card-stats">
@@ -1176,8 +1637,14 @@ $userProfile = getUserProfileData($userId);
                                     </span>
                                     <span>
                                         <span class="material-symbols-outlined">people</span>
-                                        <?php echo $job['positions'] ?? 1; ?> Positions
+                                        <?php echo $job['positions_available'] ?? 1; ?> Positions
                                     </span>
+                                    <?php if ($job['urgency']): ?>
+                                        <span>
+                                            <span class="material-symbols-outlined">priority_high</span>
+                                            <?php echo ucfirst($job['urgency']); ?>
+                                        </span>
+                                    <?php endif; ?>
                                 </div>
                                 <div class="job-card-actions">
                                     <a href="job-details.php?id=<?php echo $job['id']; ?>" class="btn btn-sm btn-outline">
@@ -1221,34 +1688,87 @@ $userProfile = getUserProfileData($userId);
                 <h2>Post New Job</h2>
                 <button class="modal-close" onclick="closeModal()">×</button>
             </div>
-            <form method="POST" action="" onsubmit="return validateJobForm()">
+            <form method="POST" action="" id="postJobForm">
                 <input type="hidden" name="action" value="post_job">
                 <div class="modal-body">
+                    <!-- =============================================
+                    RECRUITMENT AGENCY SELECTION
+                    ============================================= -->
+                    <div class="form-group">
+                        <label>Recruitment Agency <span class="required">*</span></label>
+                        <div class="agency-selection" id="agencySelection">
+                            <?php if (empty($agencies)): ?>
+                                <div style="grid-column:1/-1; text-align:center; padding:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">
+                                    No active recruitment agencies found. Please contact your system administrator.
+                                </div>
+                            <?php else: ?>
+                                <?php foreach ($agencies as $agency): ?>
+                                    <label class="agency-option" data-agency-id="<?php echo $agency['id']; ?>">
+                                        <input type="radio" name="agency_id" value="<?php echo $agency['id']; ?>" 
+                                               <?php echo $loop->first ?? false ? 'checked' : ''; ?>>
+                                        <div class="agency-logo">
+                                            <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
+                                                <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" 
+                                                     alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
+                                            <?php else: ?>
+                                                <?php echo substr($agency['agency_name'], 0, 1); ?>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="agency-info">
+                                            <span class="agency-name"><?php echo htmlspecialchars($agency['agency_name']); ?></span>
+                                            <span class="agency-code"><?php echo htmlspecialchars($agency['agency_code']); ?></span>
+                                            <?php if ($agency['contact_person']): ?>
+                                                <span style="font-size:0.625rem; color:var(--text-on-surface-variant);">
+                                                    <?php echo htmlspecialchars($agency['contact_person']); ?>
+                                                </span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </label>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                        <div class="helper-text" style="margin-top:0.25rem;">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem;">info</span>
+                            Select the recruitment agency that will handle this job posting.
+                        </div>
+                    </div>
+
                     <div class="form-group">
                         <label>Job Title <span class="required">*</span></label>
                         <input type="text" name="title" class="form-control" placeholder="e.g., Senior Software Engineer" required>
                     </div>
 
-                    <div class="form-group">
-                        <label>Location <span class="required">*</span></label>
-                        <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote, Hybrid" required>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Location <span class="required">*</span></label>
+                            <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote, Hybrid" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Job Type <span class="required">*</span></label>
+                            <select name="job_type" class="form-control" required>
+                                <?php foreach ($jobTypes as $type): ?>
+                                    <option value="<?php echo $type; ?>"><?php echo $type; ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Job Type <span class="required">*</span></label>
-                            <select name="job_type" class="form-control" required>
-                                <option value="full-time">Full-time</option>
-                                <option value="part-time">Part-time</option>
-                                <option value="contract">Contract</option>
-                                <option value="temporary">Temporary</option>
-                                <option value="internship">Internship</option>
-                                <option value="freelance">Freelance</option>
+                            <label>Experience Level <span class="required">*</span></label>
+                            <select name="experience_level" class="form-control" required>
+                                <?php foreach ($experienceLevels as $level): ?>
+                                    <option value="<?php echo $level; ?>"><?php echo $level; ?></option>
+                                <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Number of Positions</label>
-                            <input type="number" name="positions" class="form-control" value="1" min="1">
+                            <label>Urgency</label>
+                            <select name="urgency" class="form-control">
+                                <?php foreach ($urgencyLevels as $level): ?>
+                                    <option value="<?php echo $level; ?>"><?php echo ucfirst($level); ?></option>
+                                <?php endforeach; ?>
+                            </select>
                         </div>
                     </div>
 
@@ -1263,19 +1783,123 @@ $userProfile = getUserProfileData($userId);
                         </div>
                     </div>
 
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Number of Positions</label>
+                            <input type="number" name="positions" class="form-control" value="1" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Application Deadline</label>
+                            <input type="date" name="application_deadline" class="form-control">
+                        </div>
+                    </div>
+
                     <div class="form-group">
                         <label>Job Description <span class="required">*</span></label>
                         <textarea name="description" class="form-control" placeholder="Describe the role, responsibilities, and what makes this opportunity great..." rows="4" required></textarea>
                     </div>
 
+                    <!-- =============================================
+                    SKILLS CHECKLIST - CUSTOMIZABLE
+                    ============================================= -->
                     <div class="form-group">
-                        <label>Requirements <span class="required">*</span></label>
-                        <textarea name="requirements" class="form-control" placeholder="List the qualifications, skills, and experience needed..." rows="3" required></textarea>
+                        <label>Skills Required <span class="required">*</span></label>
+                        <div class="checklist-section">
+                            <div class="section-header">
+                                <span class="section-title">
+                                    <span class="material-symbols-outlined">psychology</span>
+                                    Select from suggestions
+                                </span>
+                                <span class="count-badge" id="skillsCount">0 selected</span>
+                            </div>
+                            <div class="checklist-grid" id="skillsChecklist">
+                                <?php foreach ($suggestedSkills as $skill): ?>
+                                    <label class="checklist-item">
+                                        <input type="checkbox" name="skills[]" value="<?php echo htmlspecialchars($skill); ?>">
+                                        <span class="item-label"><?php echo htmlspecialchars($skill); ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="custom-input-row">
+                                <input type="text" class="form-control" id="customSkillInput" placeholder="Add custom skill..." style="flex:1;">
+                                <button type="button" class="btn-add" onclick="addCustomItem('skills', 'customSkillInput')">+ Add</button>
+                            </div>
+                            <div class="selected-items-display" id="skillsDisplay">
+                                <span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No skills added yet</span>
+                            </div>
+                        </div>
                     </div>
+
+                    <!-- =============================================
+                    QUALIFICATIONS CHECKLIST - CUSTOMIZABLE
+                    ============================================= -->
+                    <div class="form-group">
+                        <label>Qualifications <span class="required">*</span></label>
+                        <div class="checklist-section">
+                            <div class="section-header">
+                                <span class="section-title">
+                                    <span class="material-symbols-outlined">school</span>
+                                    Select from suggestions
+                                </span>
+                                <span class="count-badge" id="qualificationsCount">0 selected</span>
+                            </div>
+                            <div class="checklist-grid" id="qualificationsChecklist">
+                                <?php foreach ($suggestedQualifications as $qual): ?>
+                                    <label class="checklist-item">
+                                        <input type="checkbox" name="qualifications[]" value="<?php echo htmlspecialchars($qual); ?>">
+                                        <span class="item-label"><?php echo htmlspecialchars($qual); ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="custom-input-row">
+                                <input type="text" class="form-control" id="customQualificationInput" placeholder="Add custom qualification..." style="flex:1;">
+                                <button type="button" class="btn-add" onclick="addCustomItem('qualifications', 'customQualificationInput')">+ Add</button>
+                            </div>
+                            <div class="selected-items-display" id="qualificationsDisplay">
+                                <span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No qualifications added yet</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- =============================================
+                    EXPERIENCE CHECKLIST - CUSTOMIZABLE
+                    ============================================= -->
+                    <div class="form-group">
+                        <label>Experience Required <span class="required">*</span></label>
+                        <div class="checklist-section">
+                            <div class="section-header">
+                                <span class="section-title">
+                                    <span class="material-symbols-outlined">work_history</span>
+                                    Select from suggestions
+                                </span>
+                                <span class="count-badge" id="experienceCount">0 selected</span>
+                            </div>
+                            <div class="checklist-grid" id="experienceChecklist">
+                                <?php foreach ($suggestedExperience as $exp): ?>
+                                    <label class="checklist-item">
+                                        <input type="checkbox" name="experience[]" value="<?php echo htmlspecialchars($exp); ?>">
+                                        <span class="item-label"><?php echo htmlspecialchars($exp); ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="custom-input-row">
+                                <input type="text" class="form-control" id="customExperienceInput" placeholder="Add custom experience..." style="flex:1;">
+                                <button type="button" class="btn-add" onclick="addCustomItem('experience', 'customExperienceInput')">+ Add</button>
+                            </div>
+                            <div class="selected-items-display" id="experienceDisplay">
+                                <span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No experience added yet</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Hidden fields for custom items -->
+                    <input type="hidden" name="custom_skills" id="customSkills">
+                    <input type="hidden" name="custom_qualifications" id="customQualifications">
+                    <input type="hidden" name="custom_experience" id="customExperience">
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">
+                    <button type="submit" class="btn btn-primary" id="submitBtn">
                         <span class="material-symbols-outlined">send</span>
                         Post Job
                     </button>
@@ -1284,9 +1908,12 @@ $userProfile = getUserProfileData($userId);
         </div>
     </div>
 
+    <!-- =============================================
+    JAVASCRIPT
+    ============================================= -->
     <script>
         // =============================================
-        // SIDEBAR TOGGLE
+        // 1. SIDEBAR TOGGLE
         // =============================================
         const sidebar = document.getElementById('appSidebar');
         const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
@@ -1310,7 +1937,7 @@ $userProfile = getUserProfileData($userId);
         });
 
         // =============================================
-        // MOBILE SIDEBAR
+        // 2. MOBILE SIDEBAR
         // =============================================
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         const sidebarBackdrop = document.getElementById('sidebarBackdrop');
@@ -1327,83 +1954,406 @@ $userProfile = getUserProfileData($userId);
             document.body.style.overflow = '';
         }
 
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        if (mobileMenuBtn) {
+            mobileMenuBtn.addEventListener('click', openMobileSidebar);
+        }
+        if (sidebarBackdrop) {
+            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        }
 
         // =============================================
-        // PROFILE DROPDOWN
+        // 3. PROFILE DROPDOWN
         // =============================================
         const profileToggle = document.getElementById('profileToggle');
         const profileMenu = document.getElementById('profileMenu');
 
-        profileToggle.addEventListener('click', function(e) {
-            e.stopPropagation();
-            this.classList.toggle('open');
-            profileMenu.classList.toggle('open');
-        });
+        if (profileToggle && profileMenu) {
+            profileToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                this.classList.toggle('open');
+                profileMenu.classList.toggle('open');
+            });
 
-        document.addEventListener('click', function(e) {
-            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
+            document.addEventListener('click', function(e) {
+                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
+        }
+
+        // =============================================
+        // 4. AGENCY SELECTION STYLING
+        // =============================================
+        document.querySelectorAll('.agency-option input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                document.querySelectorAll('.agency-option').forEach(opt => {
+                    opt.classList.remove('selected');
+                });
+                if (this.checked) {
+                    this.closest('.agency-option').classList.add('selected');
+                }
+            });
+            if (radio.checked) {
+                radio.closest('.agency-option').classList.add('selected');
             }
         });
 
         // =============================================
-        // MODAL
+        // 5. MODAL
         // =============================================
         function openModal() {
-            document.getElementById('postJobModal').classList.add('active');
+            const modal = document.getElementById('postJobModal');
+            if (modal) modal.classList.add('active');
             document.body.style.overflow = 'hidden';
+            const form = document.getElementById('postJobForm');
+            if (form) form.reset();
+            resetChecklists();
+            const firstRadio = document.querySelector('.agency-option input[type="radio"]');
+            if (firstRadio) {
+                firstRadio.checked = true;
+                document.querySelectorAll('.agency-option').forEach(opt => opt.classList.remove('selected'));
+                firstRadio.closest('.agency-option').classList.add('selected');
+            }
         }
 
         function closeModal() {
-            document.getElementById('postJobModal').classList.remove('active');
+            const modal = document.getElementById('postJobModal');
+            if (modal) modal.classList.remove('active');
             document.body.style.overflow = '';
         }
 
-        // Close modal on backdrop click
-        document.getElementById('postJobModal').addEventListener('click', function(e) {
-            if (e.target === this) closeModal();
-        });
-
-        // Close modal on Escape key
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') closeModal();
-            if (e.key === 'Escape') {
-                closeMobileSidebar();
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
-
-        // =============================================
-        // FORM VALIDATION
-        // =============================================
-        function validateJobForm() {
-            const title = document.querySelector('input[name="title"]').value.trim();
-            const description = document.querySelector('textarea[name="description"]').value.trim();
-            const requirements = document.querySelector('textarea[name="requirements"]').value.trim();
-            const location = document.querySelector('input[name="location"]').value.trim();
-
-            if (!title || !description || !requirements || !location) {
-                alert('Please fill in all required fields marked with *');
-                return false;
-            }
-
-            const salaryMin = parseFloat(document.querySelector('input[name="salary_min"]').value);
-            const salaryMax = parseFloat(document.querySelector('input[name="salary_max"]').value);
-
-            if (salaryMin > 0 && salaryMax > 0 && salaryMin > salaryMax) {
-                alert('Minimum salary cannot be greater than maximum salary.');
-                return false;
-            }
-
-            return true;
+        function resetChecklists() {
+            document.querySelectorAll('.checklist-item input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+                cb.closest('.checklist-item').classList.remove('checked');
+            });
+            ['skills', 'qualifications', 'experience'].forEach(type => {
+                const display = document.getElementById(type + 'Display');
+                if (display) {
+                    display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
+                }
+                const hidden = document.getElementById('custom' + type.charAt(0).toUpperCase() + type.slice(1));
+                if (hidden) hidden.value = '';
+                const count = document.getElementById(type + 'Count');
+                if (count) count.textContent = '0 selected';
+            });
         }
 
+        const modalOverlay = document.getElementById('postJobModal');
+        if (modalOverlay) {
+            modalOverlay.addEventListener('click', function(e) {
+                if (e.target === this) closeModal();
+            });
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+                closeMobileSidebar();
+                if (profileToggle) profileToggle.classList.remove('open');
+                if (profileMenu) profileMenu.classList.remove('open');
+            }
+        });
+
         // =============================================
-        // RESPONSIVE HANDLING
+        // 6. CUSTOM CHECKLIST FUNCTIONS
+        // =============================================
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function updateDisplay(type, displayId, countId) {
+            const checkboxes = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]`);
+            const display = document.getElementById(displayId);
+            const count = document.getElementById(countId);
+            const customHidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+            
+            if (!display || !count) return;
+
+            const selected = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]:checked`);
+            const selectedNames = Array.from(selected).map(cb => cb.value);
+            
+            const customItems = [];
+            display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
+                const text = tag.textContent.replace('×', '').trim();
+                if (text) customItems.push(text);
+            });
+            
+            const allItems = [...selectedNames, ...customItems];
+            
+            document.querySelectorAll(`#${type}Checklist .checklist-item`).forEach(label => {
+                const cb = label.querySelector('input[type="checkbox"]');
+                if (cb && cb.checked) {
+                    label.classList.add('checked');
+                } else {
+                    label.classList.remove('checked');
+                }
+            });
+
+            if (allItems.length === 0) {
+                display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
+            } else {
+                display.innerHTML = allItems.map(name => `
+                    <span class="item-tag ${customItems.includes(name) ? 'custom-item' : ''}">
+                        ${escapeHtml(name)}
+                        <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(name)}">×</button>
+                    </span>
+                `).join('');
+                
+                display.querySelectorAll('.remove-item').forEach(btn => {
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        const type = this.dataset.type;
+                        const value = this.dataset.value;
+                        const isCustom = this.closest('.item-tag').classList.contains('custom-item');
+                        
+                        if (isCustom) {
+                            this.closest('.item-tag').remove();
+                            updateCustomHidden(type);
+                            updateDisplay(type, `${type}Display`, `${type}Count`);
+                        } else {
+                            const checkbox = document.querySelector(`#${type}Checklist input[type="checkbox"][value="${value}"]`);
+                            if (checkbox) {
+                                checkbox.checked = false;
+                                updateDisplay(type, `${type}Display`, `${type}Count`);
+                            }
+                        }
+                    });
+                });
+                
+                updateCustomHidden(type);
+            }
+
+            count.textContent = `${allItems.length} selected`;
+        }
+
+        function updateCustomHidden(type) {
+            const display = document.getElementById(`${type}Display`);
+            const hidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+            
+            if (!display || !hidden) return;
+            
+            const customItems = [];
+            display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
+                const text = tag.textContent.replace('×', '').trim();
+                if (text) customItems.push(text);
+            });
+            
+            hidden.value = customItems.join(', ');
+        }
+
+        function addCustomItem(type, inputId) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            
+            const value = input.value.trim();
+            if (!value) {
+                alert('Please enter a value first.');
+                return;
+            }
+            
+            const display = document.getElementById(`${type}Display`);
+            if (display) {
+                const existing = display.querySelectorAll('.item-tag');
+                for (let tag of existing) {
+                    if (tag.textContent.replace('×', '').trim().toLowerCase() === value.toLowerCase()) {
+                        alert('This item already exists.');
+                        return;
+                    }
+                }
+            }
+            
+            const tag = document.createElement('span');
+            tag.className = 'item-tag custom-item';
+            tag.innerHTML = `${escapeHtml(value)} <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(value)}">×</button>`;
+            
+            const emptyMsg = display.querySelector('span');
+            if (emptyMsg && display.children.length === 1) {
+                display.innerHTML = '';
+            }
+            
+            display.appendChild(tag);
+            
+            tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                e.stopPropagation();
+                this.closest('.item-tag').remove();
+                updateCustomHidden(type);
+                updateDisplay(type, `${type}Display`, `${type}Count`);
+            });
+            
+            updateCustomHidden(type);
+            updateDisplay(type, `${type}Display`, `${type}Count`);
+            input.value = '';
+            input.focus();
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const skillsCheckboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
+            skillsCheckboxes.forEach(cb => {
+                cb.addEventListener('change', function() {
+                    updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+                });
+                const label = cb.closest('.checklist-item');
+                if (label) {
+                    label.addEventListener('click', function(e) {
+                        if (e.target.tagName !== 'INPUT') {
+                            const c = this.querySelector('input[type="checkbox"]');
+                            if (c) {
+                                c.checked = !c.checked;
+                                updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+                            }
+                        }
+                    });
+                }
+            });
+            
+            const qualCheckboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
+            qualCheckboxes.forEach(cb => {
+                cb.addEventListener('change', function() {
+                    updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+                });
+                const label = cb.closest('.checklist-item');
+                if (label) {
+                    label.addEventListener('click', function(e) {
+                        if (e.target.tagName !== 'INPUT') {
+                            const c = this.querySelector('input[type="checkbox"]');
+                            if (c) {
+                                c.checked = !c.checked;
+                                updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+                            }
+                        }
+                    });
+                }
+            });
+            
+            const expCheckboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
+            expCheckboxes.forEach(cb => {
+                cb.addEventListener('change', function() {
+                    updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+                });
+                const label = cb.closest('.checklist-item');
+                if (label) {
+                    label.addEventListener('click', function(e) {
+                        if (e.target.tagName !== 'INPUT') {
+                            const c = this.querySelector('input[type="checkbox"]');
+                            if (c) {
+                                c.checked = !c.checked;
+                                updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+                            }
+                        }
+                    });
+                }
+            });
+
+            document.getElementById('customSkillInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addCustomItem('skills', 'customSkillInput');
+                }
+            });
+            document.getElementById('customQualificationInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addCustomItem('qualifications', 'customQualificationInput');
+                }
+            });
+            document.getElementById('customExperienceInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addCustomItem('experience', 'customExperienceInput');
+                }
+            });
+
+            updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+            updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+            updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+        });
+
+        // =============================================
+        // 7. FORM VALIDATION
+        // =============================================
+        document.getElementById('postJobForm').addEventListener('submit', function(e) {
+            const title = this.querySelector('input[name="title"]');
+            const description = this.querySelector('textarea[name="description"]');
+            const location = this.querySelector('input[name="location"]');
+            const jobType = this.querySelector('select[name="job_type"]');
+            const experienceLevel = this.querySelector('select[name="experience_level"]');
+            const agencySelected = this.querySelector('input[name="agency_id"]:checked');
+            
+            const allSkills = document.querySelectorAll('#skillsDisplay .item-tag');
+            const allQualifications = document.querySelectorAll('#qualificationsDisplay .item-tag');
+            const allExperience = document.querySelectorAll('#experienceDisplay .item-tag');
+            
+            let errors = [];
+
+            [title, description, location, jobType, experienceLevel].forEach(el => {
+                if (el) el.style.borderColor = '';
+            });
+
+            if (!agencySelected) {
+                errors.push('Please select a recruitment agency.');
+            }
+
+            if (!title || !title.value.trim()) {
+                errors.push('Please enter a job title.');
+                if (title) title.style.borderColor = '#dc2626';
+            }
+
+            if (!description || !description.value.trim()) {
+                errors.push('Please enter a job description.');
+                if (description) description.style.borderColor = '#dc2626';
+            }
+
+            if (!location || !location.value.trim()) {
+                errors.push('Please enter a location.');
+                if (location) location.style.borderColor = '#dc2626';
+            }
+
+            if (!jobType || !jobType.value) {
+                errors.push('Please select a job type.');
+                if (jobType) jobType.style.borderColor = '#dc2626';
+            }
+
+            if (!experienceLevel || !experienceLevel.value) {
+                errors.push('Please select an experience level.');
+                if (experienceLevel) experienceLevel.style.borderColor = '#dc2626';
+            }
+
+            if (allSkills.length === 0) {
+                errors.push('Please add at least one skill.');
+            }
+
+            if (allQualifications.length === 0) {
+                errors.push('Please add at least one qualification.');
+            }
+
+            if (allExperience.length === 0) {
+                errors.push('Please add at least one experience requirement.');
+            }
+
+            const salaryMin = parseFloat(this.querySelector('input[name="salary_min"]').value);
+            const salaryMax = parseFloat(this.querySelector('input[name="salary_max"]').value);
+
+            if (salaryMin > 0 && salaryMax > 0 && salaryMin > salaryMax) {
+                errors.push('Minimum salary cannot be greater than maximum salary.');
+            }
+
+            if (errors.length > 0) {
+                e.preventDefault();
+                alert('Please fix the following errors:\n\n• ' + errors.join('\n• '));
+                
+                const firstError = [title, description, location, jobType, experienceLevel].find(el => 
+                    el && el.style.borderColor === '#dc2626'
+                );
+                if (firstError) firstError.focus();
+            }
+        });
+
+        // =============================================
+        // 8. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -1414,7 +2364,7 @@ $userProfile = getUserProfileData($userId);
                     sidebar.classList.remove('collapsed');
                 } else {
                     sidebar.classList.remove('mobile-open');
-                    sidebarBackdrop.classList.remove('active');
+                    if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
                     document.body.style.overflow = '';
                     const saved = localStorage.getItem('sidebarCollapsed');
                     if (saved === 'true') {

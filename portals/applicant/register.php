@@ -182,7 +182,6 @@ if (isset($_SESSION['register_form_data'])) {
             --primary-medium: #2c5f8a;
             --primary-light: #4a90d9;
             --primary-lighter: #6db3f2;
-            --primary-gradient: linear-gradient(135deg, #1a3a5c 0%, #4a90d9 100%);
             --white: #ffffff;
             --gray-light: #f8f9fc;
             --gray-border: #e8ecf1;
@@ -197,6 +196,8 @@ if (isset($_SESSION['register_form_data'])) {
             --strength-fair: #f59e0b;
             --strength-good: #3b82f6;
             --strength-strong: #22c55e;
+            /* ===== NEW: Primary button color ===== */
+            --btn-primary-solid: #4F46E5;
         }
 
         body {
@@ -230,23 +231,10 @@ if (isset($_SESSION['register_form_data'])) {
         .nav-brand {
             display: flex;
             align-items: center;
-            gap: 12px;
-            font-size: 22px;
+            gap: 10px;
+            font-size: 20px;
             font-weight: 700;
             color: var(--primary-blue);
-        }
-
-        .nav-brand .brand-icon {
-            width: 38px;
-            height: 38px;
-            background: var(--primary-gradient);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 18px;
-            font-weight: 800;
         }
 
         .nav-actions {
@@ -290,15 +278,19 @@ if (isset($_SESSION['register_form_data'])) {
             color: white;
         }
 
+        /* =============================================
+           BUTTON COLOR CHANGES - Solid #4F46E5
+           ============================================= */
         .btn-primary {
-            background: var(--primary-gradient);
+            background: var(--btn-primary-solid);
             color: white;
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35);
         }
 
         .btn-primary:hover {
+            background: #4338ca;
             transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(74, 144, 217, 0.45);
+            box-shadow: 0 8px 30px rgba(79, 70, 229, 0.45);
         }
 
         .btn-large {
@@ -372,10 +364,10 @@ if (isset($_SESSION['register_form_data'])) {
         }
 
         .step-indicator .step-circle.active {
-            background: var(--primary-gradient);
+            background: var(--btn-primary-solid);
             color: white;
-            border-color: var(--primary-light);
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
+            border-color: var(--btn-primary-solid);
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35);
         }
 
         .step-indicator .step-circle.done {
@@ -409,7 +401,7 @@ if (isset($_SESSION['register_form_data'])) {
         }
 
         .step-indicator .step-line.active {
-            background: var(--primary-light);
+            background: var(--btn-primary-solid);
         }
 
         .step-indicator .step-label {
@@ -880,15 +872,19 @@ if (isset($_SESSION['register_form_data'])) {
             gap: 8px;
         }
 
+        /* =============================================
+           MODAL BUTTON COLOR CHANGES
+           ============================================= */
         .modal .btn-modal.primary {
-            background: var(--primary-gradient);
+            background: var(--btn-primary-solid);
             color: white;
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35);
         }
 
         .modal .btn-modal.primary:hover {
+            background: #4338ca;
             transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(74, 144, 217, 0.45);
+            box-shadow: 0 8px 30px rgba(79, 70, 229, 0.45);
         }
 
         .modal .btn-modal.success {
@@ -898,6 +894,7 @@ if (isset($_SESSION['register_form_data'])) {
         }
 
         .modal .btn-modal.success:hover {
+            background: #16a34a;
             transform: translateY(-2px);
             box-shadow: 0 8px 30px rgba(34, 197, 94, 0.45);
         }
@@ -1011,8 +1008,7 @@ if (isset($_SESSION['register_form_data'])) {
     <!-- ===== NAVBAR ===== -->
     <nav class="navbar">
         <a href="../../index.php" class="nav-brand">
-            <span class="brand-icon">I</span>
-            ISMERS
+            <span style="font-weight: 700;">Applicant Registration</span>
         </a>
         <div class="nav-actions">
             <a href="../../login.php">Sign In</a>
@@ -1027,7 +1023,7 @@ if (isset($_SESSION['register_form_data'])) {
             <!-- Header -->
             <div class="register-header">
                 <h1>Create Your Account</h1>
-                <p>Start your journey with ISMERS</p>
+                <p>Start your journey with us</p>
             </div>
 
             <!-- Step Indicator (2 Steps) -->
@@ -1073,6 +1069,7 @@ if (isset($_SESSION['register_form_data'])) {
                             <label>First Name <span class="required">*</span></label>
                             <div class="input-wrapper">
                                 <span class="input-icon">
+                                    <!-- User/Profile Icon - Minimalist -->
                                     <svg viewBox="0 0 24 24">
                                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                                         <circle cx="12" cy="7" r="4"/>
@@ -1087,6 +1084,7 @@ if (isset($_SESSION['register_form_data'])) {
                             <label>Last Name <span class="required">*</span></label>
                             <div class="input-wrapper">
                                 <span class="input-icon">
+                                    <!-- User/Profile Icon - Minimalist -->
                                     <svg viewBox="0 0 24 24">
                                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                                         <circle cx="12" cy="7" r="4"/>
@@ -1101,6 +1099,7 @@ if (isset($_SESSION['register_form_data'])) {
                             <label>Middle Initial</label>
                             <div class="input-wrapper">
                                 <span class="input-icon">
+                                    <!-- User/Profile Icon - Minimalist -->
                                     <svg viewBox="0 0 24 24">
                                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                                         <circle cx="12" cy="7" r="4"/>
@@ -1131,9 +1130,10 @@ if (isset($_SESSION['register_form_data'])) {
                         <label>Email Address <span class="required">*</span></label>
                         <div class="input-wrapper">
                             <span class="input-icon">
+                                <!-- Email Icon - Minimalist Envelope -->
                                 <svg viewBox="0 0 24 24">
-                                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                                    <polyline points="22,6 12,13 2,6"/>
+                                    <rect x="2" y="4" width="20" height="16" rx="2"/>
+                                    <path d="M22 6L12 13L2 6"/>
                                 </svg>
                             </span>
                             <input type="email" id="email" name="email" placeholder="you@example.com"
@@ -1146,9 +1146,10 @@ if (isset($_SESSION['register_form_data'])) {
                         <label>Password <span class="required">*</span></label>
                         <div class="input-wrapper">
                             <span class="input-icon">
+                                <!-- Lock Icon - Minimalist -->
                                 <svg viewBox="0 0 24 24">
                                     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                    <path d="M7 11V7a5 5 0 0110 0v4"/>
+                                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                                 </svg>
                             </span>
                             <input type="password" id="password" name="password" placeholder="Min 8 characters" required>
@@ -1202,16 +1203,17 @@ if (isset($_SESSION['register_form_data'])) {
                             <label>Gender <span class="required">*</span></label>
                             <div class="input-wrapper">
                                 <span class="input-icon">
+                                    <!-- Gender Icon - Minimalist -->
                                     <svg viewBox="0 0 24 24">
                                         <circle cx="12" cy="12" r="4"/>
-                                        <path d="M12 2v4"/>
-                                        <path d="M12 18v4"/>
-                                        <path d="M4.93 4.93l2.83 2.83"/>
-                                        <path d="M16.24 16.24l2.83 2.83"/>
-                                        <path d="M2 12h4"/>
-                                        <path d="M18 12h4"/>
-                                        <path d="M4.93 19.07l2.83-2.83"/>
-                                        <path d="M16.24 7.76l2.83-2.83"/>
+                                        <line x1="12" y1="2" x2="12" y2="6"/>
+                                        <line x1="12" y1="18" x2="12" y2="22"/>
+                                        <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+                                        <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                                        <line x1="2" y1="12" x2="6" y2="12"/>
+                                        <line x1="18" y1="12" x2="22" y2="12"/>
+                                        <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+                                        <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
                                     </svg>
                                 </span>
                                 <select id="gender" name="gender" required>
@@ -1265,8 +1267,9 @@ if (isset($_SESSION['register_form_data'])) {
                         <label>Place of Birth <span class="required">*</span></label>
                         <div class="input-wrapper">
                             <span class="input-icon">
+                                <!-- Location/Pin Icon - Minimalist -->
                                 <svg viewBox="0 0 24 24">
-                                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/>
+                                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
                                     <circle cx="12" cy="10" r="3"/>
                                 </svg>
                             </span>
@@ -1280,6 +1283,7 @@ if (isset($_SESSION['register_form_data'])) {
                         <label>Region <span class="required">*</span></label>
                         <div class="input-wrapper">
                             <span class="input-icon">
+                                <!-- Grid/Globe Icon - Minimalist -->
                                 <svg viewBox="0 0 24 24">
                                     <circle cx="12" cy="12" r="10"/>
                                     <line x1="2" y1="12" x2="22" y2="12"/>
@@ -1297,9 +1301,17 @@ if (isset($_SESSION['register_form_data'])) {
                         <label>City / Municipality <span class="required">*</span></label>
                         <div class="input-wrapper">
                             <span class="input-icon">
+                                <!-- Building/City Icon - Minimalist -->
                                 <svg viewBox="0 0 24 24">
-                                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/>
-                                    <circle cx="12" cy="10" r="3"/>
+                                    <rect x="4" y="2" width="16" height="20" rx="1"/>
+                                    <line x1="9" y1="6" x2="9" y2="8"/>
+                                    <line x1="15" y1="6" x2="15" y2="8"/>
+                                    <line x1="9" y1="10" x2="9" y2="12"/>
+                                    <line x1="15" y1="10" x2="15" y2="12"/>
+                                    <line x1="9" y1="14" x2="9" y2="16"/>
+                                    <line x1="15" y1="14" x2="15" y2="16"/>
+                                    <line x1="9" y1="18" x2="9" y2="20"/>
+                                    <line x1="15" y1="18" x2="15" y2="20"/>
                                 </svg>
                             </span>
                             <select id="city" name="city" required disabled>
@@ -1425,7 +1437,7 @@ if (isset($_SESSION['register_form_data'])) {
             ],
             "Cordillera Administrative Region": [
                 "Baguio", "Tabuk", "Bontoc", "Lagawe", "La Trinidad", "Itogon",
-                "Mankayan", "Sagada", "Banaue", "Mayoyao", "Hungduan", "Lubuagan"
+                "Mankayan", "Sagada", "Banaue", "Mayoyao", "Hungduan", "Lubuangan"
             ]
         };
 
@@ -1818,7 +1830,6 @@ if (isset($_SESSION['register_form_data'])) {
         function isValidEmail(email) {
             return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
         }
-
         // Clear error styling on input
         document.querySelectorAll('input, select').forEach(el => {
             el.addEventListener('input', function() {

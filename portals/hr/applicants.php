@@ -2,7 +2,19 @@
 // portals/hr/applicants.php - Manage Applicants (FIXED RESUME PATH)
 session_start();
 
+// =============================================
+// DEBUG MODE - Remove in production
+// =============================================
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/debug.log');
+
+// Clear any previous output
+ob_clean();
+
 require_once '../../app/config.php';
+require_once '../../app/email_functions.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -26,10 +38,6 @@ $isHRManager = $role === 'hr_manager';
 // =============================================
 // RESUME PATH CONFIGURATION - FIXED
 // =============================================
-// The resumes are stored in: portals/hr/resumes/
-// Current file location: portals/hr/applicants.php
-// So the path is: resumes/ (same directory)
-
 function getResumeInfo($filename) {
     if (empty($filename)) {
         return null;
@@ -45,17 +53,11 @@ function getResumeInfo($filename) {
     
     // Build paths to check - FIXED: resumes are in portals/hr/resumes/
     $paths = [
-        // Primary: portals/hr/resumes/ (where files actually are)
         'hr_resumes' => __DIR__ . '/resumes/' . $justFilename,
-        // The path as stored in database (uploads/resumes/)
         'database_path' => dirname(__DIR__, 2) . '/' . $filename,
-        // Alternative: hr/includes/resumes/
         'hr_includes_resumes' => dirname(__DIR__, 2) . '/hr/includes/resumes/' . $justFilename,
-        // Uploads/resumes/
         'uploads_resumes' => dirname(__DIR__, 2) . '/uploads/resumes/' . $justFilename,
-        // Portals/uploads/resumes/
         'portals_uploads_resumes' => dirname(__DIR__, 2) . '/portals/uploads/resumes/' . $justFilename,
-        // Current directory
         'current_dir' => __DIR__ . '/' . $justFilename,
     ];
     
@@ -68,7 +70,6 @@ function getResumeInfo($filename) {
         $debugInfo .= "  $key: " . $physicalPath . " - " . ($exists ? '✅ EXISTS' : '❌ NOT FOUND') . "\n";
         
         if ($exists) {
-            // Found the file!
             return [
                 'url' => 'resumes/' . $justFilename,
                 'physical_path' => $physicalPath,
@@ -92,18 +93,15 @@ function getResumeInfo($filename) {
             
             $debugInfo .= "  Found file: $file\n";
             
-            // Check if the file contains the same timestamp
             preg_match('/_(\d+)\.pdf$/', $justFilename, $dbMatch);
             preg_match('/_(\d+)\.pdf$/', $file, $fileMatch);
             
             if (isset($dbMatch[1]) && isset($fileMatch[1])) {
-                // If timestamps match exactly
                 if ($dbMatch[1] === $fileMatch[1]) {
                     $foundMatch = $file;
                     $debugInfo .= "  ✅ EXACT TIMESTAMP MATCH: $file\n";
                     break;
                 }
-                // If timestamps are close (within 100000 difference)
                 if (abs(intval($dbMatch[1]) - intval($fileMatch[1])) < 200000) {
                     $foundMatch = $file;
                     $debugInfo .= "  ✅ CLOSE TIMESTAMP MATCH: $file (diff: " . abs(intval($dbMatch[1]) - intval($fileMatch[1])) . ")\n";
@@ -111,7 +109,6 @@ function getResumeInfo($filename) {
                 }
             }
             
-            // If we have a file that starts with "resume_8_" and no match yet, use it as fallback
             if (strpos($file, 'resume_8_') === 0 && $foundMatch === null) {
                 $foundMatch = $file;
                 $debugInfo .= "  ⚠️ FALLBACK: $file\n";
@@ -130,11 +127,43 @@ function getResumeInfo($filename) {
         }
     }
     
-    // Still not found
     return [
         'exists' => false,
         'debug' => $debugInfo . "\n❌ NO FILE FOUND"
     ];
+}
+
+// Helper function to determine qualification
+function determineQualification($applicant) {
+    // Example qualification criteria:
+    // 1. If match_score exists and is high enough
+    if (!empty($applicant['match_score']) && $applicant['match_score'] >= 70) {
+        return true;
+    }
+    
+    // 2. If applicant has specific skills
+    if (!empty($applicant['skills'])) {
+        $skills = strtolower($applicant['skills']);
+        $requiredSkills = ['php', 'javascript', 'python', 'java', 'sql', 'html', 'css'];
+        foreach ($requiredSkills as $skill) {
+            if (strpos($skills, $skill) !== false) {
+                return true;
+            }
+        }
+    }
+    
+    // 3. If applicant has relevant experience keywords
+    if (!empty($applicant['experience'])) {
+        $experience = strtolower($applicant['experience']);
+        $keywords = ['years', 'experience', 'senior', 'lead', 'manager', 'team'];
+        foreach ($keywords as $keyword) {
+            if (strpos($experience, $keyword) !== false) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
 }
 
 // Get filter parameters
@@ -238,7 +267,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     $feedback = trim($_POST['feedback'] ?? '');
     $interviewDate = $_POST['interview_date'] ?? '';
     $interviewNotes = trim($_POST['interview_notes'] ?? '');
+    $notes = trim($_POST['notes'] ?? '');
     
+    // UPDATE STATUS
     if ($action === 'update_status' && $applicationId > 0 && in_array($newStatus, $statuses)) {
         $current = getRecord("SELECT status FROM applications WHERE id = ?", [$applicationId], "i");
         $oldStatus = $current['status'] ?? 'unknown';
@@ -330,7 +361,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // VIEW APPLICANT - FIXED RESUME HANDLING
+    // VIEW APPLICANT
     if ($action === 'view_applicant' && $applicationId > 0) {
         $applicant = getRecord("SELECT a.*, a.cover_letter, a.resume_path,
                                u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
@@ -344,7 +375,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                                JOIN clients c ON jo.client_id = c.id
                                WHERE a.id = ?", [$applicationId], "i");
         if ($applicant) {
-            // Check for resume file using the new function
+            // Check for resume file
             $resumeInfo = getResumeInfo($applicant['resume_path'] ?? '');
             
             if ($resumeInfo && isset($resumeInfo['exists']) && $resumeInfo['exists'] === true) {
@@ -365,6 +396,122 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         }
         exit;
     }
+    
+// SEND QUALIFICATION NOTIFICATION (Manual)
+if ($action === 'send_qualification' && $applicationId > 0) {
+    // Clear any previous output
+    ob_clean();
+    
+    // Create a debug log file
+    $debugLog = __DIR__ . '/debug_qualification.log';
+    file_put_contents($debugLog, "[" . date('Y-m-d H:i:s') . "] Starting send_qualification for ID: $applicationId\n", FILE_APPEND);
+    
+    try {
+        // Get applicant data
+        $applicant = getRecord("
+            SELECT a.*, 
+            u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
+            ap.skills, ap.experience, ap.education,
+            jo.title as job_title, c.company_name
+            FROM applications a
+            JOIN applicants ap ON a.applicant_id = ap.id
+            JOIN users u ON ap.user_id = u.id
+            JOIN job_orders jo ON a.job_order_id = jo.id
+            JOIN clients c ON jo.client_id = c.id
+            WHERE a.id = ?
+        ", [$applicationId], "i");
+        
+        file_put_contents($debugLog, "Applicant found: " . ($applicant ? 'Yes' : 'No') . "\n", FILE_APPEND);
+        
+        if (!$applicant) {
+            file_put_contents($debugLog, "ERROR: Applicant not found\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'error' => 'Applicant not found.']);
+            exit;
+        }
+        
+        // Check if already sent
+        if (!empty($applicant['follow_up_sent']) && $applicant['follow_up_sent'] == 1) {
+            file_put_contents($debugLog, "ERROR: Notification already sent\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'error' => 'Notification already sent.']);
+            exit;
+        }
+        
+        // Check if applicant is in a terminal state
+        if (in_array($applicant['status'], ['hired', 'rejected', 'withdrawn'])) {
+            file_put_contents($debugLog, "ERROR: Application already processed. Status: " . $applicant['status'] . "\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'error' => 'Application already processed.']);
+            exit;
+        }
+        
+        // Determine qualification
+        $isQualified = isset($_POST['is_qualified']) ? (bool)$_POST['is_qualified'] : false;
+        $notes = trim($_POST['notes'] ?? '');
+        
+        file_put_contents($debugLog, "isQualified: " . ($isQualified ? 'Yes' : 'No') . ", Notes: $notes\n", FILE_APPEND);
+        
+        // Try to send email - WITH SUPPRESSED ERRORS
+        $emailSent = false;
+        try {
+            file_put_contents($debugLog, "Attempting to send email...\n", FILE_APPEND);
+            $emailSent = sendQualificationEmail($applicant, $isQualified, $applicant['company_name'] ?? 'Our Company');
+            file_put_contents($debugLog, "Email send result: " . ($emailSent ? 'Success' : 'Failed') . "\n", FILE_APPEND);
+        } catch (Exception $e) {
+            file_put_contents($debugLog, "Email Exception: " . $e->getMessage() . "\n", FILE_APPEND);
+        }
+        
+        // Always update the database - FIXED SQL SYNTAX
+        $qualificationStatus = $isQualified ? 'qualified' : 'not_qualified';
+        $statusLabel = $isQualified ? 'Qualified' : 'Not Qualified';
+        
+        file_put_contents($debugLog, "Updating database...\n", FILE_APPEND);
+        
+        // Get current notes first to append properly
+        $currentApp = getRecord("SELECT notes FROM applications WHERE id = ?", [$applicationId], "i");
+        $currentNotes = $currentApp['notes'] ?? '';
+        
+        // Build the new notes string manually
+        $newNote = 'Manual qualification: ' . $statusLabel . ' - ' . $notes;
+        if (!empty($currentNotes)) {
+            $newNotes = $currentNotes . "\n" . $newNote;
+        } else {
+            $newNotes = $newNote;
+        }
+        
+        // Update with the built notes string - NO CONCAT IN SQL
+        $updateSql = "UPDATE applications SET 
+                      follow_up_sent = 1,
+                      follow_up_date = NOW(),
+                      qualification_status = ?,
+                      last_follow_up_email = NOW(),
+                      notes = ?
+                      WHERE id = ?";
+        $updateResult = updateRecord($updateSql, [$qualificationStatus, $newNotes, $applicationId], "ssi");
+        
+        file_put_contents($debugLog, "Database update result: " . ($updateResult ? 'Success' : 'Failed') . "\n", FILE_APPEND);
+        
+        // Log activity
+        logActivity($userId, 'Manual Qualification Notification', 'applications', $applicationId, 
+                   "Manual notification sent: " . ($isQualified ? 'Qualified' : 'Not Qualified'));
+        
+        // ALWAYS return success
+        file_put_contents($debugLog, "Returning success response\n", FILE_APPEND);
+        echo json_encode([
+            'success' => true, 
+            'message' => 'Notification sent successfully!'
+        ]);
+        
+    } catch (Exception $e) {
+        // Catch any unexpected errors
+        file_put_contents($debugLog, "UNEXPECTED ERROR: " . $e->getMessage() . "\n", FILE_APPEND);
+        file_put_contents($debugLog, "Stack trace: " . $e->getTraceAsString() . "\n", FILE_APPEND);
+        
+        echo json_encode([
+            'success' => false, 
+            'error' => 'System error: ' . $e->getMessage()
+        ]);
+    }
+    exit;
+}
 }
 ?>
 <!DOCTYPE html>
@@ -411,7 +558,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
         }
-.badge-scheduled { background: #dbeafe; color: #2563eb; }
+
+        .badge-scheduled { background: #dbeafe; color: #2563eb; }
+        .badge-notified-qualified { background: #d1fae5; color: #059669; }
+        .badge-notified-notqualified { background: #fecaca; color: #dc2626; }
+        .badge-pending-notification { background: #fef3c7; color: #d97706; }
+
         * {
             margin: 0;
             padding: 0;
@@ -1104,6 +1256,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             box-shadow: var(--shadow-md);
         }
 
+        .btn-warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-warning:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .btn-danger {
+            background: #dc2626;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
         .btn-sm {
             padding: 0.375rem 0.75rem;
             font-size: 0.75rem;
@@ -1326,12 +1506,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         .badge-hired { background: #d1fae5; color: #059669; }
         .badge-rejected { background: #fecaca; color: #dc2626; }
         .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
+        .badge-notified-qualified { background: #d1fae5; color: #059669; }
+        .badge-notified-notqualified { background: #fecaca; color: #dc2626; }
+        .badge-pending-notification { background: #fef3c7; color: #d97706; }
 
         .action-buttons {
             display: flex;
             gap: 0.375rem;
             justify-content: center;
             flex-wrap: wrap;
+            align-items: center;
         }
 
         /* =============================================
@@ -1403,6 +1587,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
 
         .modal.interview-modal .modal {
             max-width: 36rem;
+        }
+
+        .modal.qualification-modal .modal {
+            max-width: 40rem;
         }
 
         @keyframes modalSlideUp {
@@ -1564,8 +1752,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         }
 
         .resume-section .resume-info .resume-icon.pdf { background: #dc2626; }
-        .resume-section .resume-info .resume-icon.doc { background: var(--info-color); }
-        .resume-section .resume-info .resume-icon.docx { background: var(--info-color); }
+        .resume-section .resume-info .resume-icon.doc { background: #2563eb; }
+        .resume-section .resume-info .resume-icon.docx { background: #2563eb; }
         .resume-section .resume-info .resume-icon.default { background: #6b7280; }
 
         .resume-section .resume-info .resume-details .resume-name {
@@ -2004,6 +2192,147 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         .main-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--slate-500);
         }
+
+        /* =============================================
+           QUALIFICATION MODAL SPECIFIC STYLES
+        ============================================= */
+        .qualification-modal .modal {
+            max-width: 42rem;
+        }
+
+        .qualification-modal .applicant-info-display {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            background: var(--bg-surface-low);
+            padding: 1rem;
+            border-radius: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .qualification-modal .info-item .label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .qualification-modal .info-item .value {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-on-surface);
+            margin-top: 0.125rem;
+        }
+
+        .qualification-modal .decision-group {
+            display: flex;
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .qualification-modal .decision-option {
+            flex: 1;
+            padding: 0.875rem 1.5rem;
+            border: 2px solid var(--slate-200);
+            border-radius: 0.75rem;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .qualification-modal .decision-option:hover {
+            border-color: var(--primary);
+            background: var(--bg-surface-low);
+        }
+
+        .qualification-modal .decision-option.selected-qualified {
+            border-color: #22c55e;
+            background: #f0fdf4;
+        }
+
+        .qualification-modal .decision-option.selected-notqualified {
+            border-color: #dc2626;
+            background: #fef2f2;
+        }
+
+        .qualification-modal .decision-option input[type="radio"] {
+            display: none;
+        }
+
+        .qualification-modal .decision-option .option-icon {
+            font-size: 1.25rem;
+        }
+
+        .qualification-modal .decision-option .option-label {
+            font-weight: 600;
+        }
+
+        .qualification-modal .decision-option .option-label.qualified-text {
+            color: #059669;
+        }
+
+        .qualification-modal .decision-option .option-label.notqualified-text {
+            color: #dc2626;
+        }
+
+        .qualification-modal .warning-box {
+            background: #fffbeb;
+            border: 1px solid #fcd34d;
+            border-radius: 0.75rem;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+        }
+
+        .qualification-modal .warning-box .warning-icon {
+            color: #f59e0b;
+            flex-shrink: 0;
+        }
+
+        .qualification-modal .warning-box .warning-text {
+            font-size: 0.875rem;
+            color: #92400e;
+        }
+
+        .qualification-modal .warning-box .warning-text strong {
+            font-weight: 700;
+        }
+
+        .btn-send-notification {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .btn-send-notification:hover {
+            background: #d97706;
+        }
+
+        .btn-send-notification:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .processing-text {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .processing-text .spinner-small {
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
     </style>
 </head>
 <body>
@@ -2047,7 +2376,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
         </a>
-        <!-- NO "System" section with Settings -->
     </nav>
     <div class="sidebar-footer">
         <div class="user-card">
@@ -2057,898 +2385,1213 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
-        <!-- NO logout-btn here - only in profile dropdown -->
     </div>
 </aside>
 
-
-    <!-- =============================================
-    MAIN CONTENT
-    ============================================= -->
-    <div class="main-wrapper" id="mainWrapper">
-        <!-- ===== TOP HEADER ===== -->
-<header class="top-header">
-    <div class="top-header-left">
-        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-            <span class="material-symbols-outlined">menu</span>
-        </button>
-        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-            <span class="material-symbols-outlined">chevron_left</span>
-        </button>
-        <span class="separator">|</span>
-        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-            <?php 
-                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                echo ucwords(str_replace('_', ' ', $pageTitle));
-            ?>
-        </span>
-    </div>
-    <div class="profile-dropdown-wrapper">
-        <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-            <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-            <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-            <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-            <span class="material-symbols-outlined">expand_more</span>
-        </button>
-        <div class="profile-dropdown-menu" id="profileMenu">
-            <div class="dropdown-header">Account</div>
-            <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                <span class="material-symbols-outlined">person</span> Profile
+<!-- =============================================
+MAIN CONTENT
+============================================= -->
+<div class="main-wrapper" id="mainWrapper">
+    <!-- ===== TOP HEADER ===== -->
+    <header class="top-header">
+        <div class="top-header-left">
+            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+                <span class="material-symbols-outlined">menu</span>
             </button>
-            <div class="dropdown-divider"></div>
-            <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                <span class="material-symbols-outlined">logout</span> Logout
+            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+                <span class="material-symbols-outlined">chevron_left</span>
             </button>
+            <span class="separator">|</span>
+            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+                <?php 
+                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                    echo ucwords(str_replace('_', ' ', $pageTitle));
+                ?>
+            </span>
         </div>
-    </div>
-</header>
+        <div class="profile-dropdown-wrapper">
+            <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                <span class="material-symbols-outlined">expand_more</span>
+            </button>
+            <div class="profile-dropdown-menu" id="profileMenu">
+                <div class="dropdown-header">Account</div>
+                <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                    <span class="material-symbols-outlined">person</span> Profile
+                </button>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <span class="material-symbols-outlined">logout</span> Logout
+                </button>
+            </div>
+        </div>
+    </header>
 
-        <!-- Scrollable Content -->
-        <main class="main-scroll">
-            <div class="container">
+    <!-- Scrollable Content -->
+    <main class="main-scroll">
+        <div class="container">
 
-                <!-- Breadcrumb -->
-                <div class="breadcrumb-bar">
-                    <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">people</span>
-                        <span>Applicants</span>
-                        <span class="status-dot"></span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
-                            <?php echo $statusFilter === 'all' ? 'All' : ucfirst($statusFilter); ?> 
-                            (<?php echo count($applicants); ?> applicants)
-                        </span>
-                    </div>
-                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        Last updated: <?php echo date('M d, Y H:i'); ?>
+            <!-- Breadcrumb -->
+            <div class="breadcrumb-bar">
+                <div class="breadcrumb-view">
+                    <span class="material-symbols-outlined">people</span>
+                    <span>Applicants</span>
+                    <span class="status-dot"></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo $statusFilter === 'all' ? 'All' : ucfirst($statusFilter); ?> 
+                        (<?php echo count($applicants); ?> applicants)
                     </span>
                 </div>
+                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    Last updated: <?php echo date('M d, Y H:i'); ?>
+                </span>
+            </div>
 
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Applicants</h1>
-                        <p>Manage all applicants who applied to your jobs</p>
-                    </div>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Applicants</h1>
+                    <p>Manage all applicants who applied to your jobs</p>
                 </div>
+                <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                    <button class="btn btn-outline btn-sm" onclick="window.location.href='?pending_notifications=1'">
+                        <span class="material-symbols-outlined">pending</span>
+                        Pending Notifications
+                    </button>
+                </div>
+            </div>
 
-                <!-- Search Bar -->
-                <div class="search-bar">
-                    <div class="search-input-wrapper">
-                        <span class="material-symbols-outlined">search</span>
-                        <input type="text" id="searchInput" placeholder="Search by name, email, or job title..." 
-                               value="<?php echo htmlspecialchars($searchQuery); ?>">
-                    </div>
-                    <button class="btn btn-primary" onclick="applyFilters()">Search</button>
-                    <?php if (!empty($searchQuery) || $statusFilter !== 'all' || $jobFilter > 0): ?>
-                        <a href="applicants.php" class="btn btn-outline">Clear Filters</a>
+            <!-- Search Bar -->
+            <div class="search-bar">
+                <div class="search-input-wrapper">
+                    <span class="material-symbols-outlined">search</span>
+                    <input type="text" id="searchInput" placeholder="Search by name, email, or job title..." 
+                           value="<?php echo htmlspecialchars($searchQuery); ?>">
+                </div>
+                <button class="btn btn-primary" onclick="applyFilters()">Search</button>
+                <?php if (!empty($searchQuery) || $statusFilter !== 'all' || $jobFilter > 0): ?>
+                    <a href="applicants.php" class="btn btn-outline">Clear Filters</a>
+                <?php endif; ?>
+            </div>
+
+            <!-- Filters -->
+            <div class="filters">
+                <select id="statusFilter" onchange="applyFilters()">
+                    <option value="all" <?php echo $statusFilter === 'all' ? 'selected' : ''; ?>>All Status</option>
+                    <?php foreach ($allStatuses as $key => $label): ?>
+                        <?php if ($key === 'all') continue; ?>
+                        <option value="<?php echo $key; ?>" <?php echo $statusFilter === $key ? 'selected' : ''; ?>>
+                            <?php echo $label; ?> (<?php echo $statusCounts[$key] ?? 0; ?>)
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+
+                <select id="jobFilter" onchange="applyFilters()">
+                    <option value="0" <?php echo $jobFilter === 0 ? 'selected' : ''; ?>>All Jobs</option>
+                    <?php foreach ($jobs as $job): ?>
+                        <option value="<?php echo $job['id']; ?>" <?php echo $jobFilter === $job['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($job['title']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <!-- Applicants Table -->
+            <div class="card">
+                <div class="card-header">
+                    <h3>
+                        <span class="material-symbols-outlined">people</span>
+                        <?php if ($statusFilter === 'all'): ?>
+                            All Applicants
+                        <?php else: ?>
+                            <?php echo ucfirst($statusFilter); ?> Applicants
+                        <?php endif; ?>
+                    </h3>
+                    <span class="applicant-count"><?php echo count($applicants); ?> applicants found</span>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($applicants)): ?>
+                        <div class="empty-state">
+                            <span class="material-symbols-outlined">person_off</span>
+                            <h4>No Applicants Found</h4>
+                            <p>
+                                <?php if ($statusFilter !== 'all'): ?>
+                                    You don't have any <?php echo $statusFilter; ?> applicants.
+                                <?php else: ?>
+                                    No applicants have applied to your jobs yet.
+                                <?php endif; ?>
+                            </p>
+                            <a href="post_job.php" class="btn btn-primary">
+                                <span class="material-symbols-outlined">add</span>
+                                Post a Job
+                            </a>
+                        </div>
+                    <?php else: ?>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Applicant</th>
+                                    <th>Job</th>
+                                    <th>Applied</th>
+                                    <th>Status</th>
+                                    <th style="text-align:center;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($applicants as $app): ?>
+                                    <tr>
+                                        <td>
+                                            <div class="applicant-info">
+                                                <span class="avatar">
+                                                    <?php echo strtoupper(substr($app['first_name'] ?? 'A', 0, 1)); ?>
+                                                </span>
+                                                <div class="details">
+                                                    <div class="name"><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></div>
+                                                    <div class="email"><?php echo htmlspecialchars($app['email']); ?></div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div style="font-weight:500; color:var(--text-on-surface);">
+                                                <?php echo htmlspecialchars($app['job_title'] ?? 'Position'); ?>
+                                            </div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo htmlspecialchars($app['company_name'] ?? ''); ?>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
+                                                <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?>
+                                            </div>
+                                            <?php 
+                                            $daysSinceApplied = (time() - strtotime($app['applied_at'] ?? 'now')) / (60 * 60 * 24);
+                                            if ($daysSinceApplied >= 7 && $app['status'] === 'pending'): 
+                                            ?>
+                                                <span class="badge badge-pending-notification" style="font-size:0.6rem; margin-top:0.25rem;">
+                                                    ⏰ 7+ days
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <span class="badge <?php echo $statusBadges[$app['status']] ?? 'badge-pending'; ?>">
+                                                <?php echo $statusLabels[$app['status']] ?? ucfirst($app['status']); ?>
+                                            </span>
+                                            <?php if (!empty($app['follow_up_sent']) && $app['follow_up_sent'] == 1): ?>
+                                                <br>
+                                                <span class="badge <?php echo ($app['qualification_status'] ?? '') === 'qualified' ? 'badge-notified-qualified' : 'badge-notified-notqualified'; ?>" style="font-size:0.6rem; margin-top:0.25rem;">
+                                                    <?php echo ($app['qualification_status'] ?? '') === 'qualified' ? '✅ Qualified' : '❌ Not Qualified'; ?>
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <div class="action-buttons">
+                                                <button class="btn btn-outline btn-sm" onclick="viewApplicant(<?php echo $app['id']; ?>)">
+                                                    <span class="material-symbols-outlined">visibility</span>
+                                                </button>
+                                                <button class="btn btn-primary btn-sm" onclick="openStatusModal(<?php echo $app['id']; ?>)">
+                                                    <span class="material-symbols-outlined">edit</span>
+                                                </button>
+                                                <button class="btn btn-success btn-sm" onclick="openInterviewModal(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?>')">
+                                                    <span class="material-symbols-outlined">calendar_month</span>
+                                                    Schedule
+                                                </button>
+                                                <button class="btn btn-warning btn-sm" 
+                                                        onclick="openQualificationModal(<?php echo $app['id']; ?>, '<?php echo $app['status']; ?>')"
+                                                        <?php echo in_array($app['status'], ['hired', 'rejected', 'withdrawn']) || !empty($app['follow_up_sent']) ? 'disabled' : ''; ?>
+                                                        title="<?php echo in_array($app['status'], ['hired', 'rejected', 'withdrawn']) ? 'Already processed' : (!empty($app['follow_up_sent']) ? 'Notification already sent' : 'Send qualification notification'); ?>">
+                                                    <span class="material-symbols-outlined">notifications</span>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     <?php endif; ?>
                 </div>
+            </div>
 
-                <!-- Filters -->
-                <div class="filters">
-                    <select id="statusFilter" onchange="applyFilters()">
-                        <option value="all" <?php echo $statusFilter === 'all' ? 'selected' : ''; ?>>All Status</option>
-                        <?php foreach ($allStatuses as $key => $label): ?>
-                            <?php if ($key === 'all') continue; ?>
-                            <option value="<?php echo $key; ?>" <?php echo $statusFilter === $key ? 'selected' : ''; ?>>
-                                <?php echo $label; ?> (<?php echo $statusCounts[$key] ?? 0; ?>)
+        </div>
+    </main>
+</div>
+
+<!-- =============================================
+MODAL: VIEW APPLICANT
+============================================= -->
+<div class="modal-overlay" id="viewModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">person</span>
+                Applicant Details
+            </h2>
+            <button class="modal-close" onclick="closeModal('viewModal')">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body" id="viewModalBody">
+            <div class="loading-spinner" id="viewLoading">
+                <div class="spinner"></div>
+                <p>Loading applicant details...</p>
+            </div>
+            <div id="viewContent" style="display:none;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('viewModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- =============================================
+MODAL: UPDATE STATUS
+============================================= -->
+<div class="modal-overlay status-modal" id="statusModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">edit_note</span>
+                Update Application Status
+            </h2>
+            <button class="modal-close" onclick="closeModal('statusModal')">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body">
+            <form id="statusForm" onsubmit="submitStatusUpdate(event)">
+                <input type="hidden" id="statusApplicationId" name="application_id">
+                <input type="hidden" name="action" value="update_status">
+                
+                <div class="form-group">
+                    <label for="statusSelect">Status <span class="required">*</span></label>
+                    <select id="statusSelect" name="status" class="form-control" required>
+                        <option value="">Select status...</option>
+                        <?php foreach ($statusLabels as $key => $label): ?>
+                            <option value="<?php echo $key; ?>">
+                                <?php echo $label; ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
-
-                    <select id="jobFilter" onchange="applyFilters()">
-                        <option value="0" <?php echo $jobFilter === 0 ? 'selected' : ''; ?>>All Jobs</option>
-                        <?php foreach ($jobs as $job): ?>
-                            <option value="<?php echo $job['id']; ?>" <?php echo $jobFilter === $job['id'] ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($job['title']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <!-- Applicants Table -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">people</span>
-                            <?php if ($statusFilter === 'all'): ?>
-                                All Applicants
-                            <?php else: ?>
-                                <?php echo ucfirst($statusFilter); ?> Applicants
-                            <?php endif; ?>
-                        </h3>
-                        <span class="applicant-count"><?php echo count($applicants); ?> applicants found</span>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($applicants)): ?>
-                            <div class="empty-state">
-                                <span class="material-symbols-outlined">person_off</span>
-                                <h4>No Applicants Found</h4>
-                                <p>
-                                    <?php if ($statusFilter !== 'all'): ?>
-                                        You don't have any <?php echo $statusFilter; ?> applicants.
-                                    <?php else: ?>
-                                        No applicants have applied to your jobs yet.
-                                    <?php endif; ?>
-                                </p>
-                                <a href="post_job.php" class="btn btn-primary">
-                                    <span class="material-symbols-outlined">add</span>
-                                    Post a Job
-                                </a>
-                            </div>
-                        <?php else: ?>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Applicant</th>
-                                        <th>Job</th>
-                                        <th>Applied</th>
-                                        <th>Status</th>
-                                        <th style="text-align:center;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($applicants as $app): ?>
-                                        <tr>
-                                            <td>
-                                                <div class="applicant-info">
-                                                    <span class="avatar">
-                                                        <?php echo strtoupper(substr($app['first_name'] ?? 'A', 0, 1)); ?>
-                                                    </span>
-                                                    <div class="details">
-                                                        <div class="name"><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></div>
-                                                        <div class="email"><?php echo htmlspecialchars($app['email']); ?></div>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div style="font-weight:500; color:var(--text-on-surface);">
-                                                    <?php echo htmlspecialchars($app['job_title'] ?? 'Position'); ?>
-                                                </div>
-                                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                                    <?php echo htmlspecialchars($app['company_name'] ?? ''); ?>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
-                                                    <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <span class="badge <?php echo $statusBadges[$app['status']] ?? 'badge-pending'; ?>">
-                                                    <?php echo $statusLabels[$app['status']] ?? ucfirst($app['status']); ?>
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <div class="action-buttons">
-                                                    <button class="btn btn-outline btn-sm" onclick="viewApplicant(<?php echo $app['id']; ?>)">
-                                                        <span class="material-symbols-outlined">visibility</span>
-                                                    </button>
-                                                    <button class="btn btn-primary btn-sm" onclick="openStatusModal(<?php echo $app['id']; ?>)">
-                                                        <span class="material-symbols-outlined">edit</span>
-                                                    </button>
-                                                    <button class="btn btn-success btn-sm" onclick="openInterviewModal(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?>')">
-                                                        <span class="material-symbols-outlined">calendar_month</span>
-                                                        Schedule
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        <?php endif; ?>
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">info</span>
+                        Select the new status for this application
                     </div>
                 </div>
-
-            </div>
-        </main>
-    </div>
-
-    <!-- =============================================
-    MODAL: VIEW APPLICANT
-    ============================================= -->
-    <div class="modal-overlay" id="viewModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">person</span>
-                    Applicant Details
-                </h2>
-                <button class="modal-close" onclick="closeModal('viewModal')">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
-            </div>
-            <div class="modal-body" id="viewModalBody">
-                <div class="loading-spinner" id="viewLoading">
-                    <div class="spinner"></div>
-                    <p>Loading applicant details...</p>
+                
+                <div class="form-group">
+                    <label for="statusFeedback">Feedback / Notes</label>
+                    <textarea id="statusFeedback" name="feedback" class="form-control" 
+                              placeholder="Add any feedback, comments, or notes about this decision..." rows="3"></textarea>
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">note</span>
+                        Optional: Provide feedback to the applicant (will be logged)
+                    </div>
                 </div>
-                <div id="viewContent" style="display:none;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeModal('viewModal')">Close</button>
-            </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('statusModal')">Cancel</button>
+            <button class="btn btn-primary" onclick="document.getElementById('statusForm').dispatchEvent(new Event('submit'))">
+                <span class="material-symbols-outlined">save</span>
+                Update Status
+            </button>
         </div>
     </div>
+</div>
 
-    <!-- =============================================
-    MODAL: UPDATE STATUS
-    ============================================= -->
-    <div class="modal-overlay status-modal" id="statusModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">edit_note</span>
-                    Update Application Status
-                </h2>
-                <button class="modal-close" onclick="closeModal('statusModal')">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
-            </div>
-            <div class="modal-body">
-                <form id="statusForm" onsubmit="submitStatusUpdate(event)">
-                    <input type="hidden" id="statusApplicationId" name="application_id">
-                    <input type="hidden" name="action" value="update_status">
-                    
-                    <div class="form-group">
-                        <label for="statusSelect">Status <span class="required">*</span></label>
-                        <select id="statusSelect" name="status" class="form-control" required>
-                            <option value="">Select status...</option>
-                            <?php foreach ($statusLabels as $key => $label): ?>
-                                <option value="<?php echo $key; ?>">
-                                    <?php echo $label; ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <div class="helper-text">
-                            <span class="material-symbols-outlined">info</span>
-                            Select the new status for this application
-                        </div>
+<!-- =============================================
+MODAL: SCHEDULE INTERVIEW
+============================================= -->
+<div class="modal-overlay interview-modal" id="interviewModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">calendar_month</span>
+                Schedule Interview
+            </h2>
+            <button class="modal-close" onclick="closeModal('interviewModal')">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body">
+            <form id="interviewForm" onsubmit="submitInterview(event)">
+                <input type="hidden" id="interviewApplicationId" name="application_id">
+                <input type="hidden" name="action" value="schedule_interview">
+                
+                <div class="form-group">
+                    <label for="applicantName">Applicant</label>
+                    <input type="text" id="applicantName" class="form-control" disabled style="background:var(--bg-surface-low);">
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">info</span>
+                        Scheduling an interview for this applicant
                     </div>
-                    
-                    <div class="form-group">
-                        <label for="statusFeedback">Feedback / Notes</label>
-                        <textarea id="statusFeedback" name="feedback" class="form-control" 
-                                  placeholder="Add any feedback, comments, or notes about this decision..." rows="3"></textarea>
-                        <div class="helper-text">
-                            <span class="material-symbols-outlined">note</span>
-                            Optional: Provide feedback to the applicant (will be logged)
-                        </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="interviewDate">Interview Date & Time <span class="required">*</span></label>
+                    <input type="datetime-local" id="interviewDate" name="interview_date" class="form-control" required>
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">schedule</span>
+                        Select the date and time for the interview
                     </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeModal('statusModal')">Cancel</button>
-                <button class="btn btn-primary" onclick="document.getElementById('statusForm').dispatchEvent(new Event('submit'))">
-                    <span class="material-symbols-outlined">save</span>
-                    Update Status
-                </button>
-            </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="interviewNotes">Interview Notes</label>
+                    <textarea id="interviewNotes" name="interview_notes" class="form-control" 
+                              placeholder="Add any notes, preparation instructions, or details about the interview..." rows="3"></textarea>
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">note</span>
+                        Optional: Add any notes for the interviewer or applicant
+                    </div>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('interviewModal')">Cancel</button>
+            <button class="btn btn-success" onclick="document.getElementById('interviewForm').dispatchEvent(new Event('submit'))">
+                <span class="material-symbols-outlined">check</span>
+                Schedule Interview
+            </button>
         </div>
     </div>
+</div>
 
-    <!-- =============================================
-    MODAL: SCHEDULE INTERVIEW
-    ============================================= -->
-    <div class="modal-overlay interview-modal" id="interviewModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">calendar_month</span>
-                    Schedule Interview
-                </h2>
-                <button class="modal-close" onclick="closeModal('interviewModal')">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
+<!-- =============================================
+MODAL: SEND QUALIFICATION (REDESIGNED)
+============================================= -->
+<div class="modal-overlay qualification-modal" id="qualificationModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">send</span>
+                Send Qualification Notification
+            </h2>
+            <button class="modal-close" onclick="closeModal('qualificationModal')">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body">
+            <!-- Applicant Information -->
+            <div class="applicant-info-display">
+                <div class="info-item">
+                    <div class="label">Applicant</div>
+                    <div class="value" id="qualificationApplicantName">Loading...</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Position</div>
+                    <div class="value" id="qualificationJobTitle">Loading...</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Date Applied</div>
+                    <div class="value" id="qualificationAppliedDate">Loading...</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">Days Waiting</div>
+                    <div class="value" id="qualificationDaysWaiting">Loading...</div>
+                </div>
             </div>
-            <div class="modal-body">
-                <form id="interviewForm" onsubmit="submitInterview(event)">
-                    <input type="hidden" id="interviewApplicationId" name="application_id">
-                    <input type="hidden" name="action" value="schedule_interview">
-                    
-                    <div class="form-group">
-                        <label for="applicantName">Applicant</label>
-                        <input type="text" id="applicantName" class="form-control" disabled style="background:var(--bg-surface-low);">
-                        <div class="helper-text">
-                            <span class="material-symbols-outlined">info</span>
-                            Scheduling an interview for this applicant
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="interviewDate">Interview Date & Time <span class="required">*</span></label>
-                        <input type="datetime-local" id="interviewDate" name="interview_date" class="form-control" required>
-                        <div class="helper-text">
-                            <span class="material-symbols-outlined">schedule</span>
-                            Select the date and time for the interview
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="interviewNotes">Interview Notes</label>
-                        <textarea id="interviewNotes" name="interview_notes" class="form-control" 
-                                  placeholder="Add any notes, preparation instructions, or details about the interview..." rows="3"></textarea>
-                        <div class="helper-text">
-                            <span class="material-symbols-outlined">note</span>
-                            Optional: Add any notes for the interviewer or applicant
-                        </div>
-                    </div>
-                </form>
+
+            <!-- Warning Box -->
+            <div class="warning-box">
+                <span class="material-symbols-outlined warning-icon">warning</span>
+                <div class="warning-text">
+                    <strong>Important:</strong> This action will send an official email notification to the applicant 
+                    regarding their qualification status for this position. This action cannot be undone.
+                </div>
             </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeModal('interviewModal')">Cancel</button>
-                <button class="btn btn-success" onclick="document.getElementById('interviewForm').dispatchEvent(new Event('submit'))">
-                    <span class="material-symbols-outlined">check</span>
-                    Schedule Interview
-                </button>
+
+            <!-- Decision Selection -->
+            <div class="form-group">
+                <label>Qualification Decision <span class="required">*</span></label>
+                <div class="decision-group">
+                    <label class="decision-option" id="qualifiedOption">
+                        <input type="radio" name="qualification_decision" value="qualified" checked>
+                        <span class="option-icon">✓</span>
+                        <span class="option-label qualified-text">Qualified</span>
+                    </label>
+                    <label class="decision-option" id="notqualifiedOption">
+                        <input type="radio" name="qualification_decision" value="not_qualified">
+                        <span class="option-icon">✕</span>
+                        <span class="option-label notqualified-text">Not Qualified</span>
+                    </label>
+                </div>
+                <div class="helper-text">
+                    <span class="material-symbols-outlined">info</span>
+                    Select whether the applicant meets the qualifications for the position
+                </div>
             </div>
+
+            <!-- Additional Notes -->
+            <div class="form-group">
+                <label for="qualificationNotes">Additional Notes</label>
+                <textarea id="qualificationNotes" class="form-control" 
+                          placeholder="Add any notes or feedback for the applicant (optional)..." rows="3"></textarea>
+                <div class="helper-text">
+                    <span class="material-symbols-outlined">note</span>
+                    These notes will be stored in the application record for reference
+                </div>
+            </div>
+
+            <input type="hidden" id="qualificationApplicationId">
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('qualificationModal')">Cancel</button>
+            <button class="btn btn-send-notification" id="sendQualificationBtn" onclick="submitQualification()">
+                <span class="material-symbols-outlined">send</span>
+                Send Notification
+            </button>
         </div>
     </div>
+</div>
 
-    <!-- =============================================
-    JAVASCRIPT
-    ============================================= -->
-   <script>
-    // =============================================
-    // 1. SIDEBAR TOGGLE
-    // =============================================
-    const sidebar = document.getElementById('appSidebar');
-    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-    const mainWrapper = document.getElementById('mainWrapper');
-    const isMobile = window.innerWidth <= 768;
-    const savedState = localStorage.getItem('sidebarCollapsed');
+<!-- =============================================
+JAVASCRIPT
+============================================= -->
+<script>
+// =============================================
+// 1. SIDEBAR TOGGLE
+// =============================================
+const sidebar = document.getElementById('appSidebar');
+const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+const mainWrapper = document.getElementById('mainWrapper');
+const isMobile = window.innerWidth <= 768;
+const savedState = localStorage.getItem('sidebarCollapsed');
 
-    if (savedState === 'true' && !isMobile) {
-        sidebar.classList.add('collapsed');
-        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-        if (icon) icon.textContent = 'chevron_right';
+if (savedState === 'true' && !isMobile) {
+    sidebar.classList.add('collapsed');
+    const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+    if (icon) icon.textContent = 'chevron_right';
+}
+
+sidebarToggleBtn.addEventListener('click', function() {
+    if (window.innerWidth <= 768) return;
+    sidebar.classList.toggle('collapsed');
+    const icon = this.querySelector('.material-symbols-outlined');
+    if (icon) {
+        icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
     }
+    localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+});
 
-    sidebarToggleBtn.addEventListener('click', function() {
-        if (window.innerWidth <= 768) return;
-        sidebar.classList.toggle('collapsed');
-        const icon = this.querySelector('.material-symbols-outlined');
-        if (icon) {
-            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+// =============================================
+// 2. MOBILE SIDEBAR
+// =============================================
+const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+const sidebarBackdrop = document.createElement('div');
+sidebarBackdrop.className = 'sidebar-backdrop';
+sidebarBackdrop.id = 'sidebarBackdrop';
+document.body.appendChild(sidebarBackdrop);
+
+function openMobileSidebar() {
+    sidebar.classList.add('mobile-open');
+    sidebarBackdrop.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeMobileSidebar() {
+    sidebar.classList.remove('mobile-open');
+    sidebarBackdrop.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+if (mobileMenuBtn) {
+    mobileMenuBtn.addEventListener('click', openMobileSidebar);
+}
+if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+}
+
+document.querySelectorAll('.sidebar-main-link').forEach(link => {
+    link.addEventListener('click', function() {
+        if (window.innerWidth <= 768) {
+            closeMobileSidebar();
         }
-        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    });
+});
+
+// =============================================
+// 3. PROFILE DROPDOWN
+// =============================================
+const profileToggle = document.getElementById('profileToggle');
+const profileMenu = document.getElementById('profileMenu');
+
+if (profileToggle && profileMenu) {
+    profileToggle.addEventListener('click', function(e) {
+        e.stopPropagation();
+        this.classList.toggle('open');
+        profileMenu.classList.toggle('open');
     });
 
-    // =============================================
-    // 2. MOBILE SIDEBAR
-    // =============================================
-    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    document.addEventListener('click', function(e) {
+        if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+            profileToggle.classList.remove('open');
+            profileMenu.classList.remove('open');
+        }
+    });
+}
 
-    function openMobileSidebar() {
-        sidebar.classList.add('mobile-open');
-        sidebarBackdrop.classList.add('active');
+// =============================================
+// 4. FILTER FUNCTIONS
+// =============================================
+function applyFilters() {
+    const search = document.getElementById('searchInput');
+    const status = document.getElementById('statusFilter');
+    const job = document.getElementById('jobFilter');
+    
+    if (!search || !status || !job) return;
+    
+    let url = 'applicants.php?';
+    if (status.value !== 'all') url += 'status=' + status.value + '&';
+    if (job.value > 0) url += 'job_id=' + job.value + '&';
+    if (search.value) url += 'search=' + encodeURIComponent(search.value);
+    
+    window.location.href = url;
+}
+
+const searchInput = document.getElementById('searchInput');
+if (searchInput) {
+    searchInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            applyFilters();
+        }
+    });
+}
+
+// =============================================
+// 5. MODAL FUNCTIONS
+// =============================================
+function openModal(id) {
+    const modal = document.getElementById(id);
+    if (modal) {
+        modal.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
+}
 
-    function closeMobileSidebar() {
-        sidebar.classList.remove('mobile-open');
-        sidebarBackdrop.classList.remove('active');
+function closeModal(id) {
+    const modal = document.getElementById(id);
+    if (modal) {
+        modal.classList.remove('active');
         document.body.style.overflow = '';
     }
+}
 
-    if (mobileMenuBtn) {
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-    }
-    if (sidebarBackdrop) {
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-    }
-
-    document.querySelectorAll('.sidebar-main-link').forEach(link => {
-        link.addEventListener('click', function() {
-            if (window.innerWidth <= 768) {
-                closeMobileSidebar();
-            }
-        });
-    });
-
-    // =============================================
-    // 3. PROFILE DROPDOWN - FIXED WITH NULL CHECK
-    // =============================================
-    const profileToggle = document.getElementById('profileToggle');
-    const profileMenu = document.getElementById('profileMenu');
-
-    if (profileToggle && profileMenu) {
-        profileToggle.addEventListener('click', function(e) {
-            e.stopPropagation();
-            this.classList.toggle('open');
-            profileMenu.classList.toggle('open');
-        });
-
-        document.addEventListener('click', function(e) {
-            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
-    }
-
-    // =============================================
-    // 4. FILTER FUNCTIONS
-    // =============================================
-    function applyFilters() {
-        const search = document.getElementById('searchInput');
-        const status = document.getElementById('statusFilter');
-        const job = document.getElementById('jobFilter');
-        
-        if (!search || !status || !job) return;
-        
-        let url = 'applicants.php?';
-        if (status.value !== 'all') url += 'status=' + status.value + '&';
-        if (job.value > 0) url += 'job_id=' + job.value + '&';
-        if (search.value) url += 'search=' + encodeURIComponent(search.value);
-        
-        window.location.href = url;
-    }
-
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                applyFilters();
-            }
-        });
-    }
-
-    // =============================================
-    // 5. MODAL FUNCTIONS
-    // =============================================
-    function openModal(id) {
-        const modal = document.getElementById(id);
-        if (modal) {
-            modal.classList.add('active');
-            document.body.style.overflow = 'hidden';
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+    overlay.addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeModal(this.id);
         }
-    }
-
-    function closeModal(id) {
-        const modal = document.getElementById(id);
-        if (modal) {
-            modal.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-    }
-
-    // Close modals on overlay click
-    document.querySelectorAll('.modal-overlay').forEach(overlay => {
-        overlay.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal(this.id);
-            }
-        });
     });
+});
 
-    // =============================================
-    // 6. VIEW APPLICANT
-    // =============================================
-    function viewApplicant(applicationId) {
-        openModal('viewModal');
-        
-        const loading = document.getElementById('viewLoading');
-        const content = document.getElementById('viewContent');
-        
-        if (loading) loading.style.display = 'block';
-        if (content) content.style.display = 'none';
+// =============================================
+// 6. VIEW APPLICANT
+// =============================================
+function viewApplicant(applicationId) {
+    openModal('viewModal');
+    
+    const loading = document.getElementById('viewLoading');
+    const content = document.getElementById('viewContent');
+    
+    if (loading) loading.style.display = 'block';
+    if (content) content.style.display = 'none';
 
-        const formData = new FormData();
-        formData.append('action', 'view_applicant');
-        formData.append('application_id', applicationId);
+    const formData = new FormData();
+    formData.append('action', 'view_applicant');
+    formData.append('application_id', applicationId);
 
-        fetch('applicants.php', {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (loading) loading.style.display = 'none';
-            if (content) content.style.display = 'block';
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (loading) loading.style.display = 'none';
+        if (content) content.style.display = 'block';
 
-            if (data.success) {
-                const app = data.applicant;
-                const skills = (app.skills || '').split(',').filter(s => s.trim());
-                const skillsHtml = skills.map(s => 
-                    '<span class="skill-tag">' + escapeHtml(s.trim()) + '</span>'
-                ).join('');
+        if (data.success) {
+            const app = data.applicant;
+            const skills = (app.skills || '').split(',').filter(s => s.trim());
+            const skillsHtml = skills.map(s => 
+                '<span class="skill-tag">' + escapeHtml(s.trim()) + '</span>'
+            ).join('');
 
-                // Resume section
-                let resumeHtml = '';
-                if (app.resume_exists) {
-                    const iconClass = app.resume_extension === 'pdf' ? 'pdf' : 
-                                    (app.resume_extension === 'doc' || app.resume_extension === 'docx' ? 'doc' : 'default');
-                    const sizeKB = (app.resume_size / 1024).toFixed(1);
-                    const sizeLabel = app.resume_size > 1024 * 1024 ? 
-                        (app.resume_size / (1024 * 1024)).toFixed(2) + ' MB' : 
-                        sizeKB + ' KB';
-                    
-                    resumeHtml = `
-                        <div class="resume-section">
-                            <div class="resume-header">
-                                <div class="resume-info">
-                                    <div class="resume-icon ${iconClass}">${app.resume_extension.toUpperCase()}</div>
-                                    <div class="resume-details">
-                                        <div class="resume-name">${escapeHtml(app.resume_filename)}</div>
-                                        <div class="resume-size">${sizeLabel}</div>
-                                    </div>
-                                </div>
-                                <div class="resume-actions">
-                                    <a href="${app.resume_url}" target="_blank" class="btn btn-info btn-sm">
-                                        <span class="material-symbols-outlined">visibility</span>
-                                        View
-                                    </a>
-                                    <a href="${app.resume_url}" download class="btn btn-success btn-sm">
-                                        <span class="material-symbols-outlined">download</span>
-                                        Download
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    const debugInfo = app.resume_debug || 'No resume uploaded by the applicant.';
-                    resumeHtml = `
-                        <div class="resume-section">
-                            <div class="resume-empty">
-                                <span class="material-symbols-outlined">description</span>
-                                <p>No resume uploaded by the applicant.</p>
-                                ${debugInfo ? `<p style="font-size:0.7rem; color:var(--text-on-surface-variant); margin-top:0.5rem; word-break:break-all;">Debug: ${escapeHtml(debugInfo)}</p>` : ''}
-                            </div>
-                        </div>
-                    `;
-                }
-
-                if (content) {
-                    content.innerHTML = `
-                        <div class="detail-grid">
-                            <div class="detail-item">
-                                <div class="label">Full Name</div>
-                                <div class="value">${escapeHtml(app.first_name)} ${escapeHtml(app.last_name)}</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Email</div>
-                                <div class="value">${escapeHtml(app.email)}</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Phone</div>
-                                <div class="value">${escapeHtml(app.phone || 'Not provided')}</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Applied For</div>
-                                <div class="value"><strong>${escapeHtml(app.job_title)}</strong> (${escapeHtml(app.company_name)})</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Applied Date</div>
-                                <div class="value">${formatDate(app.applied_at)}</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Status</div>
-                                <div class="value"><span class="badge ${getStatusBadge(app.status)}">${getStatusLabel(app.status)}</span></div>
-                            </div>
-                            <div class="detail-item full-width">
-                                <div class="label">Skills</div>
-                                <div class="value skills">${skillsHtml || '<span style="color:var(--text-on-surface-variant);">No skills listed</span>'}</div>
-                            </div>
-                            <div class="detail-item full-width">
-                                <div class="label">Experience</div>
-                                <div class="value">${escapeHtml(app.experience || 'Not provided')}</div>
-                            </div>
-                            <div class="detail-item full-width">
-                                <div class="label">Education</div>
-                                <div class="value">${escapeHtml(app.education || 'Not provided')}</div>
-                            </div>
-                            <div class="detail-item full-width">
-                                <div class="label">Cover Letter</div>
-                                <div class="value">${escapeHtml(app.cover_letter || 'No cover letter provided')}</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Total Applications</div>
-                                <div class="value">${app.total_applications || 1}</div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="label">Resume / CV</div>
-                                <div class="value" style="background:transparent; padding:0;">${resumeHtml}</div>
-                            </div>
-                        </div>
-                    `;
-                }
+            let followUpHtml = '';
+            if (app.follow_up_sent && app.follow_up_sent == 1) {
+                const statusClass = app.qualification_status === 'qualified' ? 'badge-notified-qualified' : 'badge-notified-notqualified';
+                const statusLabel = app.qualification_status === 'qualified' ? 'Qualified' : 'Not Qualified';
+                followUpHtml = `
+                    <span class="badge ${statusClass}">${statusLabel}</span>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">
+                        Sent: ${formatDate(app.follow_up_date)}
+                    </span>
+                `;
             } else {
-                if (content) {
-                    content.innerHTML = `
-                        <div style="text-align:center; padding:1rem; color:#dc2626;">
-                            <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                            <p style="margin-top:0.5rem;">${data.error || 'Failed to load applicant details.'}</p>
-                        </div>
-                    `;
-                }
+                followUpHtml = `<span style="color:var(--text-on-surface-variant);">Not sent yet</span>`;
             }
-        })
-        .catch(error => {
-            if (loading) loading.style.display = 'none';
-            if (content) {
-                content.style.display = 'block';
-                content.innerHTML = `
-                    <div style="text-align:center; padding:1rem; color:#dc2626;">
-                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                        <p style="margin-top:0.5rem;">Error loading applicant details. Please try again.</p>
+
+            let resumeHtml = '';
+            if (app.resume_exists) {
+                const iconClass = app.resume_extension === 'pdf' ? 'pdf' : 
+                                (app.resume_extension === 'doc' || app.resume_extension === 'docx' ? 'doc' : 'default');
+                const sizeKB = (app.resume_size / 1024).toFixed(1);
+                const sizeLabel = app.resume_size > 1024 * 1024 ? 
+                    (app.resume_size / (1024 * 1024)).toFixed(2) + ' MB' : 
+                    sizeKB + ' KB';
+                
+                resumeHtml = `
+                    <div class="resume-section">
+                        <div class="resume-header">
+                            <div class="resume-info">
+                                <div class="resume-icon ${iconClass}">${app.resume_extension.toUpperCase()}</div>
+                                <div class="resume-details">
+                                    <div class="resume-name">${escapeHtml(app.resume_filename)}</div>
+                                    <div class="resume-size">${sizeLabel}</div>
+                                </div>
+                            </div>
+                            <div class="resume-actions">
+                                <a href="${app.resume_url}" target="_blank" class="btn btn-info btn-sm">
+                                    <span class="material-symbols-outlined">visibility</span>
+                                    View
+                                </a>
+                                <a href="${app.resume_url}" download class="btn btn-success btn-sm">
+                                    <span class="material-symbols-outlined">download</span>
+                                    Download
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                resumeHtml = `
+                    <div class="resume-section">
+                        <div class="resume-empty">
+                            <span class="material-symbols-outlined">description</span>
+                            <p>No resume uploaded by the applicant.</p>
+                        </div>
                     </div>
                 `;
             }
-        });
-    }
 
-    // =============================================
-    // 7. STATUS UPDATE
-    // =============================================
-    function openStatusModal(applicationId) {
-        const statusAppId = document.getElementById('statusApplicationId');
-        const statusSelect = document.getElementById('statusSelect');
-        const statusFeedback = document.getElementById('statusFeedback');
-        
-        if (statusAppId) statusAppId.value = applicationId;
-        if (statusSelect) statusSelect.value = '';
-        if (statusFeedback) statusFeedback.value = '';
-        openModal('statusModal');
-    }
-
-    function submitStatusUpdate(event) {
-        event.preventDefault();
-        
-        const form = document.getElementById('statusForm');
-        if (!form) return;
-        
-        const formData = new FormData(form);
-
-        const btn = document.querySelector('#statusModal .modal-footer .btn-primary');
-        if (!btn) return;
-        
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Updating...';
-
-        fetch('applicants.php', {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
+            if (content) {
+                content.innerHTML = `
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <div class="label">Full Name</div>
+                            <div class="value">${escapeHtml(app.first_name)} ${escapeHtml(app.last_name)}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Email</div>
+                            <div class="value">${escapeHtml(app.email)}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Phone</div>
+                            <div class="value">${escapeHtml(app.phone || 'Not provided')}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Applied For</div>
+                            <div class="value"><strong>${escapeHtml(app.job_title)}</strong> (${escapeHtml(app.company_name)})</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Applied Date</div>
+                            <div class="value">${formatDate(app.applied_at)}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Status</div>
+                            <div class="value"><span class="badge ${getStatusBadge(app.status)}">${getStatusLabel(app.status)}</span></div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Qualification Status</div>
+                            <div class="value">${followUpHtml}</div>
+                        </div>
+                        <div class="detail-item full-width">
+                            <div class="label">Skills</div>
+                            <div class="value skills">${skillsHtml || '<span style="color:var(--text-on-surface-variant);">No skills listed</span>'}</div>
+                        </div>
+                        <div class="detail-item full-width">
+                            <div class="label">Experience</div>
+                            <div class="value">${escapeHtml(app.experience || 'Not provided')}</div>
+                        </div>
+                        <div class="detail-item full-width">
+                            <div class="label">Education</div>
+                            <div class="value">${escapeHtml(app.education || 'Not provided')}</div>
+                        </div>
+                        <div class="detail-item full-width">
+                            <div class="label">Cover Letter</div>
+                            <div class="value">${escapeHtml(app.cover_letter || 'No cover letter provided')}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Total Applications</div>
+                            <div class="value">${app.total_applications || 1}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="label">Resume / CV</div>
+                            <div class="value" style="background:transparent; padding:0;">${resumeHtml}</div>
+                        </div>
+                    </div>
+                `;
             }
-        })
-        .then(response => response.json())
-        .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-            
-            if (data.success) {
-                showToast(data.message, 'success');
-                closeModal('statusModal');
-                setTimeout(() => location.reload(), 1000);
-            } else {
-                showToast(data.error || 'Failed to update status.', 'error');
-            }
-        })
-        .catch(error => {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-            showToast('Error updating status. Please try again.', 'error');
-        });
-    }
-
-    // =============================================
-    // 8. SCHEDULE INTERVIEW
-    // =============================================
-    function openInterviewModal(applicationId, applicantName) {
-        const interviewAppId = document.getElementById('interviewApplicationId');
-        const applicantNameInput = document.getElementById('applicantName');
-        const interviewDate = document.getElementById('interviewDate');
-        const interviewNotes = document.getElementById('interviewNotes');
-        
-        if (interviewAppId) interviewAppId.value = applicationId;
-        if (applicantNameInput) applicantNameInput.value = applicantName;
-        
-        // Set default date to tomorrow at 10:00 AM
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        tomorrow.setHours(10, 0, 0, 0);
-        const isoString = tomorrow.toISOString().slice(0, 16);
-        if (interviewDate) interviewDate.value = isoString;
-        if (interviewNotes) interviewNotes.value = '';
-        
-        openModal('interviewModal');
-    }
-
-    function submitInterview(event) {
-        event.preventDefault();
-        
-        const form = document.getElementById('interviewForm');
-        if (!form) return;
-        
-        const formData = new FormData(form);
-
-        const btn = document.querySelector('#interviewModal .modal-footer .btn-success');
-        if (!btn) return;
-        
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Scheduling...';
-
-        fetch('applicants.php', {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        })
-        .then(function(response) {
-            return response.json();
-        })
-        .then(function(data) {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-            
-            if (data.success) {
-                showToast(data.message, 'success');
-                closeModal('interviewModal');
-                setTimeout(function() {
-                    location.reload();
-                }, 1000);
-            } else {
-                showToast(data.error || 'Failed to schedule interview.', 'error');
-            }
-        })
-        .catch(function(error) {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-            console.error('Error:', error);
-            showToast('Error scheduling interview. Please try again.', 'error');
-        });
-    }
-
-    // =============================================
-    // 9. TOAST SYSTEM
-    // =============================================
-    function showToast(message, type) {
-        type = type || 'info';
-        var existingToast = document.querySelector('.toast');
-        if (existingToast) existingToast.remove();
-
-        var toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        toast.textContent = message;
-        document.body.appendChild(toast);
-
-        setTimeout(function() {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(20px)';
-            toast.style.transition = 'all 0.4s ease';
-            setTimeout(function() {
-                toast.remove();
-            }, 400);
-        }, 3500);
-    }
-
-    // =============================================
-    // 10. UTILITY FUNCTIONS
-    // =============================================
-    function escapeHtml(text) {
-        if (!text) return '';
-        var div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    function formatDate(date) {
-        if (!date) return 'N/A';
-        return new Date(date).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-    }
-
-    function getStatusBadge(status) {
-        var badges = {
-            'pending': 'badge-pending',
-            'shortlisted': 'badge-shortlisted',
-            'scheduled': 'badge-scheduled',
-            'interviewed': 'badge-interviewed',
-            'hired': 'badge-hired',
-            'rejected': 'badge-rejected',
-            'withdrawn': 'badge-withdrawn'
-        };
-        return badges[status] || 'badge-pending';
-    }
-
-    function getStatusLabel(status) {
-        var labels = {
-            'pending': 'Pending Review',
-            'shortlisted': 'Shortlisted',
-            'scheduled': 'Scheduled',
-            'interviewed': 'Interviewed',
-            'hired': 'Hired',
-            'rejected': 'Rejected',
-            'withdrawn': 'Withdrawn'
-        };
-        return labels[status] || status;
-    }
-
-    // =============================================
-    // 11. RESPONSIVE HANDLING
-    // =============================================
-    var resizeTimer;
-    window.addEventListener('resize', function() {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(function() {
-            var width = window.innerWidth;
-            if (width <= 768) {
-                sidebar.classList.remove('collapsed');
-            } else {
-                sidebar.classList.remove('mobile-open');
-                sidebarBackdrop.classList.remove('active');
-                document.body.style.overflow = '';
-                var saved = localStorage.getItem('sidebarCollapsed');
-                if (saved === 'true') {
-                    sidebar.classList.add('collapsed');
-                } else {
-                    sidebar.classList.remove('collapsed');
-                }
-            }
-        }, 250);
-    });
-
-    // =============================================
-    // 12. KEYBOARD ACCESSIBILITY
-    // =============================================
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            var viewModal = document.getElementById('viewModal');
-            var statusModal = document.getElementById('statusModal');
-            var interviewModal = document.getElementById('interviewModal');
-            
-            if (viewModal && viewModal.classList.contains('active')) {
-                closeModal('viewModal');
-            } else if (statusModal && statusModal.classList.contains('active')) {
-                closeModal('statusModal');
-            } else if (interviewModal && interviewModal.classList.contains('active')) {
-                closeModal('interviewModal');
-            } else {
-                closeMobileSidebar();
-                if (profileToggle) profileToggle.classList.remove('open');
-                if (profileMenu) profileMenu.classList.remove('open');
+        } else {
+            if (content) {
+                content.innerHTML = `
+                    <div style="text-align:center; padding:1rem; color:#dc2626;">
+                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                        <p style="margin-top:0.5rem;">${data.error || 'Failed to load applicant details.'}</p>
+                    </div>
+                `;
             }
         }
+    })
+    .catch(error => {
+        if (loading) loading.style.display = 'none';
+        if (content) {
+            content.style.display = 'block';
+            content.innerHTML = `
+                <div style="text-align:center; padding:1rem; color:#dc2626;">
+                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                    <p style="margin-top:0.5rem;">Error loading applicant details. Please try again.</p>
+                </div>
+            `;
+        }
     });
+}
 
-    console.log('👥 ISMERS Applicants Management loaded successfully!');
+// =============================================
+// 7. STATUS UPDATE
+// =============================================
+function openStatusModal(applicationId) {
+    const statusAppId = document.getElementById('statusApplicationId');
+    const statusSelect = document.getElementById('statusSelect');
+    const statusFeedback = document.getElementById('statusFeedback');
+    
+    if (statusAppId) statusAppId.value = applicationId;
+    if (statusSelect) statusSelect.value = '';
+    if (statusFeedback) statusFeedback.value = '';
+    openModal('statusModal');
+}
+
+function submitStatusUpdate(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('statusForm');
+    if (!form) return;
+    
+    const formData = new FormData(form);
+
+    const btn = document.querySelector('#statusModal .modal-footer .btn-primary');
+    if (!btn) return;
+    
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Updating...';
+
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        
+        if (data.success) {
+            showToast(data.message, 'success');
+            closeModal('statusModal');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showToast(data.error || 'Failed to update status.', 'error');
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        showToast('Error updating status. Please try again.', 'error');
+    });
+}
+
+// =============================================
+// 8. SCHEDULE INTERVIEW
+// =============================================
+function openInterviewModal(applicationId, applicantName) {
+    const interviewAppId = document.getElementById('interviewApplicationId');
+    const applicantNameInput = document.getElementById('applicantName');
+    const interviewDate = document.getElementById('interviewDate');
+    const interviewNotes = document.getElementById('interviewNotes');
+    
+    if (interviewAppId) interviewAppId.value = applicationId;
+    if (applicantNameInput) applicantNameInput.value = applicantName;
+    
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(10, 0, 0, 0);
+    const isoString = tomorrow.toISOString().slice(0, 16);
+    if (interviewDate) interviewDate.value = isoString;
+    if (interviewNotes) interviewNotes.value = '';
+    
+    openModal('interviewModal');
+}
+
+function submitInterview(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('interviewForm');
+    if (!form) return;
+    
+    const formData = new FormData(form);
+
+    const btn = document.querySelector('#interviewModal .modal-footer .btn-success');
+    if (!btn) return;
+    
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Scheduling...';
+
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(function(response) {
+        return response.json();
+    })
+    .then(function(data) {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        
+        if (data.success) {
+            showToast(data.message, 'success');
+            closeModal('interviewModal');
+            setTimeout(function() {
+                location.reload();
+            }, 1000);
+        } else {
+            showToast(data.error || 'Failed to schedule interview.', 'error');
+        }
+    })
+    .catch(function(error) {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        console.error('Error:', error);
+        showToast('Error scheduling interview. Please try again.', 'error');
+    });
+}
+
+// =============================================
+// 9. QUALIFICATION MODAL (REDESIGNED)
+// =============================================
+let qualificationData = {};
+
+function openQualificationModal(applicationId, status) {
+    if (status === 'hired' || status === 'rejected' || status === 'withdrawn') {
+        showToast('This application has already been processed.', 'info');
+        return;
+    }
+    
+    const row = document.querySelector(`button[onclick*="openQualificationModal(${applicationId}"]`).closest('tr');
+    if (row) {
+        const statusBadge = row.querySelector('.badge-notified-qualified, .badge-notified-notqualified');
+        if (statusBadge) {
+            showToast('Notification already sent to this applicant.', 'info');
+            return;
+        }
+    }
+    
+    const formData = new FormData();
+    formData.append('action', 'view_applicant');
+    formData.append('application_id', applicationId);
+    
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const app = data.applicant;
+            qualificationData = { applicationId, applicant: app };
+            
+            document.getElementById('qualificationApplicationId').value = applicationId;
+            document.getElementById('qualificationApplicantName').textContent = 
+                app.first_name + ' ' + app.last_name + ' (' + app.email + ')';
+            document.getElementById('qualificationJobTitle').textContent = app.job_title;
+            document.getElementById('qualificationAppliedDate').textContent = formatDate(app.applied_at);
+            
+            const daysWaiting = Math.floor((Date.now() - new Date(app.applied_at).getTime()) / (1000 * 60 * 60 * 24));
+            document.getElementById('qualificationDaysWaiting').textContent = daysWaiting + ' days';
+            
+            const isQualified = determineQualificationFromData(app);
+            document.querySelector('input[name="qualification_decision"][value="' + 
+                (isQualified ? 'qualified' : 'not_qualified') + '"]').checked = true;
+            
+            updateDecisionStyles();
+            
+            document.getElementById('qualificationNotes').value = '';
+            
+            openModal('qualificationModal');
+        } else {
+            showToast('Error loading applicant details.', 'error');
+        }
+    })
+    .catch(error => {
+        showToast('Error loading applicant details.', 'error');
+    });
+}
+
+function updateDecisionStyles() {
+    const qualifiedOption = document.getElementById('qualifiedOption');
+    const notqualifiedOption = document.getElementById('notqualifiedOption');
+    const selected = document.querySelector('input[name="qualification_decision"]:checked');
+    
+    if (selected) {
+        qualifiedOption.classList.remove('selected-qualified', 'selected-notqualified');
+        notqualifiedOption.classList.remove('selected-qualified', 'selected-notqualified');
+        
+        if (selected.value === 'qualified') {
+            qualifiedOption.classList.add('selected-qualified');
+        } else {
+            notqualifiedOption.classList.add('selected-notqualified');
+        }
+    }
+}
+
+function determineQualificationFromData(app) {
+    if (app.match_score && app.match_score >= 70) return true;
+    
+    if (app.skills) {
+        const skills = app.skills.toLowerCase();
+        const required = ['php', 'javascript', 'python', 'java', 'sql', 'html', 'css'];
+        for (let skill of required) {
+            if (skills.includes(skill)) return true;
+        }
+    }
+    
+    if (app.experience) {
+        const exp = app.experience.toLowerCase();
+        const keywords = ['years', 'experience', 'senior', 'lead', 'manager'];
+        for (let keyword of keywords) {
+            if (exp.includes(keyword)) return true;
+        }
+    }
+    
+    return false;
+}
+
+// Radio button click handlers
+document.querySelectorAll('input[name="qualification_decision"]').forEach(radio => {
+    radio.addEventListener('change', updateDecisionStyles);
+});
+
+document.getElementById('qualifiedOption').addEventListener('click', function() {
+    document.querySelector('input[name="qualification_decision"][value="qualified"]').checked = true;
+    updateDecisionStyles();
+});
+
+document.getElementById('notqualifiedOption').addEventListener('click', function() {
+    document.querySelector('input[name="qualification_decision"][value="not_qualified"]').checked = true;
+    updateDecisionStyles();
+});
+
+function submitQualification() {
+    const applicationId = document.getElementById('qualificationApplicationId').value;
+    const isQualified = document.querySelector('input[name="qualification_decision"]:checked').value === 'qualified';
+    const notes = document.getElementById('qualificationNotes').value;
+    
+    if (!applicationId) {
+        showToast('Error: No application selected.', 'error');
+        return;
+    }
+    
+    const btn = document.getElementById('sendQualificationBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = 'Sending Notification...';
+    
+    const formData = new FormData();
+    formData.append('action', 'send_qualification');
+    formData.append('application_id', applicationId);
+    formData.append('is_qualified', isQualified ? '1' : '0');
+    formData.append('notes', notes);
+    
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => {
+        // Check if response is ok
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+        return response.json();
+    })
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        
+        // Check the response
+        if (data && data.success === true) {
+            showToast('✅ Notification sent successfully!', 'success');
+            closeModal('qualificationModal');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            // If we got here but success is false
+            const errorMsg = data && data.error ? data.error : 'Unknown error occurred.';
+            showToast('Error: ' + errorMsg, 'error');
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        
+        console.error('Fetch error:', error);
+        
+        // Even if fetch fails, the email might have sent
+        // Show a more helpful message
+        showToast('Connection issue detected. Please check if the email was sent.', 'info');
+        
+        // Optionally reload to see if the application was updated
+        setTimeout(() => location.reload(), 3000);
+    });
+}
+
+// =============================================
+// 10. TOAST SYSTEM
+// =============================================
+function showToast(message, type) {
+    type = type || 'info';
+    var existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    setTimeout(function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(function() {
+            toast.remove();
+        }, 400);
+    }, 3500);
+}
+
+// =============================================
+// 11. UTILITY FUNCTIONS
+// =============================================
+function escapeHtml(text) {
+    if (!text) return '';
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function formatDate(date) {
+    if (!date) return 'N/A';
+    return new Date(date).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+}
+
+function getStatusBadge(status) {
+    var badges = {
+        'pending': 'badge-pending',
+        'shortlisted': 'badge-shortlisted',
+        'scheduled': 'badge-scheduled',
+        'interviewed': 'badge-interviewed',
+        'hired': 'badge-hired',
+        'rejected': 'badge-rejected',
+        'withdrawn': 'badge-withdrawn'
+    };
+    return badges[status] || 'badge-pending';
+}
+
+function getStatusLabel(status) {
+    var labels = {
+        'pending': 'Pending Review',
+        'shortlisted': 'Shortlisted',
+        'scheduled': 'Scheduled',
+        'interviewed': 'Interviewed',
+        'hired': 'Hired',
+        'rejected': 'Rejected',
+        'withdrawn': 'Withdrawn'
+    };
+    return labels[status] || status;
+}
+
+// =============================================
+// 12. RESPONSIVE HANDLING
+// =============================================
+var resizeTimer;
+window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+        var width = window.innerWidth;
+        if (width <= 768) {
+            sidebar.classList.remove('collapsed');
+        } else {
+            sidebar.classList.remove('mobile-open');
+            sidebarBackdrop.classList.remove('active');
+            document.body.style.overflow = '';
+            var saved = localStorage.getItem('sidebarCollapsed');
+            if (saved === 'true') {
+                sidebar.classList.add('collapsed');
+            } else {
+                sidebar.classList.remove('collapsed');
+            }
+        }
+    }, 250);
+});
+
+// =============================================
+// 13. KEYBOARD ACCESSIBILITY
+// =============================================
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        var viewModal = document.getElementById('viewModal');
+        var statusModal = document.getElementById('statusModal');
+        var interviewModal = document.getElementById('interviewModal');
+        var qualificationModal = document.getElementById('qualificationModal');
+        
+        if (viewModal && viewModal.classList.contains('active')) {
+            closeModal('viewModal');
+        } else if (statusModal && statusModal.classList.contains('active')) {
+            closeModal('statusModal');
+        } else if (interviewModal && interviewModal.classList.contains('active')) {
+            closeModal('interviewModal');
+        } else if (qualificationModal && qualificationModal.classList.contains('active')) {
+            closeModal('qualificationModal');
+        } else {
+            closeMobileSidebar();
+            if (profileToggle) profileToggle.classList.remove('open');
+            if (profileMenu) profileMenu.classList.remove('open');
+        }
+    }
+});
+
+console.log('👥 ISMERS Applicants Management loaded successfully!');
 </script>
 
 </body>

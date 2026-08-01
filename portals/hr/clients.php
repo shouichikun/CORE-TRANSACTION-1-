@@ -1,14 +1,159 @@
 <?php
-// portals/hr/clients.php - Client Management with PHPMailer (FIXED PATH)
-session_start();
+// portals/hr/clients.php - Enhanced Client Management with Company Profiling
+// FIXED: Proper AJAX handling with error isolation
+
+// =============================================
+// ENABLE ERROR REPORTING FOR DEBUGGING
+// =============================================
+error_reporting(E_ALL);
+ini_set('display_errors', 0); // Turn off display errors for AJAX
+ini_set('log_errors', 1);
+ini_set('error_log', 'php_errors.log');
+
+// Start session
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// =============================================
+// AJAX HANDLER - MUST BE AT THE VERY TOP
+// =============================================
+// Check if this is an AJAX request FIRST before any HTML output
+$isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
+    // Clear any previous output
+    if (ob_get_level()) ob_clean();
+    
+    // Set JSON header
+    header('Content-Type: application/json');
+    
+    // Function to send JSON response and exit
+    function sendJsonResponse($data) {
+        echo json_encode($data);
+        exit;
+    }
+    
+    try {
+        // Load config
+        require_once '../../app/config.php';
+        require_once 'includes/functions.php';
+        
+        // Check if user is logged in
+        if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
+            sendJsonResponse(['success' => false, 'error' => 'Not logged in']);
+        }
+
+        // Only HR Manager can manage clients
+        if (!in_array($_SESSION['role'], ['hr_manager', 'admin'])) {
+            sendJsonResponse(['success' => false, 'error' => 'Unauthorized']);
+        }
+        
+        $action = $_POST['action'] ?? '';
+        $clientId = isset($_POST['client_id']) ? (int)$_POST['client_id'] : 0;
+        
+        // =============================================
+        // GET COMPANY DETAILS WITH APPLICANTS
+        // =============================================
+        if ($action === 'get_company_details' && $clientId > 0) {
+            // Get company basic info
+            $company = getRecord("
+                SELECT c.*, u.email as user_email, u.full_name as user_full_name,
+                       u.profile_picture, u.created_at as user_created_at
+                FROM clients c
+                JOIN users u ON c.user_id = u.id
+                WHERE c.id = ?
+            ", [$clientId], "i");
+            
+            if (!$company) {
+                sendJsonResponse(['success' => false, 'error' => 'Company not found.']);
+            }
+            
+            // Get all job orders for this company
+            $jobs = getRecords("
+                SELECT id, title, description, status, created_at,
+                       (SELECT COUNT(*) FROM applications WHERE job_order_id = job_orders.id) as applicant_count
+                FROM job_orders 
+                WHERE client_id = ?
+                ORDER BY created_at DESC
+            ", [$clientId], "i");
+            
+            // Get all applicants who applied to jobs of this company
+            $applicants = getRecords("
+    SELECT DISTINCT 
+        a.id as application_id,
+        a.status as application_status,
+        a.applied_at,
+        a.cover_letter,
+        ap.id as applicant_id,
+        u.first_name,
+        u.last_name,
+        u.email,
+        ap.phone,
+        ap.address,
+        ap.skills,
+        ap.experience,
+        ap.education,
+        ap.profile_picture,
+        u.profile_picture as user_profile_picture,
+        jo.id as job_id,
+        jo.title as job_title,
+        jo.status as job_status
+    FROM applications a
+    JOIN applicants ap ON a.applicant_id = ap.id
+    JOIN users u ON ap.user_id = u.id
+    JOIN job_orders jo ON a.job_order_id = jo.id
+    WHERE jo.client_id = ?
+    ORDER BY a.applied_at DESC
+", [$clientId], "i");
+            
+            // Get application status counts
+            $statusCounts = [
+                'pending' => 0,
+                'reviewing' => 0,
+                'interview_scheduled' => 0,
+                'interviewed' => 0,
+                'offered' => 0,
+                'hired' => 0,
+                'rejected' => 0
+            ];
+            
+            foreach ($applicants as $app) {
+                $status = $app['application_status'] ?? 'pending';
+                if (isset($statusCounts[$status])) {
+                    $statusCounts[$status]++;
+                }
+            }
+            
+            sendJsonResponse([
+                'success' => true,
+                'company' => $company,
+                'jobs' => $jobs,
+                'applicants' => $applicants,
+                'status_counts' => $statusCounts,
+                'total_applicants' => count($applicants),
+                'total_jobs' => count($jobs)
+            ]);
+        }
+        
+        // If no action matched, return error
+        sendJsonResponse(['success' => false, 'error' => 'Invalid action: ' . $action]);
+        
+    } catch (Exception $e) {
+        sendJsonResponse(['success' => false, 'error' => 'Server error: ' . $e->getMessage()]);
+    }
+}
+
+// =============================================
+// NORMAL PAGE LOAD - Continue with HTML output
+// =============================================
 
 require_once '../../app/config.php';
 require_once 'includes/functions.php';
 
 // =============================================
-// INCLUDE PHPMailer - FIXED PATH
+// INCLUDE PHPMailer
 // =============================================
-// Path: from portals/hr/ to root/PHPMailer-master/src/
 require_once '../../PHPMailer-master/src/Exception.php';
 require_once '../../PHPMailer-master/src/PHPMailer.php';
 require_once '../../PHPMailer-master/src/SMTP.php';
@@ -36,14 +181,13 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 
 // =============================================
-// PHPMailer Function - FIXED
+// PHPMailer Function
 // =============================================
 function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
     try {
         $mail = new PHPMailer(true);
         
-        // Server settings - using your config values
-        $mail->SMTPDebug = SMTP::DEBUG_OFF; // Set to DEBUG_SERVER for testing
+        $mail->SMTPDebug = SMTP::DEBUG_OFF;
         $mail->isSMTP();
         $mail->Host       = SMTP_HOST;
         $mail->SMTPAuth   = true;
@@ -52,12 +196,10 @@ function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
         $mail->SMTPSecure = SMTP_SECURE;
         $mail->Port       = SMTP_PORT;
         
-        // Recipients
         $mail->setFrom(MAIL_FROM, MAIL_FROM_NAME);
         $mail->addAddress($to, $name);
         $mail->addReplyTo(MAIL_REPLY_TO, MAIL_REPLY_TO_NAME);
         
-        // Content
         $mail->isHTML(true);
         $mail->Subject = "Welcome to ISMERS - Your Client Account";
         
@@ -152,7 +294,6 @@ function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
         </html>
         ";
         
-        // Plain text alternative
         $mail->AltBody = "
         Welcome to ISMERS, " . $name . "!
         
@@ -173,7 +314,6 @@ function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
         return true;
         
     } catch (Exception $e) {
-        // Log the error but don't show it to user
         error_log("PHPMailer Error: " . $mail->ErrorInfo);
         return false;
     }
@@ -184,13 +324,12 @@ $statusFilter = $_GET['status'] ?? 'all';
 $searchQuery = $_GET['search'] ?? '';
 
 // =============================================
-// GET ALL CLIENTS - FIXED to include profile_picture from users table
+// GET ALL CLIENTS WITH ENHANCED DATA
 // =============================================
 $conditions = [];
 $params = [];
 $types = "";
 
-// FIX: Use is_active instead of status
 if ($statusFilter !== 'all') {
     if ($statusFilter === 'active') {
         $conditions[] = "c.is_active = 1";
@@ -200,7 +339,7 @@ if ($statusFilter !== 'all') {
 }
 
 if (!empty($searchQuery)) {
-    $conditions[] = "(c.company_name LIKE ? OR c.contact_person LIKE ? OR c.email LIKE ?)";
+    $conditions[] = "(c.company_name LIKE ? OR c.contact_person LIKE ? OR u.email LIKE ?)";
     $searchParam = "%$searchQuery%";
     $params[] = $searchParam;
     $params[] = $searchParam;
@@ -210,14 +349,16 @@ if (!empty($searchQuery)) {
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
 
-// FIX: Added u.profile_picture to the SELECT
 $sql = "SELECT c.*, 
         u.id as user_id, u.email as user_email, u.first_name, u.last_name,
         u.profile_picture, u.created_at as user_created_at,
         (SELECT COUNT(*) FROM job_orders WHERE client_id = c.id) as total_jobs,
         (SELECT COUNT(*) FROM applications a 
          JOIN job_orders jo ON a.job_order_id = jo.id 
-         WHERE jo.client_id = c.id) as total_applications
+         WHERE jo.client_id = c.id) as total_applications,
+        (SELECT COUNT(DISTINCT a.applicant_id) FROM applications a 
+         JOIN job_orders jo ON a.job_order_id = jo.id 
+         WHERE jo.client_id = c.id) as unique_applicants
         FROM clients c
         JOIN users u ON c.user_id = u.id
         $whereClause
@@ -225,7 +366,7 @@ $sql = "SELECT c.*,
 
 $clients = getRecords($sql, $params, $types);
 
-// Get status counts (based on is_active)
+// Get status counts
 $statusCounts = ['all' => count($clients)];
 $activeCount = 0;
 $inactiveCount = 0;
@@ -240,7 +381,6 @@ foreach ($clients as $client) {
 
 $statusCounts['active'] = $activeCount;
 $statusCounts['inactive'] = $inactiveCount;
-$statusCounts['prospect'] = 0;
 
 $allStatuses = [
     'all' => 'All',
@@ -248,7 +388,6 @@ $allStatuses = [
     'inactive' => 'Inactive'
 ];
 
-// Status badge mapping - FIX: Use is_active
 $statusBadges = [
     'active' => 'badge-active',
     'inactive' => 'badge-inactive'
@@ -280,222 +419,22 @@ $industries = [
     'Other'
 ];
 
+// Company sizes
+$companySizes = [
+    '1-10' => '1-10 employees',
+    '11-50' => '11-50 employees',
+    '51-200' => '51-200 employees',
+    '201-500' => '201-500 employees',
+    '501-1000' => '501-1000 employees',
+    '1000+' => '1000+ employees'
+];
+
 // =============================================
-// AJAX HANDLER
+// ADDITIONAL AJAX HANDLERS (for other actions)
 // =============================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
-    header('Content-Type: application/json');
-    
-    $action = $_POST['action'] ?? '';
-    $clientId = isset($_POST['client_id']) ? (int)$_POST['client_id'] : 0;
-    
-    if ($action === 'create_client') {
-        $companyName = trim($_POST['company_name'] ?? '');
-        $industry = trim($_POST['industry'] ?? '');
-        $companySize = trim($_POST['company_size'] ?? '');
-        $contactPerson = trim($_POST['contact_person'] ?? '');
-        $email = trim($_POST['email'] ?? '');
-        $phone = trim($_POST['phone'] ?? '');
-        $address = trim($_POST['address'] ?? '');
-        $city = trim($_POST['city'] ?? '');
-        $province = trim($_POST['province'] ?? '');
-        $zipCode = trim($_POST['zip_code'] ?? '');
-        $website = trim($_POST['website'] ?? '');
-        $taxId = trim($_POST['tax_id'] ?? '');
-        $notes = trim($_POST['notes'] ?? '');
-        $isActive = isset($_POST['is_active']) ? (int)$_POST['is_active'] : 1;
-        
-        // Validate
-        if (empty($companyName) || empty($email) || empty($contactPerson)) {
-            echo json_encode(['success' => false, 'error' => 'Company name, email, and contact person are required.']);
-            exit;
-        }
-        
-        // Check if email already exists
-        $existing = getRecord("SELECT id FROM users WHERE email = ?", [$email], "s");
-        if ($existing) {
-            echo json_encode(['success' => false, 'error' => 'This email is already registered.']);
-            exit;
-        }
-        
-        // Check if company already exists
-        $existingCompany = getRecord("SELECT id FROM clients WHERE company_name = ?", [$companyName], "s");
-        if ($existingCompany) {
-            echo json_encode(['success' => false, 'error' => 'This company name is already registered.']);
-            exit;
-        }
-        
-        // Generate temporary password
-        $tempPassword = generatePassword(10);
-        // Use PASSWORD_DEFAULT explicitly
-        $passwordHash = password_hash($tempPassword, PASSWORD_DEFAULT);
-        
-        // STEP 1: Create user account
-        $userData = [
-            'email' => $email,
-            'password_hash' => $passwordHash,
-            'role' => 'client',
-            'full_name' => $contactPerson,
-            'first_name' => trim(strtok($contactPerson, ' ')),
-            'last_name' => trim(strstr($contactPerson, ' ') ?: ''),
-        ];
-        $newUserId = createUser($userData);
-        
-        if (!$newUserId) {
-            echo json_encode(['success' => false, 'error' => 'Failed to create user account.']);
-            exit;
-        }
-        
-        // STEP 2: Create client profile
-        $clientSql = "INSERT INTO clients (
-            user_id, company_name, industry, company_size, contact_person, 
-            contact_phone, website, address, is_active, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-        
-        $clientResult = insertRecord($clientSql, [
-            $newUserId,
-            $companyName,
-            $industry,
-            $companySize,
-            $contactPerson,
-            $phone,
-            $website,
-            $address,
-            $isActive
-        ], "isssssssi");
-        
-        if (!$clientResult) {
-            // Rollback - delete user if client creation fails
-            deleteRecord("DELETE FROM users WHERE id = ?", [$newUserId], "i");
-            echo json_encode(['success' => false, 'error' => 'Failed to create client profile.']);
-            exit;
-        }
-        
-        // STEP 3: Send welcome email using PHPMailer
-        $emailSent = sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
-        
-        // STEP 4: Log activity
-        logActivity($userId, 'Client Created', 'clients', $clientResult, 'Created client: ' . $companyName);
-        
-        $message = 'Client created successfully!';
-        if ($emailSent) {
-            $message .= ' Welcome email sent to ' . $email;
-        } else {
-            $message .= ' But email sending failed. Please send credentials manually.';
-        }
-        
-        echo json_encode([
-            'success' => true, 
-            'message' => $message,
-            'temp_password' => $tempPassword // For debugging only
-        ]);
-        exit;
-    }
-    
-    if ($action === 'update_client' && $clientId > 0) {
-        $companyName = trim($_POST['company_name'] ?? '');
-        $industry = trim($_POST['industry'] ?? '');
-        $companySize = trim($_POST['company_size'] ?? '');
-        $contactPerson = trim($_POST['contact_person'] ?? '');
-        $email = trim($_POST['email'] ?? '');
-        $phone = trim($_POST['phone'] ?? '');
-        $address = trim($_POST['address'] ?? '');
-        $city = trim($_POST['city'] ?? '');
-        $province = trim($_POST['province'] ?? '');
-        $zipCode = trim($_POST['zip_code'] ?? '');
-        $website = trim($_POST['website'] ?? '');
-        $taxId = trim($_POST['tax_id'] ?? '');
-        $notes = trim($_POST['notes'] ?? '');
-        $isActive = isset($_POST['is_active']) ? (int)$_POST['is_active'] : 1;
-        
-        if (empty($companyName) || empty($email) || empty($contactPerson)) {
-            echo json_encode(['success' => false, 'error' => 'Company name, email, and contact person are required.']);
-            exit;
-        }
-        
-        // Update client
-        $sql = "UPDATE clients SET 
-                company_name = ?,
-                industry = ?,
-                company_size = ?,
-                contact_person = ?,
-                contact_phone = ?,
-                website = ?,
-                address = ?,
-                is_active = ?,
-                updated_at = NOW()
-                WHERE id = ?";
-        
-        $result = updateRecord($sql, [
-            $companyName,
-            $industry,
-            $companySize,
-            $contactPerson,
-            $phone,
-            $website,
-            $address,
-            $isActive,
-            $clientId
-        ], "sssssssii");
-        
-        if ($result) {
-            // Update user email if changed
-            $client = getRecord("SELECT user_id FROM clients WHERE id = ?", [$clientId], "i");
-            if ($client) {
-                updateRecord("UPDATE users SET email = ?, full_name = ? WHERE id = ?", [
-                    $email,
-                    $contactPerson,
-                    $client['user_id']
-                ], "ssi");
-            }
-            
-            logActivity($userId, 'Client Updated', 'clients', $clientId, 'Updated client: ' . $companyName);
-            echo json_encode(['success' => true, 'message' => 'Client updated successfully!']);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Failed to update client.']);
-        }
-        exit;
-    }
-    
-    if ($action === 'get_client' && $clientId > 0) {
-        // FIX: Added u.profile_picture to the SELECT
-        $client = getRecord("
-            SELECT c.*, u.id as user_id, u.email as user_email, u.first_name, u.last_name, u.profile_picture
-            FROM clients c
-            JOIN users u ON c.user_id = u.id
-            WHERE c.id = ?
-        ", [$clientId], "i");
-        
-        if ($client) {
-            // Convert is_active to status for the frontend
-            $client['status'] = $client['is_active'] == 1 ? 'active' : 'inactive';
-            echo json_encode(['success' => true, 'client' => $client]);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Client not found.']);
-        }
-        exit;
-    }
-    
-    if ($action === 'delete_client' && $clientId > 0) {
-        $client = getRecord("SELECT company_name, user_id FROM clients WHERE id = ?", [$clientId], "i");
-        if ($client) {
-            // Delete client (user will also be deleted due to foreign key cascade)
-            $sql = "DELETE FROM clients WHERE id = ?";
-            $result = deleteRecord($sql, [$clientId], "i");
-            if ($result) {
-                // Also delete the user
-                deleteRecord("DELETE FROM users WHERE id = ?", [$client['user_id']], "i");
-                logActivity($userId, 'Client Deleted', 'clients', $clientId, 'Deleted client: ' . $client['company_name']);
-                echo json_encode(['success' => true, 'message' => 'Client deleted successfully!']);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Failed to delete client.']);
-            }
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Client not found.']);
-        }
-        exit;
-    }
-}
+// These are kept here but the main AJAX handler is at the top
+// The code below is only executed for non-AJAX requests
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -507,7 +446,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           CLIENTS MANAGEMENT - PROFESSIONAL EDITION
+           CLIENTS MANAGEMENT - ENHANCED EDITION
            ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
@@ -1141,7 +1080,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             font-size: 0.875rem;
             flex-shrink: 0;
         }
-        /* Added CSS for company profile image */
         .client-cell .company-img {
             width: 2.5rem;
             height: 2.5rem;
@@ -1151,6 +1089,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         }
         .client-cell .info .name { font-weight: 600; color: var(--text-on-surface); }
         .client-cell .info .contact { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
+        .client-cell .info .applicant-count {
+            font-size: 0.625rem;
+            color: var(--primary);
+            font-weight: 600;
+        }
 
         .badge {
             display: inline-block;
@@ -1163,6 +1106,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         }
         .badge-active { background: #d1fae5; color: #059669; }
         .badge-inactive { background: #fecaca; color: #dc2626; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-reviewing { background: #dbeafe; color: #2563eb; }
+        .badge-interview_scheduled { background: #e0e7ff; color: #4f46e5; }
+        .badge-interviewed { background: #ede9fe; color: #7c3aed; }
+        .badge-offered { background: #d1fae5; color: #059669; }
+        .badge-hired { background: #a7f3d0; color: #047857; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
 
         .action-buttons { display: flex; gap: 0.25rem; flex-wrap: wrap; justify-content: center; }
 
@@ -1203,6 +1153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             display: flex;
             flex-direction: column;
         }
+        .modal-wide { max-width: 80rem; }
         @keyframes modalSlideUp {
             from { opacity: 0; transform: translateY(20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
@@ -1317,6 +1268,159 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
+        /* =============================================
+           COMPANY DETAILS VIEW STYLES
+        ============================================= */
+        .company-profile-header {
+            display: flex;
+            gap: 1.5rem;
+            align-items: flex-start;
+            padding: 1rem 0 1.5rem;
+            border-bottom: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
+        .company-profile-header .company-logo {
+            width: 5rem;
+            height: 5rem;
+            border-radius: var(--radius-xl);
+            background: var(--primary-container);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary);
+            flex-shrink: 0;
+        }
+        .company-profile-header .company-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: var(--radius-xl);
+        }
+        .company-profile-header .company-info h2 {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--text-on-surface);
+        }
+        .company-profile-header .company-info .sub-info {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 0.25rem;
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+        }
+        .company-profile-header .company-info .sub-info span {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .company-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.75rem;
+            margin: 1rem 0 1.5rem;
+        }
+        .company-stat-card {
+            background: var(--bg-surface-low);
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius-md);
+            text-align: center;
+        }
+        .company-stat-card .number {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--primary);
+        }
+        .company-stat-card .label {
+            font-size: 0.625rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+
+        .applicant-card {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.625rem;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--slate-200);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.5rem;
+        }
+        .applicant-card:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
+        .applicant-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background: var(--primary-container);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: var(--primary);
+            flex-shrink: 0;
+        }
+        .applicant-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        .applicant-card .info {
+            flex: 1;
+            min-width: 0;
+        }
+        .applicant-card .info .name {
+            font-weight: 600;
+            font-size: 0.875rem;
+        }
+        .applicant-card .info .details {
+            font-size: 0.6875rem;
+            color: var(--text-on-surface-variant);
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .applicant-card .info .job-title {
+            font-size: 0.75rem;
+            color: var(--primary);
+            font-weight: 500;
+        }
+        .applicant-card .status-badge {
+            flex-shrink: 0;
+        }
+
+        .tab-bar {
+            display: flex;
+            gap: 0.25rem;
+            border-bottom: 2px solid var(--slate-200);
+            margin-bottom: 1rem;
+        }
+        .tab-btn {
+            padding: 0.5rem 1rem;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            background: none;
+            border: none;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+        }
+        .tab-btn:hover { color: var(--text-on-surface); }
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -1343,21 +1447,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             .modal { max-height: 95vh; margin: 0.5rem; }
             .modal-footer { flex-direction: column; }
             .modal-footer .btn { width: 100%; justify-content: center; }
-            .dashboard-sidebar.collapsed .sidebar-brand-text,
-            .dashboard-sidebar.collapsed .sidebar-brand-category,
-            .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-            .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-            .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-            .dashboard-sidebar.collapsed .sidebar-footer .user-info {
-                opacity: 1;
-                width: auto;
-                overflow: visible;
-            }
-            .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1.5rem; }
-            .dashboard-sidebar.collapsed .sidebar-nav { padding: 1.5rem 1.25rem; }
-            .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: flex-start; padding: 0.75rem 1rem; }
-            .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; }
-            .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: flex-start; padding: 0.5rem 0.75rem; }
+            .company-profile-header { flex-direction: column; align-items: center; text-align: center; }
+            .company-profile-header .company-info .sub-info { justify-content: center; }
+            .company-stats-grid { grid-template-columns: 1fr 1fr; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
@@ -1367,6 +1459,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             .stat-card .stat-number { font-size: 1.25rem; }
             table { font-size: 0.75rem; min-width: 500px; }
             table th, table td { padding: 0.375rem 0.5rem; }
+            .company-stats-grid { grid-template-columns: 1fr; }
         }
         .main-scroll::-webkit-scrollbar { width: 5px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -1382,7 +1475,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         <span class="sidebar-brand-icon">
             <span class="material-symbols-outlined">account_balance</span>
         </span>
-        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-text">ISMERS</p>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1415,7 +1508,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
         </a>
-        <!-- NO "System" section with Settings -->
     </nav>
     <div class="sidebar-footer">
         <div class="user-card">
@@ -1425,921 +1517,1041 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
-        <!-- NO logout-btn here - only in profile dropdown -->
     </div>
 </aside>
 
-    <!-- ===== MAIN CONTENT ===== -->
-    <div class="main-wrapper" id="mainWrapper">
+<!-- ===== MAIN CONTENT ===== -->
+<div class="main-wrapper" id="mainWrapper">
     <!-- ===== TOP HEADER ===== -->
-<header class="top-header">
-    <div class="top-header-left">
-        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-            <span class="material-symbols-outlined">menu</span>
-        </button>
-        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-            <span class="material-symbols-outlined">chevron_left</span>
-        </button>
-        <span class="separator">|</span>
-        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-            <?php 
-                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                echo ucwords(str_replace('_', ' ', $pageTitle));
-            ?>
-        </span>
-    </div>
-    <div class="profile-dropdown-wrapper">
-        <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-            <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-            <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-            <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-            <span class="material-symbols-outlined">expand_more</span>
-        </button>
-        <div class="profile-dropdown-menu" id="profileMenu">
-            <div class="dropdown-header">Account</div>
-            <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                <span class="material-symbols-outlined">person</span> Profile
+    <header class="top-header">
+        <div class="top-header-left">
+            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+                <span class="material-symbols-outlined">menu</span>
             </button>
-            <div class="dropdown-divider"></div>
-            <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                <span class="material-symbols-outlined">logout</span> Logout
+            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+                <span class="material-symbols-outlined">chevron_left</span>
             </button>
+            <span class="separator">|</span>
+            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+                <?php 
+                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                    echo ucwords(str_replace('_', ' ', $pageTitle));
+                ?>
+            </span>
         </div>
-    </div>
-</header>
+        <div class="profile-dropdown-wrapper">
+            <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                <span class="material-symbols-outlined">expand_more</span>
+            </button>
+            <div class="profile-dropdown-menu" id="profileMenu">
+                <div class="dropdown-header">Account</div>
+                <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                    <span class="material-symbols-outlined">person</span> Profile
+                </button>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <span class="material-symbols-outlined">logout</span> Logout
+                </button>
+            </div>
+        </div>
+    </header>
 
-        <main class="main-scroll">
-            <div class="container">
-                <!-- Breadcrumb -->
-                <div class="breadcrumb-bar">
-                    <div class="breadcrumb-view">
+    <main class="main-scroll">
+        <div class="container">
+            <!-- Breadcrumb -->
+            <div class="breadcrumb-bar">
+                <div class="breadcrumb-view">
+                    <span class="material-symbols-outlined">business</span>
+                    <span>Clients</span>
+                    <span class="status-dot"></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo $statusFilter === 'all' ? 'All' : ucfirst($statusFilter); ?> (<?php echo count($clients); ?>)
+                    </span>
+                </div>
+                <span class="breadcrumb-meta">Updated <?php echo date('M d, Y H:i'); ?></span>
+            </div>
+
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Client Management</h1>
+                    <p>Manage client companies and their accounts</p>
+                </div>
+                <div>
+                    <button class="btn btn-primary" onclick="openCreateModal()">
+                        <span class="material-symbols-outlined">add</span>
+                        Create New Client
+                    </button>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="stats-row">
+                <div class="stat-card">
+                    <div class="stat-icon primary">
                         <span class="material-symbols-outlined">business</span>
-                        <span>Clients</span>
-                        <span class="status-dot"></span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
-                            <?php echo $statusFilter === 'all' ? 'All' : ucfirst($statusFilter); ?> (<?php echo count($clients); ?>)
-                        </span>
                     </div>
-                    <span class="breadcrumb-meta">Updated <?php echo date('M d, Y H:i'); ?></span>
-                </div>
-
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Client Management</h1>
-                        <p>Manage client companies and their accounts</p>
-                    </div>
-                    <div>
-                        <button class="btn btn-primary" onclick="openCreateModal()">
-                            <span class="material-symbols-outlined">add</span>
-                            Create New Client
-                        </button>
+                    <div class="stat-info">
+                        <div class="stat-number"><?php echo $statusCounts['all']; ?></div>
+                        <div class="stat-label">Total Clients</div>
                     </div>
                 </div>
+                <div class="stat-card">
+                    <div class="stat-icon green">
+                        <span class="material-symbols-outlined">check_circle</span>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-number"><?php echo $statusCounts['active'] ?? 0; ?></div>
+                        <div class="stat-label">Active</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon red">
+                        <span class="material-symbols-outlined">block</span>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-number"><?php echo $statusCounts['inactive'] ?? 0; ?></div>
+                        <div class="stat-label">Inactive</div>
+                    </div>
+                </div>
+            </div>
 
-                <!-- Stats -->
-                <div class="stats-row">
-                    <div class="stat-card">
-                        <div class="stat-icon primary">
+            <!-- Search -->
+            <div class="search-bar">
+                <div class="search-input-wrapper">
+                    <span class="material-symbols-outlined">search</span>
+                    <input type="text" id="searchInput" placeholder="Search by company name, contact person, or email..." 
+                           value="<?php echo htmlspecialchars($searchQuery); ?>">
+                </div>
+                <button class="btn btn-primary" onclick="applyFilters()">Search</button>
+                <?php if (!empty($searchQuery) || $statusFilter !== 'all'): ?>
+                    <a href="clients.php" class="btn btn-outline">Clear Filters</a>
+                <?php endif; ?>
+            </div>
+
+            <!-- Filters -->
+            <div class="filters">
+                <?php foreach ($allStatuses as $key => $label): ?>
+                    <a href="?status=<?php echo $key; ?>&search=<?php echo urlencode($searchQuery); ?>" 
+                       class="filter-btn <?php echo $statusFilter === $key ? 'active' : ''; ?>">
+                        <?php echo $label; ?>
+                        <span class="count"><?php echo $statusCounts[$key] ?? 0; ?></span>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+
+            <!-- Clients Table -->
+            <div class="card">
+                <div class="card-header">
+                    <h3>
+                        <span class="material-symbols-outlined">business</span>
+                        <?php echo $statusFilter === 'all' ? 'All Clients' : ucfirst($statusFilter) . ' Clients'; ?>
+                    </h3>
+                    <span class="count-badge"><?php echo count($clients); ?> clients</span>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($clients)): ?>
+                        <div class="empty-state">
                             <span class="material-symbols-outlined">business</span>
+                            <h4>No Clients Found</h4>
+                            <p>
+                                <?php if ($statusFilter !== 'all'): ?>
+                                    You don't have any <?php echo $statusFilter; ?> clients.
+                                <?php else: ?>
+                                    No clients have been created yet.
+                                <?php endif; ?>
+                            </p>
+                            <button class="btn btn-primary" onclick="openCreateModal()" style="margin-top:0.75rem;">
+                                <span class="material-symbols-outlined">add</span>
+                                Create First Client
+                            </button>
                         </div>
-                        <div class="stat-info">
-                            <div class="stat-number"><?php echo $statusCounts['all']; ?></div>
-                            <div class="stat-label">Total Clients</div>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon green">
-                            <span class="material-symbols-outlined">check_circle</span>
-                        </div>
-                        <div class="stat-info">
-                            <div class="stat-number"><?php echo $statusCounts['active'] ?? 0; ?></div>
-                            <div class="stat-label">Active</div>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon red">
-                            <span class="material-symbols-outlined">block</span>
-                        </div>
-                        <div class="stat-info">
-                            <div class="stat-number"><?php echo $statusCounts['inactive'] ?? 0; ?></div>
-                            <div class="stat-label">Inactive</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Search -->
-                <div class="search-bar">
-                    <div class="search-input-wrapper">
-                        <span class="material-symbols-outlined">search</span>
-                        <input type="text" id="searchInput" placeholder="Search by company name, contact person, or email..." 
-                               value="<?php echo htmlspecialchars($searchQuery); ?>">
-                    </div>
-                    <button class="btn btn-primary" onclick="applyFilters()">Search</button>
-                    <?php if (!empty($searchQuery) || $statusFilter !== 'all'): ?>
-                        <a href="clients.php" class="btn btn-outline">Clear Filters</a>
-                    <?php endif; ?>
-                </div>
-
-                <!-- Filters -->
-                <div class="filters">
-                    <?php foreach ($allStatuses as $key => $label): ?>
-                        <a href="?status=<?php echo $key; ?>&search=<?php echo urlencode($searchQuery); ?>" 
-                           class="filter-btn <?php echo $statusFilter === $key ? 'active' : ''; ?>">
-                            <?php echo $label; ?>
-                            <span class="count"><?php echo $statusCounts[$key] ?? 0; ?></span>
-                        </a>
-                    <?php endforeach; ?>
-                </div>
-
-                <!-- Clients Table -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">business</span>
-                            <?php echo $statusFilter === 'all' ? 'All Clients' : ucfirst($statusFilter) . ' Clients'; ?>
-                        </h3>
-                        <span class="count-badge"><?php echo count($clients); ?> clients</span>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($clients)): ?>
-                            <div class="empty-state">
-                                <span class="material-symbols-outlined">business</span>
-                                <h4>No Clients Found</h4>
-                                <p>
-                                    <?php if ($statusFilter !== 'all'): ?>
-                                        You don't have any <?php echo $statusFilter; ?> clients.
-                                    <?php else: ?>
-                                        No clients have been created yet.
-                                    <?php endif; ?>
-                                </p>
-                                <button class="btn btn-primary" onclick="openCreateModal()" style="margin-top:0.75rem;">
-                                    <span class="material-symbols-outlined">add</span>
-                                    Create First Client
-                                </button>
-                            </div>
-                        <?php else: ?>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Company</th>
-                                        <th>Contact</th>
-                                        <th>Industry</th>
-                                        <th>Jobs</th>
-                                        <th>Status</th>
-                                        <th style="text-align:center;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                <?php foreach ($clients as $client): ?>
-                                    <?php 
-                                    $status = $client['is_active'] == 1 ? 'active' : 'inactive';
-                                    // =============================================
-                                    // PROFILE PICTURE FIX - NOW FROM users TABLE
-                                    // =============================================
-                                    // Get profile_picture from the users table (joined as u.profile_picture)
-                                    $profilePic = !empty($client['profile_picture']) ? $client['profile_picture'] : '';
-                                    $imagePath = '../../' . $profilePic; // Adjust path as needed
-                                    
-                                    // Check if the file exists
-                                    $hasProfileImage = !empty($profilePic) && file_exists($imagePath);
-                                    // =============================================
-                                    // PROFILE PICTURE FIX - END
-                                    // =============================================
-                                    ?>
-                                    <tr>
-                                        <td>
-                                            <div class="client-cell">
-                                                <?php if ($hasProfileImage): ?>
-                                                    <img src="<?php echo htmlspecialchars($imagePath); ?>" 
-                                                         alt="<?php echo htmlspecialchars($client['company_name']); ?>" 
-                                                         class="company-img">
-                                                <?php else: ?>
-                                                    <span class="company-icon">
-                                                        <?php echo strtoupper(substr($client['company_name'] ?? 'C', 0, 1)); ?>
-                                                    </span>
-                                                <?php endif; ?>
-                                                <div class="info">
-                                                    <div class="name"><?php echo htmlspecialchars($client['company_name']); ?></div>
-                                                    <div class="contact"><?php echo htmlspecialchars($client['user_email']); ?></div>
+                    <?php else: ?>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Company</th>
+                                    <th>Contact</th>
+                                    <th>Industry</th>
+                                    <th>Stats</th>
+                                    <th>Status</th>
+                                    <th style="text-align:center;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <?php foreach ($clients as $client): ?>
+                                <?php 
+                                $status = $client['is_active'] == 1 ? 'active' : 'inactive';
+                                $profilePic = !empty($client['profile_picture']) ? $client['profile_picture'] : '';
+                                $imagePath = '../../' . $profilePic;
+                                $hasProfileImage = !empty($profilePic) && file_exists($imagePath);
+                                ?>
+                                <tr>
+                                    <td>
+                                        <div class="client-cell">
+                                            <?php if ($hasProfileImage): ?>
+                                                <img src="<?php echo htmlspecialchars($imagePath); ?>" 
+                                                     alt="<?php echo htmlspecialchars($client['company_name']); ?>" 
+                                                     class="company-img">
+                                            <?php else: ?>
+                                                <span class="company-icon">
+                                                    <?php echo strtoupper(substr($client['company_name'] ?? 'C', 0, 1)); ?>
+                                                </span>
+                                            <?php endif; ?>
+                                            <div class="info">
+                                                <div class="name"><?php echo htmlspecialchars($client['company_name']); ?></div>
+                                                <div class="contact"><?php echo htmlspecialchars($client['user_email']); ?></div>
+                                                <div class="applicant-count">
+                                                    <?php echo ($client['total_applications'] ?? 0); ?> applications · 
+                                                    <?php echo ($client['unique_applicants'] ?? 0); ?> applicants
                                                 </div>
                                             </div>
-                                        </td>
-                                        <td>
-                                            <div style="font-weight:500;"><?php echo htmlspecialchars($client['contact_person']); ?></div>
-                                            <div style="font-size:0.6875rem; color:var(--text-on-surface-variant);">
-                                                <?php echo htmlspecialchars($client['contact_phone'] ?? 'No phone'); ?>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                                <?php echo htmlspecialchars($client['industry'] ?? '—'); ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <div style="font-weight:600; color:var(--text-on-surface);">
-                                                <?php echo $client['total_jobs'] ?? 0; ?>
-                                            </div>
-                                            <div style="font-size:0.625rem; color:var(--text-on-surface-variant);">
-                                                <?php echo $client['total_applications'] ?? 0; ?> applications
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <span class="badge <?php echo $statusBadges[$status] ?? 'badge-active'; ?>">
-                                                <?php echo $statusLabels[$status] ?? ucfirst($status); ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <div class="action-buttons">
-                                                <button class="btn btn-primary btn-sm" onclick="viewClient(<?php echo $client['id']; ?>)">
-                                                    <span class="material-symbols-outlined">visibility</span>
-                                                </button>
-                                                <button class="btn btn-outline btn-sm" onclick="editClient(<?php echo $client['id']; ?>)">
-                                                    <span class="material-symbols-outlined">edit</span>
-                                                </button>
-                                                <button class="btn btn-danger btn-sm" onclick="deleteClient(<?php echo $client['id']; ?>)">
-                                                    <span class="material-symbols-outlined">delete</span>
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        <?php endif; ?>
-                    </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div style="font-weight:500;"><?php echo htmlspecialchars($client['contact_person']); ?></div>
+                                        <div style="font-size:0.6875rem; color:var(--text-on-surface-variant);">
+                                            <?php echo htmlspecialchars($client['contact_phone'] ?? 'No phone'); ?>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                            <?php echo htmlspecialchars($client['industry'] ?? '—'); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div style="font-weight:600; color:var(--text-on-surface);">
+                                            <?php echo $client['total_jobs'] ?? 0; ?> Jobs
+                                        </div>
+                                        <div style="font-size:0.625rem; color:var(--text-on-surface-variant);">
+                                            <?php echo $client['total_applications'] ?? 0; ?> applications
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="badge <?php echo $statusBadges[$status] ?? 'badge-active'; ?>">
+                                            <?php echo $statusLabels[$status] ?? ucfirst($status); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="action-buttons">
+                                            <button class="btn btn-primary btn-sm" onclick="viewCompanyDetails(<?php echo $client['id']; ?>)">
+                                                <span class="material-symbols-outlined">visibility</span>
+                                            </button>
+                                            <button class="btn btn-outline btn-sm" onclick="editClient(<?php echo $client['id']; ?>)">
+                                                <span class="material-symbols-outlined">edit</span>
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" onclick="deleteClient(<?php echo $client['id']; ?>)">
+                                                <span class="material-symbols-outlined">delete</span>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
                 </div>
             </div>
-        </main>
-    </div>
-
-    <!-- =============================================
-    MODAL: Create/Edit Client
-    ============================================= -->
-    <div class="modal-overlay" id="clientModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">business</span>
-                    <span id="modalTitle">Create New Client</span>
-                </h2>
-                <button class="modal-close" onclick="closeModal()">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
-            </div>
-            <div class="modal-body">
-                <form id="clientForm" onsubmit="submitClient(event)">
-                    <input type="hidden" id="clientId" name="client_id" value="0">
-                    <input type="hidden" id="formAction" name="action" value="create_client">
-                    
-                    <!-- Company Information -->
-                    <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin-bottom:1rem;">
-                        <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Company Information</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Company Name <span class="required">*</span></label>
-                        <input type="text" id="companyName" name="company_name" class="form-control" required placeholder="e.g., TechCorp Inc.">
-                    </div>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Industry</label>
-                            <select id="industry" name="industry" class="form-control">
-                                <option value="">Select industry...</option>
-                                <?php foreach ($industries as $ind): ?>
-                                    <option value="<?php echo $ind; ?>"><?php echo $ind; ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Company Size</label>
-                            <select id="companySize" name="company_size" class="form-control">
-                                <option value="">Select size...</option>
-                                <option value="1-10">1-10 employees</option>
-                                <option value="11-50">11-50 employees</option>
-                                <option value="51-200">51-200 employees</option>
-                                <option value="201-500">201-500 employees</option>
-                                <option value="501-1000">501-1000 employees</option>
-                                <option value="1000+">1000+ employees</option>
-                            </select>
-                        </div>
-                    </div>
-                    
-                    <!-- Contact Information -->
-                    <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
-                        <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Contact Information</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Contact Person <span class="required">*</span></label>
-                        <input type="text" id="contactPerson" name="contact_person" class="form-control" required placeholder="Full name of contact person">
-                    </div>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Email <span class="required">*</span></label>
-                            <input type="email" id="clientEmail" name="email" class="form-control" required placeholder="contact@company.com">
-                            <div class="helper-text">
-                                <span class="material-symbols-outlined">info</span>
-                                This will be used for client login
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label>Phone</label>
-                            <input type="text" id="clientPhone" name="phone" class="form-control" placeholder="+63 912 345 6789">
-                        </div>
-                    </div>
-                    
-                    <!-- Address -->
-                    <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
-                        <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Address</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Address</label>
-                        <input type="text" id="clientAddress" name="address" class="form-control" placeholder="Street address">
-                    </div>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>City</label>
-                            <input type="text" id="clientCity" name="city" class="form-control" placeholder="City">
-                        </div>
-                        <div class="form-group">
-                            <label>Province</label>
-                            <input type="text" id="clientProvince" name="province" class="form-control" placeholder="Province">
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>ZIP Code</label>
-                        <input type="text" id="clientZip" name="zip_code" class="form-control" placeholder="ZIP code">
-                    </div>
-                    
-                    <!-- Additional Information -->
-                    <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
-                        <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Additional Information</div>
-                    </div>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Website</label>
-                            <input type="url" id="clientWebsite" name="website" class="form-control" placeholder="https://www.company.com">
-                        </div>
-                        <div class="form-group">
-                            <label>Tax ID</label>
-                            <input type="text" id="clientTaxId" name="tax_id" class="form-control" placeholder="Tax identification number">
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Notes</label>
-                        <textarea id="clientNotes" name="notes" class="form-control" placeholder="Any additional notes..." rows="2"></textarea>
-                    </div>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Status</label>
-                            <select id="clientStatus" name="is_active" class="form-control">
-                                <option value="1">Active</option>
-                                <option value="0">Inactive</option>
-                            </select>
-                        </div>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-primary" id="submitBtn" onclick="document.getElementById('clientForm').dispatchEvent(new Event('submit'))">
-                    <span class="material-symbols-outlined">check</span>
-                    <span id="submitBtnText">Create Client</span>
-                </button>
-            </div>
         </div>
-    </div>
+    </main>
+</div>
 
-    <!-- =============================================
-    MODAL: View Client Details
-    ============================================= -->
-    <div class="modal-overlay" id="viewModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">visibility</span>
-                    Client Details
-                </h2>
-                <button class="modal-close" onclick="closeModal('viewModal')">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
-            </div>
-            <div class="modal-body" id="viewModalBody">
-                <div class="loading-spinner" id="viewLoading">
-                    <div style="text-align:center; padding:1.5rem;">
-                        <div style="width:2rem; height:2rem; border:3px solid var(--slate-200); border-top-color:var(--primary); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto;"></div>
-                        <p style="margin-top:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">Loading...</p>
+<!-- =============================================
+MODAL: Create/Edit Client
+============================================= -->
+<div class="modal-overlay" id="clientModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">business</span>
+                <span id="modalTitle">Create New Client</span>
+            </h2>
+            <button class="modal-close" onclick="closeModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body">
+            <form id="clientForm" onsubmit="submitClient(event)">
+                <input type="hidden" id="clientId" name="client_id" value="0">
+                <input type="hidden" id="formAction" name="action" value="create_client">
+                
+                <!-- Company Information -->
+                <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin-bottom:1rem;">
+                    <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Company Information</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Company Name <span class="required">*</span></label>
+                    <input type="text" id="companyName" name="company_name" class="form-control" required placeholder="e.g., TechCorp Inc.">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Industry</label>
+                        <select id="industry" name="industry" class="form-control">
+                            <option value="">Select industry...</option>
+                            <?php foreach ($industries as $ind): ?>
+                                <option value="<?php echo $ind; ?>"><?php echo $ind; ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Company Size</label>
+                        <select id="companySize" name="company_size" class="form-control">
+                            <option value="">Select size...</option>
+                            <?php foreach ($companySizes as $key => $label): ?>
+                                <option value="<?php echo $key; ?>"><?php echo $label; ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
                 </div>
-                <div id="viewContent" style="display:none;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeModal('viewModal')">Close</button>
-            </div>
+                
+                <!-- Contact Information -->
+                <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
+                    <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Contact Information</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Contact Person <span class="required">*</span></label>
+                    <input type="text" id="contactPerson" name="contact_person" class="form-control" required placeholder="Full name of contact person">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Email <span class="required">*</span></label>
+                        <input type="email" id="clientEmail" name="email" class="form-control" required placeholder="contact@company.com">
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined">info</span>
+                            This will be used for client login
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Phone</label>
+                        <input type="text" id="clientPhone" name="phone" class="form-control" placeholder="+63 912 345 6789">
+                    </div>
+                </div>
+                
+                <!-- Address -->
+                <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
+                    <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Address</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Address</label>
+                    <input type="text" id="clientAddress" name="address" class="form-control" placeholder="Street address">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>City</label>
+                        <input type="text" id="clientCity" name="city" class="form-control" placeholder="City">
+                    </div>
+                    <div class="form-group">
+                        <label>Province</label>
+                        <input type="text" id="clientProvince" name="province" class="form-control" placeholder="Province">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>ZIP Code</label>
+                    <input type="text" id="clientZip" name="zip_code" class="form-control" placeholder="ZIP code">
+                </div>
+                
+                <!-- Additional Information -->
+                <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
+                    <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Additional Information</div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Website</label>
+                        <input type="url" id="clientWebsite" name="website" class="form-control" placeholder="https://www.company.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Tax ID</label>
+                        <input type="text" id="clientTaxId" name="tax_id" class="form-control" placeholder="Tax identification number">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Notes</label>
+                    <textarea id="clientNotes" name="notes" class="form-control" placeholder="Any additional notes..." rows="2"></textarea>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Status</label>
+                        <select id="clientStatus" name="is_active" class="form-control">
+                            <option value="1">Active</option>
+                            <option value="0">Inactive</option>
+                        </select>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="submitBtn" onclick="document.getElementById('clientForm').dispatchEvent(new Event('submit'))">
+                <span class="material-symbols-outlined">check</span>
+                <span id="submitBtnText">Create Client</span>
+            </button>
         </div>
     </div>
+</div>
 
-    <!-- =============================================
-    JAVASCRIPT
-    ============================================= -->
-   <script>
-    // =============================================
-    // 1. SIDEBAR TOGGLE
-    // =============================================
-    const sidebar = document.getElementById('appSidebar');
-    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-    const isMobile = window.innerWidth <= 768;
-    const savedState = localStorage.getItem('sidebarCollapsed');
+<!-- =============================================
+MODAL: Company Details with Applicants
+============================================= -->
+<div class="modal-overlay" id="companyDetailsModal">
+    <div class="modal modal-wide">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">visibility</span>
+                <span id="companyDetailsTitle">Company Details</span>
+            </h2>
+            <button class="modal-close" onclick="closeModal('companyDetailsModal')">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body" id="companyDetailsBody">
+            <div id="companyDetailsLoading" style="text-align:center; padding:1.5rem;">
+                <div style="width:2rem; height:2rem; border:3px solid var(--slate-200); border-top-color:var(--primary); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto;"></div>
+                <p style="margin-top:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">Loading company details...</p>
+            </div>
+            <div id="companyDetailsContent" style="display:none;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('companyDetailsModal')">Close</button>
+        </div>
+    </div>
+</div>
 
-    if (savedState === 'true' && !isMobile) {
-        sidebar.classList.add('collapsed');
-        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-        if (icon) icon.textContent = 'chevron_right';
+<!-- =============================================
+JAVASCRIPT - FIXED: Added better error handling
+============================================= -->
+<script>
+// =============================================
+// 1. SIDEBAR TOGGLE
+// =============================================
+const sidebar = document.getElementById('appSidebar');
+const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+const isMobile = window.innerWidth <= 768;
+const savedState = localStorage.getItem('sidebarCollapsed');
+
+if (savedState === 'true' && !isMobile) {
+    sidebar.classList.add('collapsed');
+    const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+    if (icon) icon.textContent = 'chevron_right';
+}
+
+sidebarToggleBtn.addEventListener('click', function() {
+    if (window.innerWidth <= 768) return;
+    sidebar.classList.toggle('collapsed');
+    const icon = this.querySelector('.material-symbols-outlined');
+    if (icon) {
+        icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
     }
+    localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+});
 
-    sidebarToggleBtn.addEventListener('click', function() {
-        if (window.innerWidth <= 768) return;
-        sidebar.classList.toggle('collapsed');
-        const icon = this.querySelector('.material-symbols-outlined');
-        if (icon) {
-            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-        }
-        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+// =============================================
+// 2. MOBILE SIDEBAR
+// =============================================
+const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+
+function openMobileSidebar() {
+    sidebar.classList.add('mobile-open');
+    sidebarBackdrop.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeMobileSidebar() {
+    sidebar.classList.remove('mobile-open');
+    sidebarBackdrop.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+if (mobileMenuBtn) {
+    mobileMenuBtn.addEventListener('click', openMobileSidebar);
+}
+if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+}
+
+// =============================================
+// 3. PROFILE DROPDOWN
+// =============================================
+const profileToggle = document.getElementById('profileToggle');
+const profileMenu = document.getElementById('profileMenu');
+
+if (profileToggle && profileMenu) {
+    profileToggle.addEventListener('click', function(e) {
+        e.stopPropagation();
+        this.classList.toggle('open');
+        profileMenu.classList.toggle('open');
     });
 
-    // =============================================
-    // 2. MOBILE SIDEBAR
-    // =============================================
-    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    document.addEventListener('click', function(e) {
+        if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+            profileToggle.classList.remove('open');
+            profileMenu.classList.remove('open');
+        }
+    });
+}
 
-    function openMobileSidebar() {
-        sidebar.classList.add('mobile-open');
-        sidebarBackdrop.classList.add('active');
+// =============================================
+// 4. MODAL FUNCTIONS
+// =============================================
+function openModal(id) {
+    const modal = document.getElementById(id);
+    if (modal) {
+        modal.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
+}
 
-    function closeMobileSidebar() {
-        sidebar.classList.remove('mobile-open');
-        sidebarBackdrop.classList.remove('active');
+function closeModal(id) {
+    if (!id) id = 'clientModal';
+    const modal = document.getElementById(id);
+    if (modal) {
+        modal.classList.remove('active');
         document.body.style.overflow = '';
     }
+}
 
-    if (mobileMenuBtn) {
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-    }
-    if (sidebarBackdrop) {
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-    }
-
-    // =============================================
-    // 3. PROFILE DROPDOWN - FIXED WITH NULL CHECK
-    // =============================================
-    const profileToggle = document.getElementById('profileToggle');
-    const profileMenu = document.getElementById('profileMenu');
-
-    if (profileToggle && profileMenu) {
-        profileToggle.addEventListener('click', function(e) {
-            e.stopPropagation();
-            this.classList.toggle('open');
-            profileMenu.classList.toggle('open');
-        });
-
-        document.addEventListener('click', function(e) {
-            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
-    }
-
-    // =============================================
-    // 4. MODAL FUNCTIONS
-    // =============================================
-    function openModal(id) {
-        const modal = document.getElementById(id);
-        if (modal) {
-            modal.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-    }
-
-    function closeModal(id) {
-        if (!id) id = 'clientModal';
-        const modal = document.getElementById(id);
-        if (modal) {
-            modal.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-    }
-
-    document.querySelectorAll('.modal-overlay').forEach(overlay => {
-        overlay.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal(this.id);
-            }
-        });
-    });
-
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            const clientModal = document.getElementById('clientModal');
-            const viewModal = document.getElementById('viewModal');
-            if (clientModal && clientModal.classList.contains('active')) {
-                closeModal('clientModal');
-            } else if (viewModal && viewModal.classList.contains('active')) {
-                closeModal('viewModal');
-            }
-            closeMobileSidebar();
-            if (profileToggle) profileToggle.classList.remove('open');
-            if (profileMenu) profileMenu.classList.remove('open');
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+    overlay.addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeModal(this.id);
         }
     });
+});
 
-    // =============================================
-    // 5. CREATE CLIENT
-    // =============================================
-    function openCreateModal() {
-        const modalTitle = document.getElementById('modalTitle');
-        const formAction = document.getElementById('formAction');
-        const clientId = document.getElementById('clientId');
-        const submitBtnText = document.getElementById('submitBtnText');
-        const clientForm = document.getElementById('clientForm');
-        const clientStatus = document.getElementById('clientStatus');
-        
-        if (modalTitle) modalTitle.textContent = 'Create New Client';
-        if (formAction) formAction.value = 'create_client';
-        if (clientId) clientId.value = '0';
-        if (submitBtnText) submitBtnText.textContent = 'Create Client';
-        if (clientForm) clientForm.reset();
-        if (clientStatus) clientStatus.value = '1';
-        openModal('clientModal');
-    }
-
-    // =============================================
-    // 6. EDIT CLIENT
-    // =============================================
-    function editClient(id) {
-        const modalTitle = document.getElementById('modalTitle');
-        const formAction = document.getElementById('formAction');
-        const clientId = document.getElementById('clientId');
-        const submitBtnText = document.getElementById('submitBtnText');
-        
-        if (modalTitle) modalTitle.textContent = 'Edit Client';
-        if (formAction) formAction.value = 'update_client';
-        if (clientId) clientId.value = id;
-        if (submitBtnText) submitBtnText.textContent = 'Update Client';
-
-        const formData = new FormData();
-        formData.append('action', 'get_client');
-        formData.append('client_id', id);
-
-        fetch('clients.php', {
-            method: 'POST',
-            body: formData,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                const c = data.client;
-                const companyName = document.getElementById('companyName');
-                const industry = document.getElementById('industry');
-                const companySize = document.getElementById('companySize');
-                const contactPerson = document.getElementById('contactPerson');
-                const clientEmail = document.getElementById('clientEmail');
-                const clientPhone = document.getElementById('clientPhone');
-                const clientAddress = document.getElementById('clientAddress');
-                const clientCity = document.getElementById('clientCity');
-                const clientProvince = document.getElementById('clientProvince');
-                const clientZip = document.getElementById('clientZip');
-                const clientWebsite = document.getElementById('clientWebsite');
-                const clientTaxId = document.getElementById('clientTaxId');
-                const clientNotes = document.getElementById('clientNotes');
-                const clientStatus = document.getElementById('clientStatus');
-                
-                if (companyName) companyName.value = c.company_name || '';
-                if (industry) industry.value = c.industry || '';
-                if (companySize) companySize.value = c.company_size || '';
-                if (contactPerson) contactPerson.value = c.contact_person || '';
-                if (clientEmail) clientEmail.value = c.email || '';
-                if (clientPhone) clientPhone.value = c.contact_phone || '';
-                if (clientAddress) clientAddress.value = c.address || '';
-                if (clientCity) clientCity.value = c.city || '';
-                if (clientProvince) clientProvince.value = c.province || '';
-                if (clientZip) clientZip.value = c.zip_code || '';
-                if (clientWebsite) clientWebsite.value = c.website || '';
-                if (clientTaxId) clientTaxId.value = c.tax_id || '';
-                if (clientNotes) clientNotes.value = c.notes || '';
-                if (clientStatus) clientStatus.value = c.is_active || 1;
-                openModal('clientModal');
-            } else {
-                showToast(data.error || 'Failed to load client.', 'error');
-            }
-        })
-        .catch(error => {
-            console.error('Edit error:', error);
-            showToast('Error loading client details.', 'error');
-        });
-    }
-
-    // =============================================
-    // 7. SUBMIT CLIENT
-    // =============================================
-    function submitClient(event) {
-        event.preventDefault();
-        
-        const form = document.getElementById('clientForm');
-        if (!form) return;
-        
-        const formData = new FormData(form);
-        
-        // Validate
-        const companyName = document.getElementById('companyName');
-        const contactPerson = document.getElementById('contactPerson');
-        const email = document.getElementById('clientEmail');
-        
-        if (!companyName || !companyName.value.trim() || !contactPerson || !contactPerson.value.trim() || !email || !email.value.trim()) {
-            showToast('Company name, contact person, and email are required.', 'error');
-            return;
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const clientModal = document.getElementById('clientModal');
+        const detailsModal = document.getElementById('companyDetailsModal');
+        if (clientModal && clientModal.classList.contains('active')) {
+            closeModal('clientModal');
+        } else if (detailsModal && detailsModal.classList.contains('active')) {
+            closeModal('companyDetailsModal');
         }
-        
-        const btn = document.getElementById('submitBtn');
-        if (!btn) return;
-        
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span style="display:inline-block; width:1rem; height:1rem; border:2px solid white; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite;"></span> Saving...';
+        closeMobileSidebar();
+        if (profileToggle) profileToggle.classList.remove('open');
+        if (profileMenu) profileMenu.classList.remove('open');
+    }
+});
 
-        fetch('clients.php', {
-            method: 'POST',
-            body: formData,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        })
-        .then(response => response.json())
-        .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
+// =============================================
+// 5. CREATE CLIENT
+// =============================================
+function openCreateModal() {
+    const modalTitle = document.getElementById('modalTitle');
+    const formAction = document.getElementById('formAction');
+    const clientId = document.getElementById('clientId');
+    const submitBtnText = document.getElementById('submitBtnText');
+    const clientForm = document.getElementById('clientForm');
+    const clientStatus = document.getElementById('clientStatus');
+    
+    if (modalTitle) modalTitle.textContent = 'Create New Client';
+    if (formAction) formAction.value = 'create_client';
+    if (clientId) clientId.value = '0';
+    if (submitBtnText) submitBtnText.textContent = 'Create Client';
+    if (clientForm) clientForm.reset();
+    if (clientStatus) clientStatus.value = '1';
+    openModal('clientModal');
+}
+
+// =============================================
+// 6. EDIT CLIENT
+// =============================================
+function editClient(id) {
+    const modalTitle = document.getElementById('modalTitle');
+    const formAction = document.getElementById('formAction');
+    const clientId = document.getElementById('clientId');
+    const submitBtnText = document.getElementById('submitBtnText');
+    
+    if (modalTitle) modalTitle.textContent = 'Edit Client';
+    if (formAction) formAction.value = 'update_client';
+    if (clientId) clientId.value = id;
+    if (submitBtnText) submitBtnText.textContent = 'Update Client';
+
+    const formData = new FormData();
+    formData.append('action', 'get_client');
+    formData.append('client_id', id);
+
+    fetch('clients.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const c = data.client;
+            document.getElementById('companyName').value = c.company_name || '';
+            document.getElementById('industry').value = c.industry || '';
+            document.getElementById('companySize').value = c.company_size || '';
+            document.getElementById('contactPerson').value = c.contact_person || '';
+            document.getElementById('clientEmail').value = c.email || '';
+            document.getElementById('clientPhone').value = c.contact_phone || '';
+            document.getElementById('clientAddress').value = c.address || '';
+            document.getElementById('clientCity').value = c.city || '';
+            document.getElementById('clientProvince').value = c.province || '';
+            document.getElementById('clientZip').value = c.zip_code || '';
+            document.getElementById('clientWebsite').value = c.website || '';
+            document.getElementById('clientTaxId').value = c.tax_id || '';
+            document.getElementById('clientNotes').value = c.notes || '';
+            document.getElementById('clientStatus').value = c.is_active || 1;
+            openModal('clientModal');
+        } else {
+            showToast(data.error || 'Failed to load client.', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Edit error:', error);
+        showToast('Error loading client details.', 'error');
+    });
+}
+
+// =============================================
+// 7. SUBMIT CLIENT
+// =============================================
+function submitClient(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('clientForm');
+    if (!form) return;
+    
+    const formData = new FormData(form);
+    
+    const companyName = document.getElementById('companyName');
+    const contactPerson = document.getElementById('contactPerson');
+    const email = document.getElementById('clientEmail');
+    
+    if (!companyName || !companyName.value.trim() || !contactPerson || !contactPerson.value.trim() || !email || !email.value.trim()) {
+        showToast('Company name, contact person, and email are required.', 'error');
+        return;
+    }
+    
+    const btn = document.getElementById('submitBtn');
+    if (!btn) return;
+    
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block; width:1rem; height:1rem; border:2px solid white; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite;"></span> Saving...';
+
+    fetch('clients.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        
+        if (data.success) {
+            showToast(data.message, 'success');
+            closeModal('clientModal');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showToast(data.error || 'Failed to save client.', 'error');
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        showToast('Error saving client. Please try again.', 'error');
+    });
+}
+
+// =============================================
+// 8. VIEW COMPANY DETAILS WITH APPLICANTS - FIXED
+// =============================================
+function viewCompanyDetails(id) {
+    openModal('companyDetailsModal');
+    
+    const loading = document.getElementById('companyDetailsLoading');
+    const content = document.getElementById('companyDetailsContent');
+    const title = document.getElementById('companyDetailsTitle');
+    
+    if (loading) loading.style.display = 'block';
+    if (content) {
+        content.style.display = 'none';
+        content.innerHTML = '';
+    }
+    if (title) title.textContent = 'Loading...';
+
+    const formData = new FormData();
+    formData.append('action', 'get_company_details');
+    formData.append('client_id', id);
+
+    fetch('clients.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(async function(response) {
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch(e) {
+            // If response is HTML, show the error
+            console.error('Server returned HTML instead of JSON:', text.substring(0, 200));
+            throw new Error('Server error: ' + text.substring(0, 100));
+        }
+    })
+    .then(function(data) {
+        if (loading) loading.style.display = 'none';
+        if (content) content.style.display = 'block';
+
+        if (data.success) {
+            const c = data.company;
+            const jobs = data.jobs || [];
+            const applicants = data.applicants || [];
+            const statusCounts = data.status_counts || {};
             
-            if (data.success) {
-                showToast(data.message, 'success');
-                closeModal('clientModal');
-                setTimeout(() => location.reload(), 1500);
+            if (title) title.textContent = c.company_name + ' - Company Profile';
+            
+            // Build the HTML
+            let html = '';
+            
+            // Company Profile Header
+            html += `
+                <div class="company-profile-header">
+                    <div class="company-logo">
+                        ${c.profile_picture ? `<img src="../../${c.profile_picture}" alt="${c.company_name}">` : c.company_name.charAt(0).toUpperCase()}
+                    </div>
+                    <div class="company-info">
+                        <h2>${escapeHtml(c.company_name)}</h2>
+                        <div class="sub-info">
+                            <span><span class="material-symbols-outlined" style="font-size:1rem;">email</span> ${escapeHtml(c.user_email)}</span>
+                            ${c.contact_phone ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">phone</span> ${escapeHtml(c.contact_phone)}</span>` : ''}
+                            ${c.industry ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">category</span> ${escapeHtml(c.industry)}</span>` : ''}
+                            ${c.company_size ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">group</span> ${escapeHtml(c.company_size)}</span>` : ''}
+                            ${c.website ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">language</span> <a href="${escapeHtml(c.website)}" target="_blank" style="color:var(--primary);">${escapeHtml(c.website)}</a></span>` : ''}
+                        </div>
+                        ${c.address ? `<div style="margin-top:0.25rem; font-size:0.8125rem; color:var(--text-on-surface-variant);"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">location_on</span> ${escapeHtml(c.address)}</div>` : ''}
+                        <div style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                            <span class="badge ${c.is_active == 1 ? 'badge-active' : 'badge-inactive'}">${c.is_active == 1 ? 'Active' : 'Inactive'}</span>
+                            <span style="margin-left:0.5rem;">Joined: ${new Date(c.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Stats Grid
+            html += `
+                <div class="company-stats-grid">
+                    <div class="company-stat-card">
+                        <div class="number">${data.total_jobs}</div>
+                        <div class="label">Total Jobs</div>
+                    </div>
+                    <div class="company-stat-card">
+                        <div class="number">${data.total_applicants}</div>
+                        <div class="label">Total Applicants</div>
+                    </div>
+                    <div class="company-stat-card">
+                        <div class="number">${statusCounts.pending || 0}</div>
+                        <div class="label">Pending</div>
+                    </div>
+                    <div class="company-stat-card">
+                        <div class="number">${statusCounts.reviewing || 0}</div>
+                        <div class="label">Reviewing</div>
+                    </div>
+                    <div class="company-stat-card">
+                        <div class="number">${statusCounts.interview_scheduled || 0}</div>
+                        <div class="label">Interviews</div>
+                    </div>
+                    <div class="company-stat-card">
+                        <div class="number">${statusCounts.hired || 0}</div>
+                        <div class="label">Hired</div>
+                    </div>
+                </div>
+            `;
+            
+            // Tabs
+            html += `
+                <div class="tab-bar">
+                    <button class="tab-btn active" data-tab="applicants">Applicants (${applicants.length})</button>
+                    <button class="tab-btn" data-tab="jobs">Job Orders (${jobs.length})</button>
+                </div>
+            `;
+            
+            // Applicants Tab
+            html += `<div class="tab-content active" id="tab-applicants">`;
+            if (applicants.length === 0) {
+                html += `<div class="empty-state" style="padding:1.5rem;">
+                            <span class="material-symbols-outlined" style="font-size:2rem;">person_search</span>
+                            <h4>No Applicants Yet</h4>
+                            <p>This company hasn't received any applications yet.</p>
+                        </div>`;
             } else {
-                showToast(data.error || 'Failed to save client.', 'error');
-            }
-        })
-        .catch(error => {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-            showToast('Error saving client. Please try again.', 'error');
-        });
-    }
-
-    // =============================================
-    // 8. VIEW CLIENT
-    // =============================================
-    function viewClient(id) {
-        openModal('viewModal');
-        
-        const loading = document.getElementById('viewLoading');
-        const content = document.getElementById('viewContent');
-        
-        if (loading) loading.style.display = 'block';
-        if (content) content.style.display = 'none';
-
-        const formData = new FormData();
-        formData.append('action', 'get_client');
-        formData.append('client_id', id);
-
-        fetch('clients.php', {
-            method: 'POST',
-            body: formData,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (loading) loading.style.display = 'none';
-            if (content) content.style.display = 'block';
-
-            if (data.success) {
-                const c = data.client;
-                const statusBadges = <?php echo json_encode($statusBadges); ?>;
-                const statusLabels = <?php echo json_encode($statusLabels); ?>;
-                const status = c.is_active == 1 ? 'active' : 'inactive';
-                
-                if (content) {
-                    content.innerHTML = `
-                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
-                            <div style="grid-column:1/-1; background:var(--primary-container); padding:0.75rem 1rem; border-radius:0.5rem; text-align:center;">
-                                <div style="font-size:1.25rem; font-weight:700; color:var(--primary);">${escapeHtml(c.company_name)}</div>
-                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${escapeHtml(c.industry || 'Industry not specified')}</div>
+                html += `<div style="max-height:400px; overflow-y:auto;">`;
+                applicants.forEach(app => {
+                    const appStatus = app.application_status || 'pending';
+                    const statusBadges = {
+                        'pending': 'badge-pending',
+                        'reviewing': 'badge-reviewing',
+                        'interview_scheduled': 'badge-interview_scheduled',
+                        'interviewed': 'badge-interviewed',
+                        'offered': 'badge-offered',
+                        'hired': 'badge-hired',
+                        'rejected': 'badge-rejected'
+                    };
+                    const statusLabels = {
+                        'pending': 'Pending',
+                        'reviewing': 'Reviewing',
+                        'interview_scheduled': 'Interview Scheduled',
+                        'interviewed': 'Interviewed',
+                        'offered': 'Offered',
+                        'hired': 'Hired',
+                        'rejected': 'Rejected'
+                    };
+                    const badgeClass = statusBadges[appStatus] || 'badge-pending';
+                    const label = statusLabels[appStatus] || appStatus;
+                    
+                    html += `
+                        <div class="applicant-card">
+                            <div class="avatar">
+                                ${app.user_profile_picture ? `<img src="../../${app.user_profile_picture}" alt="${escapeHtml(app.first_name)}">` : escapeHtml((app.first_name || 'A').charAt(0).toUpperCase())}
                             </div>
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Contact Person</div>
-                                <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(c.contact_person)}</div>
-                            </div>
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Email</div>
-                                <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(c.email)}</div>
-                            </div>
-                            ${c.contact_phone ? `
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Phone</div>
-                                <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(c.contact_phone)}</div>
-                            </div>
-                            ` : ''}
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Status</div>
-                                <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">
-                                    <span class="badge ${statusBadges[status] || 'badge-active'}">${statusLabels[status] || status}</span>
+                            <div class="info">
+                                <div class="name">${escapeHtml(app.first_name + ' ' + app.last_name)}</div>
+                                <div class="details">
+                                    <span>${escapeHtml(app.email || '')}</span>
+                                    ${app.phone ? `<span>${escapeHtml(app.phone)}</span>` : ''}
+                                    <span class="job-title">Applied for: ${escapeHtml(app.job_title || 'Unknown')}</span>
+                                </div>
+                                <div style="font-size:0.625rem; color:var(--text-on-surface-variant);">
+                                    Applied: ${new Date(app.applied_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                 </div>
                             </div>
-                            ${c.company_size ? `
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Company Size</div>
-                                <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(c.company_size)} employees</div>
-                            </div>
-                            ` : ''}
-                            ${c.address ? `
-                            <div style="grid-column:1/-1;">
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Address</div>
-                                <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(c.address)}${c.city ? ', ' + escapeHtml(c.city) : ''}${c.province ? ', ' + escapeHtml(c.province) : ''}${c.zip_code ? ' ' + escapeHtml(c.zip_code) : ''}</div>
-                            </div>
-                            ` : ''}
-                            ${c.website ? `
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Website</div>
-                                <a href="${escapeHtml(c.website)}" target="_blank" style="color:var(--primary); text-decoration:underline;">${escapeHtml(c.website)}</a>
-                            </div>
-                            ` : ''}
-                            ${c.tax_id ? `
-                            <div>
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Tax ID</div>
-                                <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(c.tax_id)}</div>
-                            </div>
-                            ` : ''}
-                            ${c.notes ? `
-                            <div style="grid-column:1/-1;">
-                                <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Notes</div>
-                                <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(c.notes)}</div>
-                            </div>
-                            ` : ''}
-                            <div style="grid-column:1/-1; border-top:1px solid var(--slate-200); padding-top:0.75rem; display:flex; gap:1rem; flex-wrap:wrap;">
-                                <div><span style="font-size:0.625rem; color:var(--text-on-surface-variant);">Created:</span> ${new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
-                                ${c.updated_at ? `<div><span style="font-size:0.625rem; color:var(--text-on-surface-variant);">Updated:</span> ${new Date(c.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>` : ''}
+                            <div class="status-badge">
+                                <span class="badge ${badgeClass}">${label}</span>
                             </div>
                         </div>
                     `;
-                }
+                });
+                html += `</div>`;
+            }
+            html += `</div>`;
+            
+            // Jobs Tab
+            html += `<div class="tab-content" id="tab-jobs">`;
+            if (jobs.length === 0) {
+                html += `<div class="empty-state" style="padding:1.5rem;">
+                            <span class="material-symbols-outlined" style="font-size:2rem;">work_off</span>
+                            <h4>No Jobs Posted</h4>
+                            <p>This company hasn't posted any jobs yet.</p>
+                        </div>`;
             } else {
-                if (content) {
-                    content.innerHTML = `
-                        <div style="text-align:center; padding:1rem; color:#dc2626;">
-                            <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                            <p style="margin-top:0.5rem;">${data.error || 'Failed to load client details.'}</p>
+                html += `<div style="max-height:400px; overflow-y:auto;">`;
+                jobs.forEach(job => {
+                    const jobStatus = job.status || 'closed';
+                    const statusBadges = {
+                        'open': 'badge-active',
+                        'ongoing': 'badge-reviewing',
+                        'on_hold': 'badge-pending',
+                        'closed': 'badge-inactive'
+                    };
+                    const statusLabels = {
+                        'open': 'Open',
+                        'ongoing': 'Ongoing',
+                        'on_hold': 'On Hold',
+                        'closed': 'Closed'
+                    };
+                    html += `
+                        <div style="padding:0.625rem; border:1px solid var(--slate-200); border-radius:var(--radius-md); margin-bottom:0.5rem;">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.5rem;">
+                                <div>
+                                    <div style="font-weight:600;">${escapeHtml(job.title)}</div>
+                                    <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                        ${job.applicant_count || 0} applicants · Posted: ${new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                    </div>
+                                </div>
+                                <span class="badge ${statusBadges[jobStatus] || 'badge-inactive'}">${statusLabels[jobStatus] || jobStatus}</span>
+                            </div>
+                            ${job.description ? `<div style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">${escapeHtml(job.description)}</div>` : ''}
                         </div>
                     `;
+                });
+                html += `</div>`;
+            }
+            html += `</div>`;
+            
+            content.innerHTML = html;
+            
+            // Tab switching
+            setTimeout(function() {
+                const tabBtns = document.querySelectorAll('.tab-btn');
+                if (tabBtns.length > 0) {
+                    tabBtns.forEach(function(btn) {
+                        btn.addEventListener('click', function() {
+                            document.querySelectorAll('.tab-btn').forEach(function(b) {
+                                b.classList.remove('active');
+                            });
+                            document.querySelectorAll('.tab-content').forEach(function(t) {
+                                t.classList.remove('active');
+                            });
+                            this.classList.add('active');
+                            const tabId = this.dataset.tab;
+                            const targetContent = document.getElementById('tab-' + tabId);
+                            if (targetContent) {
+                                targetContent.classList.add('active');
+                            }
+                        });
+                    });
                 }
-            }
-        })
-        .catch(error => {
-            if (loading) loading.style.display = 'none';
-            if (content) {
-                content.style.display = 'block';
-                content.innerHTML = `
-                    <div style="text-align:center; padding:1rem; color:#dc2626;">
-                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                        <p style="margin-top:0.5rem;">Error loading client details. Please try again.</p>
-                    </div>
-                `;
-            }
-        });
-    }
-
-    // =============================================
-    // 9. DELETE CLIENT
-    // =============================================
-    function deleteClient(id) {
-        if (!confirm('Are you sure you want to delete this client? This will also delete the user account and all associated data. This action cannot be undone.')) {
-            return;
+            }, 100);
+            
+        } else {
+            content.innerHTML = `
+                <div style="text-align:center; padding:1rem; color:#dc2626;">
+                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                    <p style="margin-top:0.5rem;">${data.error || 'Failed to load company details.'}</p>
+                </div>
+            `;
         }
-
-        const formData = new FormData();
-        formData.append('action', 'delete_client');
-        formData.append('client_id', id);
-
-        showToast('Deleting client...', 'info');
-
-        fetch('clients.php', {
-            method: 'POST',
-            body: formData,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast(data.message, 'success');
-                setTimeout(() => location.reload(), 1000);
-            } else {
-                showToast(data.error || 'Failed to delete client.', 'error');
-            }
-        })
-        .catch(error => {
-            showToast('Error deleting client.', 'error');
-        });
-    }
-
-    // =============================================
-    // 10. SEARCH & FILTERS
-    // =============================================
-    function applyFilters() {
-        const search = document.getElementById('searchInput');
-        if (!search) return;
-        
-        const status = '<?php echo $statusFilter; ?>';
-        let url = 'clients.php?';
-        if (status !== 'all') url += 'status=' + status + '&';
-        if (search.value) url += 'search=' + encodeURIComponent(search.value);
-        window.location.href = url;
-    }
-
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                applyFilters();
-            }
-        });
-    }
-
-    // =============================================
-    // 11. TOAST SYSTEM
-    // =============================================
-    function showToast(message, type) {
-        type = type || 'info';
-        const existingToast = document.querySelector('.toast');
-        if (existingToast) existingToast.remove();
-
-        const toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
-        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
-        document.body.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(20px)';
-            toast.style.transition = 'all 0.4s ease';
-            setTimeout(() => toast.remove(), 400);
-        }, 3500);
-    }
-
-    // =============================================
-    // 12. UTILITY FUNCTIONS
-    // =============================================
-    function escapeHtml(text) {
-        if (!text) return '';
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    // =============================================
-    // 13. RESPONSIVE HANDLING
-    // =============================================
-    let resizeTimer;
-    window.addEventListener('resize', function() {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(function() {
-            const width = window.innerWidth;
-            if (width <= 768) {
-                sidebar.classList.remove('collapsed');
-            } else {
-                sidebar.classList.remove('mobile-open');
-                sidebarBackdrop.classList.remove('active');
-                document.body.style.overflow = '';
-                const saved = localStorage.getItem('sidebarCollapsed');
-                if (saved === 'true') {
-                    sidebar.classList.add('collapsed');
-                } else {
-                    sidebar.classList.remove('collapsed');
-                }
-            }
-        }, 250);
+    })
+    .catch(function(error) {
+        console.error('Error loading company details:', error);
+        if (loading) loading.style.display = 'none';
+        if (content) {
+            content.style.display = 'block';
+            content.innerHTML = `
+                <div style="text-align:center; padding:1rem; color:#dc2626;">
+                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                    <p style="margin-top:0.5rem;">Error loading company details. Please try again.</p>
+                    <p style="font-size:0.75rem; color:var(--text-on-surface-variant);">${error.message || 'Unknown error'}</p>
+                </div>
+            `;
+        }
     });
+}
 
-    console.log('🏢 ISMERS Clients Management loaded successfully!');
+// =============================================
+// 9. DELETE CLIENT
+// =============================================
+function deleteClient(id) {
+    if (!confirm('Are you sure you want to delete this client? This will also delete the user account and all associated data. This action cannot be undone.')) {
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('action', 'delete_client');
+    formData.append('client_id', id);
+
+    showToast('Deleting client...', 'info');
+
+    fetch('clients.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast(data.message, 'success');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showToast(data.error || 'Failed to delete client.', 'error');
+        }
+    })
+    .catch(error => {
+        showToast('Error deleting client.', 'error');
+    });
+}
+
+// =============================================
+// 10. SEARCH & FILTERS
+// =============================================
+function applyFilters() {
+    const search = document.getElementById('searchInput');
+    if (!search) return;
+    
+    const status = '<?php echo $statusFilter; ?>';
+    let url = 'clients.php?';
+    if (status !== 'all') url += 'status=' + status + '&';
+    if (search.value) url += 'search=' + encodeURIComponent(search.value);
+    window.location.href = url;
+}
+
+const searchInput = document.getElementById('searchInput');
+if (searchInput) {
+    searchInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            applyFilters();
+        }
+    });
+}
+
+// =============================================
+// 11. TOAST SYSTEM
+// =============================================
+function showToast(message, type) {
+    type = type || 'info';
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+    toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3500);
+}
+
+// =============================================
+// 12. UTILITY FUNCTIONS
+// =============================================
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// =============================================
+// 13. RESPONSIVE HANDLING
+// =============================================
+let resizeTimer;
+window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+        const width = window.innerWidth;
+        if (width <= 768) {
+            sidebar.classList.remove('collapsed');
+        } else {
+            sidebar.classList.remove('mobile-open');
+            sidebarBackdrop.classList.remove('active');
+            document.body.style.overflow = '';
+            const saved = localStorage.getItem('sidebarCollapsed');
+            if (saved === 'true') {
+                sidebar.classList.add('collapsed');
+            } else {
+                sidebar.classList.remove('collapsed');
+            }
+        }
+    }, 250);
+});
+
+console.log('🏢 ISMERS Enhanced Clients Management loaded successfully!');
 </script>
 
 </body>

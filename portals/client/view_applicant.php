@@ -1072,7 +1072,7 @@ $statusLabels = [
 </head>
 <body>
 
-    <!-- Sidebar Backdrop -->
+ <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <!-- ===== SIDEBAR ===== -->
@@ -1086,13 +1086,20 @@ $statusLabels = [
         </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link active">
+            <a href="dashboard.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
             <a href="jobs.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">work</span>
                 <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link active">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if (count($pendingApplications) > 0): ?>
+                    <span class="nav-badge"><?php echo count($pendingApplications); ?></span>
+                <?php endif; ?>
             </a>
             <a href="employees.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
@@ -1120,28 +1127,28 @@ $statusLabels = [
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-      <?php
-// Get user profile data for sidebar
-$userProfile = getUserProfileData($userId);
-?>
-<!-- Sidebar Footer -->
-<div class="sidebar-footer">
-    <div class="user-card">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-img" 
-                 style="width:2.25rem; height:2.25rem; border-radius:50%; object-fit:cover; flex-shrink:0;">
-        <?php else: ?>
-            <span class="avatar"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <div class="user-info">
-            <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
-            <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+
+        <!-- =============================================
+        SIDEBAR FOOTER - FIXED
+        ============================================= -->
+        <?php
+        $userProfile = getUserProfileData($userId);
+        ?>
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
+                <div class="user-info">
+                    <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+                </div>
+            </div>
         </div>
-    </div>
- 
-</div>
     </aside>
 
     <!-- ===== MAIN CONTENT ===== -->

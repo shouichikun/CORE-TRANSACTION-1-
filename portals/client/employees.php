@@ -19,7 +19,7 @@ if ($_SESSION['role'] !== 'client') {
 $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
-$role = $_SESSION['role'] ?? 'client'; // ADD THIS LINE
+$role = $_SESSION['role'] ?? 'client';
 
 // Get client profile
 $client = getRecord("
@@ -35,6 +35,19 @@ if (!$client) {
 
 $companyName = $client['company_name'] ?? 'Your Company';
 $clientId = $client['id'] ?? 0;
+
+// =============================================
+// GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
+// =============================================
+$pendingAgencyCount = 0;
+$pendingAgencies = getRecords("
+    SELECT COUNT(*) as count FROM agency_applications 
+    WHERE client_id = ? AND status = 'pending'
+", [$clientId], "i");
+
+if (!empty($pendingAgencies)) {
+    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+}
 
 // Handle Employee Status Update
 $message = '';
@@ -931,6 +944,36 @@ $jobDistribution = array_slice($jobDistribution, 0, 5);
             text-align: right;
         }
 
+        /* Profile Picture Styles */
+        .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            background: var(--primary-container);
+        }
+        .avatar-small {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+            object-fit: cover;
+        }
+        .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -958,68 +1001,6 @@ $jobDistribution = array_slice($jobDistribution, 0, 5);
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
-    /* Profile Picture Styles */
-.avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-    background: var(--primary-container);
-}
-
-.avatar-small {
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
-    background: var(--primary);
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-    object-fit: cover;
-}
-
-.avatar-small img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    object-fit: cover;
-}
-
-.avatar-img-large {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-/* Sidebar user card with profile picture */
-.sidebar-footer .user-card .avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-}
     </style>
 </head>
 <body>
@@ -1027,7 +1008,7 @@ $jobDistribution = array_slice($jobDistribution, 0, 5);
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
+    <!-- ===== SIDEBAR - FIXED ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -1038,62 +1019,69 @@ $jobDistribution = array_slice($jobDistribution, 0, 5);
         </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link active">
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link">
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">work</span>
                 <span class="nav-text">My Jobs</span>
             </a>
-            <a href="employees.php" class="sidebar-main-link">
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Employees</span>
             </a>
-            <a href="applicants.php" class="sidebar-main-link">
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person_search</span>
                 <span class="nav-text">Applicants</span>
             </a>
-            <a href="invoices.php" class="sidebar-main-link">
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">receipt</span>
                 <span class="nav-text">Invoices</span>
             </a>
-            <a href="support.php" class="sidebar-main-link">
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">support_agent</span>
                 <span class="nav-text">Support</span>
             </a>
             <div class="nav-label" style="margin-top:1rem;">Settings</div>
-            <a href="profile.php" class="sidebar-main-link">
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person</span>
                 <span class="nav-text">Profile</span>
             </a>
-            <a href="settings.php" class="sidebar-main-link">
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-      <?php
-// Get user profile data for sidebar
-$userProfile = getUserProfileData($userId);
-?>
-<!-- Sidebar Footer -->
-<div class="sidebar-footer">
-    <div class="user-card">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-img" 
-                 style="width:2.25rem; height:2.25rem; border-radius:50%; object-fit:cover; flex-shrink:0;">
-        <?php else: ?>
-            <span class="avatar"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <div class="user-info">
-            <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
-            <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+
+        <!-- =============================================
+        SIDEBAR FOOTER
+        ============================================= -->
+        <?php
+        $userProfile = getUserProfileData($userId);
+        ?>
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
+                <div class="user-info">
+                    <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+                </div>
+            </div>
         </div>
-    </div>
- 
-</div>
     </aside>
 
     <!-- ===== MAIN CONTENT ===== -->
@@ -1107,35 +1095,32 @@ $userProfile = getUserProfileData($userId);
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Dashboard</span>
+                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Employees</span>
             </div>
-         <?php
-// Get user profile data for dropdown
-$userProfile = getUserProfileData($userId);
-?>
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-small" 
-                 style="width:2rem; height:2rem; border-radius:50%; object-fit:cover; flex-shrink:0; background:var(--primary);">
-        <?php else: ?>
-            <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
-        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
-    <div class="profile-dropdown-menu" id="profileMenu">
-        <div class="dropdown-header">Account</div>
-
-        <div class="dropdown-divider"></div>
-        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-            <span class="material-symbols-outlined">logout</span> Logout
-        </button>
-    </div>
-</div>
+            <?php
+            $userProfile = getUserProfileData($userId);
+            ?>
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                    <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                        <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                             alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                             class="avatar-small">
+                    <?php else: ?>
+                        <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
+                    <?php endif; ?>
+                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
+                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
+                <div class="profile-dropdown-menu" id="profileMenu">
+                    <div class="dropdown-header">Account</div>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                        <span class="material-symbols-outlined">logout</span> Logout
+                    </button>
+                </div>
+            </div>
         </header>
 
         <main class="main-scroll">

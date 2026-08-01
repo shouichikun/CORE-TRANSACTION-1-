@@ -19,7 +19,7 @@ if ($_SESSION['role'] !== 'client') {
 $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
-$role = $_SESSION['role'] ?? 'client'; // ADD THIS LINE
+$role = $_SESSION['role'] ?? 'client';
 
 // Get client profile
 $client = getRecord("
@@ -35,6 +35,19 @@ if (!$client) {
 
 $companyName = $client['company_name'] ?? 'Your Company';
 $clientId = $client['id'] ?? 0;
+
+// =============================================
+// GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
+// =============================================
+$pendingAgencyCount = 0;
+$pendingAgencies = getRecords("
+    SELECT COUNT(*) as count FROM agency_applications 
+    WHERE client_id = ? AND status = 'pending'
+", [$clientId], "i");
+
+if (!empty($pendingAgencies)) {
+    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+}
 
 // =============================================
 // RESUME PATH CONFIGURATION - MULTI-PATH FINDER
@@ -366,11 +379,15 @@ if (isset($_SESSION['toast_message'])) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* All existing CSS - keeping it the same */
+        /* ==========================================================================
+           MATERIAL 3 DESIGN SYSTEM - CLIENT APPLICANTS
+           ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
             --bg-surface-low: #f8f9fc;
+            --bg-surface-container-low: #f5f6fa;
+            --bg-surface-container-high: #eef0f5;
             --text-on-surface: #0a0e1a;
             --text-on-surface-variant: #4a5168;
             --outline-variant: #d0d5dd;
@@ -378,11 +395,16 @@ if (isset($_SESSION['toast_message'])) {
             --primary-container: #eef0ff;
             --on-primary: #ffffff;
             --on-primary-fixed-variant: #4338ca;
+            --slate-50: #f8fafc;
             --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
             --slate-300: #cbd5e1;
             --slate-400: #94a3b8;
             --slate-500: #64748b;
+            --slate-600: #475569;
+            --slate-700: #334155;
+            --slate-800: #1e293b;
+            --slate-900: #0f172a;
             --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
             --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
             --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
@@ -394,7 +416,9 @@ if (isset($_SESSION['toast_message'])) {
             --radius-2xl: 1.5rem;
             --radius-full: 9999px;
             --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-label: 'Public Sans', system-ui, -apple-system, sans-serif;
             --transition-fast: 0.15s ease;
+            --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
         }
@@ -413,7 +437,9 @@ if (isset($_SESSION['toast_message'])) {
         }
         a { text-decoration: none; color: inherit; }
 
-        /* Sidebar */
+        /* =============================================
+           SIDEBAR
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -506,6 +532,7 @@ if (isset($_SESSION['toast_message'])) {
             color: var(--text-on-surface-variant);
             transition: all var(--transition-fast);
             margin-bottom: 0.125rem;
+            font-family: var(--font-label);
             font-weight: 500;
             font-size: 0.875rem;
         }
@@ -548,25 +575,6 @@ if (isset($_SESSION['toast_message'])) {
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.8125rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-        .sidebar-footer .logout-btn:hover { background: #fef2f2; }
-        .sidebar-footer .logout-btn .material-symbols-outlined { font-size: 1.125rem; }
 
         .sidebar-backdrop {
             display: none;
@@ -683,7 +691,7 @@ if (isset($_SESSION['toast_message'])) {
             opacity: 0;
             visibility: hidden;
             transform: translateY(-0.25rem) scale(0.97);
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            transition: all var(--transition-smooth);
             transform-origin: top right;
         }
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
@@ -723,6 +731,7 @@ if (isset($_SESSION['toast_message'])) {
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
+        /* Breadcrumb */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -751,6 +760,18 @@ if (isset($_SESSION['toast_message'])) {
         .breadcrumb-view .material-symbols-outlined { font-size: 1rem; }
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
+        .page-header {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+        }
+        @media (min-width: 640px) {
+            .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
+        }
+        .page-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); letter-spacing: -0.025em; }
+        .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
+
         .btn {
             display: inline-flex;
             align-items: center;
@@ -775,7 +796,265 @@ if (isset($_SESSION['toast_message'])) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Tooltip styles - clean and simple */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.875rem;
+            margin-bottom: 1.25rem;
+        }
+        .stat-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+            padding: 1rem 1.25rem;
+            box-shadow: var(--shadow-xs);
+            text-align: center;
+        }
+        .stat-card .stat-number { font-size: 1.5rem; font-weight: 800; color: var(--text-on-surface); line-height: 1.2; }
+        .stat-card .stat-number.primary { color: var(--primary); }
+        .stat-card .stat-number.green { color: #059669; }
+        .stat-card .stat-number.yellow { color: #d97706; }
+        .stat-card .stat-number.blue { color: #2563eb; }
+        .stat-card .stat-number.red { color: #dc2626; }
+        .stat-card .stat-number.purple { color: #7c3aed; }
+        .stat-card .stat-label { font-size: 0.75rem; font-weight: 500; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
+
+        .filters-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+            align-items: center;
+        }
+        .filter-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .filter-btn {
+            padding: 0.375rem 1rem;
+            border-radius: var(--radius-full);
+            border: 1px solid var(--slate-200);
+            background: var(--bg-surface);
+            color: var(--text-on-surface-variant);
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
+        .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .filter-btn .count {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.05rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6rem;
+            margin-left: 0.25rem;
+        }
+        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: var(--bg-surface);
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            transition: all var(--transition-fast);
+            flex: 1;
+            min-width: 200px;
+            max-width: 300px;
+        }
+        .search-box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1); }
+        .search-box .material-symbols-outlined { color: var(--text-on-surface-variant); font-size: 1.25rem; }
+        .search-box input {
+            border: none;
+            outline: none;
+            padding: 0.375rem 0.5rem;
+            font-size: 0.8125rem;
+            font-family: var(--font-sans);
+            background: transparent;
+            width: 100%;
+            color: var(--text-on-surface);
+        }
+        .search-box input::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
+
+        .job-filter-select {
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.5rem;
+            border: 1.5px solid var(--slate-200);
+            font-size: 0.75rem;
+            font-family: var(--font-sans);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+            cursor: pointer;
+            min-width: 150px;
+        }
+        .job-filter-select:focus { outline: none; border-color: var(--primary); }
+
+        .bulk-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .applicant-table-wrapper {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            overflow: hidden;
+            box-shadow: var(--shadow-xs);
+        }
+        .applicant-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+        .applicant-table thead { background: var(--bg-surface-low); }
+        .applicant-table th {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            border-bottom: 1px solid var(--slate-200);
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .applicant-table td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--slate-100);
+            vertical-align: middle;
+        }
+        .applicant-table tbody tr:hover { background: var(--bg-surface-low); }
+        .applicant-table tbody tr:last-child td { border-bottom: none; }
+
+        .applicant-checkbox { width: 1rem; height: 1rem; cursor: pointer; accent-color: var(--primary); }
+
+        .applicant-avatar-small {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: var(--primary-container);
+            color: var(--primary);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
+        .applicant-name-cell { display: flex; align-items: center; gap: 0.625rem; }
+        .applicant-name-cell .name { font-weight: 600; color: var(--text-on-surface); }
+        .applicant-name-cell .email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
+
+        .badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-reviewed { background: #dbeafe; color: #2563eb; }
+        .badge-shortlisted { background: #d1fae5; color: #059669; }
+        .badge-hired { background: #a7f3d0; color: #047857; }
+        .badge-rejected { background: #fee2e2; color: #dc2626; }
+
+        .status-select {
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            border: 1.5px solid var(--slate-200);
+            font-size: 0.6875rem;
+            font-family: var(--font-sans);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+            cursor: pointer;
+        }
+        .status-select:focus { outline: none; border-color: var(--primary); }
+
+        .action-buttons { display: flex; gap: 0.375rem; flex-wrap: wrap; justify-content: flex-end; }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 1rem;
+            border-top: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
+        .pagination .page-btn {
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--slate-200);
+            background: var(--bg-surface);
+            color: var(--text-on-surface-variant);
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+            min-width: 2.25rem;
+            text-align: center;
+        }
+        .pagination .page-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
+        .pagination .page-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .pagination .page-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+        .pagination .page-info { font-size: 0.75rem; color: var(--text-on-surface-variant); }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-on-surface-variant);
+        }
+        .empty-state .material-symbols-outlined {
+            font-size: 4rem;
+            color: var(--slate-300);
+            display: block;
+            margin-bottom: 0.75rem;
+        }
+        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state p { font-size: 0.8125rem; }
+
+        /* Profile Picture Styles */
+        .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            background: var(--primary-container);
+        }
+        .avatar-small {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+            object-fit: cover;
+        }
+        .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
+        /* Tooltip styles */
         .btn-with-tooltip {
             position: relative;
             display: inline-flex;
@@ -812,10 +1091,7 @@ if (isset($_SESSION['toast_message'])) {
             border-style: solid;
             border-color: #1a1a2e transparent transparent transparent;
         }
-        .btn-with-tooltip:hover .tooltip-text {
-            visibility: visible;
-            opacity: 1;
-        }
+        .btn-with-tooltip:hover .tooltip-text { visibility: visible; opacity: 1; }
 
         .toast {
             position: fixed;
@@ -842,316 +1118,16 @@ if (isset($_SESSION['toast_message'])) {
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        .stats-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 0.875rem;
-            margin-bottom: 1.25rem;
-        }
-        .stat-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            padding: 1rem 1.25rem;
-            box-shadow: var(--shadow-xs);
-            text-align: center;
-        }
-        .stat-card .stat-number {
-            font-size: 1.75rem;
-            font-weight: 800;
-            color: var(--text-on-surface);
-            line-height: 1.2;
-        }
-        .stat-card .stat-number.primary { color: var(--primary); }
-        .stat-card .stat-number.green { color: #059669; }
-        .stat-card .stat-number.yellow { color: #d97706; }
-        .stat-card .stat-number.blue { color: #2563eb; }
-        .stat-card .stat-number.red { color: #dc2626; }
-        .stat-card .stat-number.purple { color: #7c3aed; }
-        .stat-card .stat-label {
-            font-size: 0.75rem;
-            font-weight: 500;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.125rem;
-        }
-
-        .filters-bar {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            margin-bottom: 1.25rem;
-            align-items: center;
-        }
-        .filter-group {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        .filter-btn {
-            padding: 0.375rem 1rem;
-            border-radius: var(--radius-full);
-            border: 1px solid var(--slate-200);
-            background: var(--bg-surface);
-            color: var(--text-on-surface-variant);
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            font-family: var(--font-sans);
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
-        .filter-btn.active {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-        }
-        .filter-btn .count {
-            background: rgba(255, 255, 255, 0.2);
-            padding: 0.05rem 0.5rem;
-            border-radius: var(--radius-full);
-            font-size: 0.6rem;
-            margin-left: 0.25rem;
-        }
-        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
-
-        .search-box {
-            display: flex;
-            align-items: center;
-            background: var(--bg-surface);
-            border: 1.5px solid var(--slate-200);
-            border-radius: 0.5rem;
-            padding: 0.25rem 0.5rem;
-            transition: all var(--transition-fast);
-            flex: 1;
-            min-width: 200px;
-            max-width: 300px;
-        }
-        .search-box:focus-within {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-        }
-        .search-box .material-symbols-outlined {
-            color: var(--text-on-surface-variant);
-            font-size: 1.25rem;
-        }
-        .search-box input {
-            border: none;
-            outline: none;
-            padding: 0.375rem 0.5rem;
-            font-size: 0.8125rem;
-            font-family: var(--font-sans);
-            background: transparent;
-            width: 100%;
-            color: var(--text-on-surface);
-        }
-        .search-box input::placeholder {
-            color: var(--text-on-surface-variant);
-            opacity: 0.6;
-        }
-
-        .job-filter-select {
-            padding: 0.375rem 0.75rem;
-            border-radius: 0.5rem;
-            border: 1.5px solid var(--slate-200);
-            font-size: 0.75rem;
-            font-family: var(--font-sans);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-            cursor: pointer;
-            min-width: 150px;
-        }
-        .job-filter-select:focus {
-            outline: none;
-            border-color: var(--primary);
-        }
-
-        .bulk-actions {
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-            padding: 0.75rem 1rem;
-            background: var(--bg-surface);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            margin-bottom: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .applicant-table-wrapper {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            overflow: hidden;
-            box-shadow: var(--shadow-xs);
-        }
-        .applicant-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.8125rem;
-        }
-        .applicant-table thead {
-            background: var(--bg-surface-low);
-        }
-        .applicant-table th {
-            padding: 0.75rem 1rem;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-on-surface-variant);
-            border-bottom: 1px solid var(--slate-200);
-            font-size: 0.6875rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            white-space: nowrap;
-        }
-        .applicant-table td {
-            padding: 0.75rem 1rem;
-            border-bottom: 1px solid var(--slate-100);
-            vertical-align: middle;
-        }
-        .applicant-table tbody tr:hover {
-            background: var(--bg-surface-low);
-        }
-        .applicant-table tbody tr:last-child td {
-            border-bottom: none;
-        }
-
-        .applicant-checkbox {
-            width: 1rem;
-            height: 1rem;
-            cursor: pointer;
-            accent-color: var(--primary);
-        }
-
-        .applicant-avatar-small {
-            width: 2.25rem;
-            height: 2.25rem;
-            border-radius: 50%;
-            background: var(--primary-container);
-            color: var(--primary);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 0.75rem;
-            flex-shrink: 0;
-        }
-        .applicant-name-cell {
-            display: flex;
-            align-items: center;
-            gap: 0.625rem;
-        }
-        .applicant-name-cell .name {
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-        .applicant-name-cell .email {
-            font-size: 0.6875rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 0.125rem 0.625rem;
-            border-radius: var(--radius-full);
-            font-size: 0.625rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-        }
-        .badge-pending { background: #fef3c7; color: #d97706; }
-        .badge-reviewed { background: #dbeafe; color: #2563eb; }
-        .badge-shortlisted { background: #d1fae5; color: #059669; }
-        .badge-hired { background: #a7f3d0; color: #047857; }
-        .badge-rejected { background: #fee2e2; color: #dc2626; }
-
-        .status-select {
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.375rem;
-            border: 1.5px solid var(--slate-200);
-            font-size: 0.6875rem;
-            font-family: var(--font-sans);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-            cursor: pointer;
-        }
-        .status-select:focus {
-            outline: none;
-            border-color: var(--primary);
-        }
-
-        .action-buttons {
-            display: flex;
-            gap: 0.375rem;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-        }
-
-        .pagination {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 1rem;
-            border-top: 1px solid var(--slate-200);
-            flex-wrap: wrap;
-        }
-        .pagination .page-btn {
-            padding: 0.375rem 0.75rem;
-            border-radius: 0.375rem;
-            border: 1px solid var(--slate-200);
-            background: var(--bg-surface);
-            color: var(--text-on-surface-variant);
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            font-family: var(--font-sans);
-            text-decoration: none;
-            min-width: 2.25rem;
-            text-align: center;
-        }
-        .pagination .page-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
-        .pagination .page-btn.active {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-        }
-        .pagination .page-btn.disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-        .pagination .page-info {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 3rem 1.5rem;
-            color: var(--text-on-surface-variant);
-        }
-        .empty-state .material-symbols-outlined {
-            font-size: 4rem;
-            color: var(--slate-300);
-            display: block;
-            margin-bottom: 0.75rem;
-        }
-        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.8125rem; }
-
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
-            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; }
+            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-sm); height: 100vh; }
+            .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
             .main-wrapper { margin-left: var(--sidebar-width); }
             .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
         }
         @media (max-width: 767px) {
-            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); }
+            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
             .dashboard-sidebar.mobile-open { transform: translateX(0); }
             .sidebar-toggle-btn { display: none !important; }
             .mobile-menu-btn { display: flex; }
@@ -1178,68 +1154,6 @@ if (isset($_SESSION['toast_message'])) {
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
-  /* Profile Picture Styles */
-.avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-    background: var(--primary-container);
-}
-
-.avatar-small {
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
-    background: var(--primary);
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-    object-fit: cover;
-}
-
-.avatar-small img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    object-fit: cover;
-}
-
-.avatar-img-large {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-/* Sidebar user card with profile picture */
-.sidebar-footer .user-card .avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-}
     </style>
 </head>
 <body>
@@ -1247,7 +1161,7 @@ if (isset($_SESSION['toast_message'])) {
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
+    <!-- ===== SIDEBAR - FIXED ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -1258,62 +1172,69 @@ if (isset($_SESSION['toast_message'])) {
         </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link active">
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link">
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">work</span>
                 <span class="nav-text">My Jobs</span>
             </a>
-            <a href="employees.php" class="sidebar-main-link">
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Employees</span>
             </a>
-            <a href="applicants.php" class="sidebar-main-link">
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person_search</span>
                 <span class="nav-text">Applicants</span>
             </a>
-            <a href="invoices.php" class="sidebar-main-link">
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">receipt</span>
                 <span class="nav-text">Invoices</span>
             </a>
-            <a href="support.php" class="sidebar-main-link">
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">support_agent</span>
                 <span class="nav-text">Support</span>
             </a>
             <div class="nav-label" style="margin-top:1rem;">Settings</div>
-            <a href="profile.php" class="sidebar-main-link">
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person</span>
                 <span class="nav-text">Profile</span>
             </a>
-            <a href="settings.php" class="sidebar-main-link">
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">settings</span>
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-      <?php
-// Get user profile data for sidebar
-$userProfile = getUserProfileData($userId);
-?>
-<!-- Sidebar Footer -->
-<div class="sidebar-footer">
-    <div class="user-card">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-img" 
-                 style="width:2.25rem; height:2.25rem; border-radius:50%; object-fit:cover; flex-shrink:0;">
-        <?php else: ?>
-            <span class="avatar"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <div class="user-info">
-            <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
-            <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+
+        <!-- =============================================
+        SIDEBAR FOOTER
+        ============================================= -->
+        <?php
+        $userProfile = getUserProfileData($userId);
+        ?>
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
+                <div class="user-info">
+                    <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+                </div>
+            </div>
         </div>
-    </div>
- 
-</div>
     </aside>
 
     <!-- ===== MAIN CONTENT ===== -->
@@ -1327,36 +1248,34 @@ $userProfile = getUserProfileData($userId);
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Dashboard</span>
+                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Applicants</span>
             </div>
-         <?php
-// Get user profile data for dropdown
-$userProfile = getUserProfileData($userId);
-?>
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-small" 
-                 style="width:2rem; height:2rem; border-radius:50%; object-fit:cover; flex-shrink:0; background:var(--primary);">
-        <?php else: ?>
-            <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
-        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
-    <div class="profile-dropdown-menu" id="profileMenu">
-        <div class="dropdown-header">Account</div>
-
-        <div class="dropdown-divider"></div>
-        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-            <span class="material-symbols-outlined">logout</span> Logout
-        </button>
-    </div>
-</div>
+            <?php
+            $userProfile = getUserProfileData($userId);
+            ?>
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                    <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                        <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                             alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                             class="avatar-small">
+                    <?php else: ?>
+                        <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
+                    <?php endif; ?>
+                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
+                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
+                <div class="profile-dropdown-menu" id="profileMenu">
+                    <div class="dropdown-header">Account</div>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                        <span class="material-symbols-outlined">logout</span> Logout
+                    </button>
+                </div>
+            </div>
         </header>
+
         <main class="main-scroll">
             <div class="container">
                 <!-- Toast Messages -->
@@ -1389,10 +1308,10 @@ $userProfile = getUserProfileData($userId);
                 </div>
 
                 <!-- Page Header -->
-                <div class="page-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem; margin-bottom:1.25rem;">
+                <div class="page-header">
                     <div>
-                        <h1 style="font-size:1.75rem; font-weight:800; color:var(--text-on-surface); letter-spacing:-0.025em;">Applicants</h1>
-                        <p style="font-size:0.875rem; color:var(--text-on-surface-variant); margin-top:0.125rem;">Review and manage job applicants</p>
+                        <h1>Applicants</h1>
+                        <p>Review and manage job applicants</p>
                     </div>
                 </div>
 
@@ -1716,8 +1635,12 @@ $userProfile = getUserProfileData($userId);
             document.body.style.overflow = '';
         }
 
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        if (mobileMenuBtn) {
+            mobileMenuBtn.addEventListener('click', openMobileSidebar);
+        }
+        if (sidebarBackdrop) {
+            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        }
 
         // =============================================
         // PROFILE DROPDOWN
@@ -1725,18 +1648,20 @@ $userProfile = getUserProfileData($userId);
         const profileToggle = document.getElementById('profileToggle');
         const profileMenu = document.getElementById('profileMenu');
 
-        profileToggle.addEventListener('click', function(e) {
-            e.stopPropagation();
-            this.classList.toggle('open');
-            profileMenu.classList.toggle('open');
-        });
+        if (profileToggle && profileMenu) {
+            profileToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                this.classList.toggle('open');
+                profileMenu.classList.toggle('open');
+            });
 
-        document.addEventListener('click', function(e) {
-            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
+            document.addEventListener('click', function(e) {
+                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
+        }
 
         // =============================================
         // BULK ACTIONS
@@ -1762,8 +1687,8 @@ $userProfile = getUserProfileData($userId);
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 closeMobileSidebar();
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
+                if (profileToggle) profileToggle.classList.remove('open');
+                if (profileMenu) profileMenu.classList.remove('open');
             }
         });
 
@@ -1779,7 +1704,7 @@ $userProfile = getUserProfileData($userId);
                     sidebar.classList.remove('collapsed');
                 } else {
                     sidebar.classList.remove('mobile-open');
-                    sidebarBackdrop.classList.remove('active');
+                    if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
                     document.body.style.overflow = '';
                     const saved = localStorage.getItem('sidebarCollapsed');
                     if (saved === 'true') {

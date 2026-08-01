@@ -1637,7 +1637,8 @@ if ($applicantId) {
                 <span class="sidebar-brand-icon">
                     <span class="material-symbols-outlined">account_balance</span>
                 </span>
-                <p class="sidebar-brand-text">NIGGA</p>
+                <p class="sidebar-brand-text">ISMERS
+                </p>
                 <p class="sidebar-brand-category">Applicant Portal</p>
             </div>
         </div>

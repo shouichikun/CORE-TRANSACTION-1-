@@ -41,6 +41,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['registration_complete'] = true;
             $_SESSION['interests'] = $selectedInterests;
             
+            // Clear user session so they are forced to login
+            // This ensures they don't stay logged in
+            session_destroy();
+            session_start(); // Start a new session for the success flag
+            
             // Set success to true (show modal)
             $success = true;
         } else {
@@ -75,7 +80,6 @@ if (!empty($error)) {
             --primary-medium: #2c5f8a;
             --primary-light: #4a90d9;
             --primary-lighter: #6db3f2;
-            --primary-gradient: linear-gradient(135deg, #1a3a5c 0%, #4a90d9 100%);
             --white: #ffffff;
             --gray-light: #f8f9fc;
             --gray-border: #e8ecf1;
@@ -86,6 +90,8 @@ if (!empty($error)) {
             --shadow-lg: 0 20px 60px rgba(26, 58, 92, 0.15);
             --radius: 16px;
             --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            /* ===== NEW: Primary button color ===== */
+            --btn-primary-solid: #4F46E5;
         }
 
         body {
@@ -119,23 +125,10 @@ if (!empty($error)) {
         .nav-brand {
             display: flex;
             align-items: center;
-            gap: 12px;
-            font-size: 22px;
+            gap: 10px;
+            font-size: 20px;
             font-weight: 700;
             color: var(--primary-blue);
-        }
-
-        .nav-brand .brand-icon {
-            width: 38px;
-            height: 38px;
-            background: var(--primary-gradient);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 18px;
-            font-weight: 800;
         }
 
         .nav-actions {
@@ -179,15 +172,19 @@ if (!empty($error)) {
             color: white;
         }
 
+        /* =============================================
+           BUTTON COLOR CHANGES - Solid #4F46E5
+           ============================================= */
         .btn-primary {
-            background: var(--primary-gradient);
+            background: var(--btn-primary-solid);
             color: white;
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35);
         }
 
         .btn-primary:hover {
+            background: #4338ca;
             transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(74, 144, 217, 0.45);
+            box-shadow: 0 8px 30px rgba(79, 70, 229, 0.45);
         }
 
         .btn-large {
@@ -271,10 +268,10 @@ if (!empty($error)) {
         }
 
         .step-indicator .step-circle.active {
-            background: var(--primary-gradient);
+            background: var(--btn-primary-solid);
             color: white;
-            border-color: var(--primary-light);
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
+            border-color: var(--btn-primary-solid);
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35);
         }
 
         .step-indicator .step-circle.done {
@@ -308,7 +305,7 @@ if (!empty($error)) {
         }
 
         .step-indicator .step-line.active {
-            background: var(--primary-light);
+            background: var(--btn-primary-solid);
         }
 
         .step-indicator .step-label {
@@ -478,8 +475,8 @@ if (!empty($error)) {
         }
 
         .interest-option input:checked + .interest-card .check-indicator {
-            background: var(--primary-gradient);
-            border-color: var(--primary-light);
+            background: var(--btn-primary-solid);
+            border-color: var(--btn-primary-solid);
             color: white;
         }
 
@@ -594,6 +591,70 @@ if (!empty($error)) {
             text-align: center;
         }
 
+        /* =============================================
+           LOADING MODAL - NEW
+           ============================================= */
+        .modal.loading-modal {
+            padding: 48px 48px 40px;
+        }
+
+        .modal.loading-modal h2 {
+            font-size: 24px;
+            font-weight: 800;
+            color: var(--text-dark);
+            margin-bottom: 8px;
+        }
+
+        .modal.loading-modal p {
+            font-size: 15px;
+            color: var(--text-gray);
+            margin-bottom: 28px;
+            line-height: 1.6;
+        }
+
+        .modal.loading-modal .progress-dots {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 0;
+        }
+
+        .modal.loading-modal .progress-dots .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--btn-primary-solid);
+            opacity: 0.3;
+            animation: dotPulse 1.2s ease-in-out infinite;
+        }
+
+        .modal.loading-modal .progress-dots .dot:nth-child(1) {
+            animation-delay: 0s;
+        }
+
+        .modal.loading-modal .progress-dots .dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .modal.loading-modal .progress-dots .dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes dotPulse {
+            0%, 100% {
+                opacity: 0.3;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 1;
+                transform: scale(1.1);
+            }
+        }
+
+        /* =============================================
+           MODAL BUTTON COLOR CHANGES
+           ============================================= */
         .modal .modal-icon {
             width: 72px;
             height: 72px;
@@ -676,14 +737,15 @@ if (!empty($error)) {
         }
 
         .modal .btn-modal.primary {
-            background: var(--primary-gradient);
+            background: var(--btn-primary-solid);
             color: white;
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.35);
         }
 
         .modal .btn-modal.primary:hover {
+            background: #4338ca;
             transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(74, 144, 217, 0.45);
+            box-shadow: 0 8px 30px rgba(79, 70, 229, 0.45);
         }
 
         .modal .btn-modal.success {
@@ -693,6 +755,7 @@ if (!empty($error)) {
         }
 
         .modal .btn-modal.success:hover {
+            background: #16a34a;
             transform: translateY(-2px);
             box-shadow: 0 8px 30px rgba(34, 197, 94, 0.45);
         }
@@ -781,6 +844,10 @@ if (!empty($error)) {
             .modal {
                 padding: 32px 24px;
             }
+
+            .modal.loading-modal {
+                padding: 36px 24px 32px;
+            }
         }
 
         @media (max-width: 480px) {
@@ -806,6 +873,15 @@ if (!empty($error)) {
                 padding: 12px 32px;
                 font-size: 14px;
             }
+
+            .modal.loading-modal {
+                padding: 28px 16px 24px;
+            }
+
+            .modal.loading-modal .progress-dots .dot {
+                width: 10px;
+                height: 10px;
+            }
         }
     </style>
 </head>
@@ -814,8 +890,7 @@ if (!empty($error)) {
     <!-- ===== NAVBAR ===== -->
     <nav class="navbar">
         <a href="../../index.php" class="nav-brand">
-            <span class="brand-icon">I</span>
-            ISMERS
+            <span style="font-weight: 700;">Area of Interest</span>
         </a>
         <div class="nav-actions">
             <a href="../../login.php">Sign In</a>
@@ -1130,6 +1205,21 @@ if (!empty($error)) {
         </div>
     </div>
 
+    <!-- =============================================
+    LOADING MODAL - NEW
+    ============================================= -->
+    <div class="modal-overlay" id="loadingModal">
+        <div class="modal loading-modal">
+            <h2>Creating Your Account</h2>
+            <p>Please wait a moment...</p>
+            <div class="progress-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+        </div>
+    </div>
+
     <!-- ===== SUCCESS MODAL ===== -->
     <div class="modal-overlay" id="successModal">
         <div class="modal" id="successModalContent">
@@ -1165,21 +1255,44 @@ if (!empty($error)) {
     <!-- ===== JAVASCRIPT ===== -->
     <script>
         // =============================================
-        // 1. SUCCESS MODAL
+        // 1. LOADING MODAL - NEW
+        // =============================================
+        function showLoadingModal() {
+            const loadingModal = document.getElementById('loadingModal');
+            if (loadingModal) {
+                loadingModal.classList.add('active');
+            }
+        }
+
+        function hideLoadingModal() {
+            const loadingModal = document.getElementById('loadingModal');
+            if (loadingModal) {
+                loadingModal.classList.remove('active');
+            }
+        }
+
+        // =============================================
+        // 2. SUCCESS MODAL
         // =============================================
         <?php if ($success): ?>
         document.addEventListener('DOMContentLoaded', function() {
             const successModal = document.getElementById('successModal');
             successModal.classList.add('active');
+            
+            // Hide loading modal if it's showing
+            hideLoadingModal();
         });
         <?php endif; ?>
 
         // =============================================
-        // 2. ERROR MODAL
+        // 3. ERROR MODAL
         // =============================================
         function showErrorModal(title, message, errorList = null) {
             const modalOverlay = document.getElementById('errorModal');
             const modalContent = document.getElementById('errorModalContent');
+
+            // Hide loading modal if it's showing
+            hideLoadingModal();
 
             let errorHtml = '';
             if (errorList && errorList.length > 0) {
@@ -1208,11 +1321,17 @@ if (!empty($error)) {
 
             document.getElementById('errorModalBtn').addEventListener('click', function() {
                 modalOverlay.classList.remove('active');
+                // Re-enable submit button
+                const submitBtn = document.getElementById('submitBtn');
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = 'Complete Registration <svg width="18" height="18" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+                }
             });
         }
 
-        // Close modals on overlay click
-        document.querySelectorAll('.modal-overlay').forEach(overlay => {
+        // Close modals on overlay click (except loading modal)
+        document.querySelectorAll('.modal-overlay:not(#loadingModal)').forEach(overlay => {
             overlay.addEventListener('click', function(e) {
                 if (e.target === this) {
                     this.classList.remove('active');
@@ -1220,9 +1339,13 @@ if (!empty($error)) {
             });
         });
 
-        // Close modals on Escape key
+        // Close modals on Escape key (except loading modal)
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
+                const loadingModal = document.getElementById('loadingModal');
+                if (loadingModal && loadingModal.classList.contains('active')) {
+                    return; // Do not close loading modal
+                }
                 document.querySelectorAll('.modal-overlay.active').forEach(modal => {
                     modal.classList.remove('active');
                 });
@@ -1230,7 +1353,7 @@ if (!empty($error)) {
         });
 
         // =============================================
-        // 3. INTEREST SELECTION TRACKING
+        // 4. INTEREST SELECTION TRACKING
         // =============================================
         const checkboxes = document.querySelectorAll('input[name="interests[]"]');
         const selectedCount = document.getElementById('selectedCount');
@@ -1269,12 +1392,12 @@ if (!empty($error)) {
         });
 
         // =============================================
-        // 4. INITIAL STATE
+        // 5. INITIAL STATE
         // =============================================
         updateSelectionCount();
 
         // =============================================
-        // 5. CHECK FOR SERVER-SIDE ERRORS
+        // 6. CHECK FOR SERVER-SIDE ERRORS
         // =============================================
         <?php if (!empty($error)): ?>
         document.addEventListener('DOMContentLoaded', function() {
@@ -1287,7 +1410,7 @@ if (!empty($error)) {
         <?php endif; ?>
 
         // =============================================
-        // 6. FORM VALIDATION WITH MODAL
+        // 7. FORM VALIDATION WITH LOADING MODAL
         // =============================================
         document.getElementById('interestForm').addEventListener('submit', function(e) {
             const checked = document.querySelectorAll('input[name="interests[]"]:checked');
@@ -1302,13 +1425,16 @@ if (!empty($error)) {
                 return;
             }
 
-            // If valid, show loading state
+            // ===== SHOW LOADING MODAL =====
+            showLoadingModal();
+            
+            // Disable submit button
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<span>Saving...</span> <span>⏳</span>';
         });
 
         // =============================================
-        // 7. KEYBOARD ACCESSIBILITY
+        // 8. KEYBOARD ACCESSIBILITY
         // =============================================
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
