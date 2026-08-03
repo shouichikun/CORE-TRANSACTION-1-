@@ -1,6 +1,14 @@
 <?php
-// portals/client/view_job.php - View Job Details & Manage Applicants
+// portals/client/invoices.php - Client Invoice Management
 session_start();
+
+// =============================================
+// DEBUG MODE
+// =============================================
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/debug.log');
 
 require_once '../../app/config.php';
 
@@ -49,153 +57,94 @@ if (!empty($pendingAgencies)) {
     $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
 }
 
-// Get job ID from URL
-$jobId = isset($_GET['id']) ? intval($_GET['id']) : 0;
+// =============================================
+// GET INVOICES
+// =============================================
+$invoices = getRecords("
+    SELECT * FROM invoices 
+    WHERE client_id = ? 
+    ORDER BY invoice_date DESC
+", [$clientId], "i");
 
-if ($jobId <= 0) {
-    header('Location: jobs.php');
-    exit;
-}
+// =============================================
+// CALCULATE SUMMARY STATS
+// =============================================
+$totalInvoices = count($invoices);
+$totalPaid = 0;
+$totalPending = 0;
+$totalOverdue = 0;
+$totalAmount = 0;
+$totalPaidAmount = 0;
 
-// Get job details with verification that it belongs to this client
-$jobSql = "SELECT j.*, 
-           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
-           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
-           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'reviewed') as reviewed_applicants,
-           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
-           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
-           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
-           FROM job_orders j
-           WHERE j.id = ? AND j.client_id = ?";
-
-$stmt = mysqli_prepare($conn, $jobSql);
-mysqli_stmt_bind_param($stmt, 'ii', $jobId, $clientId);
-mysqli_stmt_execute($stmt);
-$jobResult = mysqli_stmt_get_result($stmt);
-$job = mysqli_fetch_assoc($jobResult);
-mysqli_stmt_close($stmt);
-
-// If job doesn't exist or doesn't belong to this client
-if (!$job) {
-    header('Location: jobs.php');
-    exit;
-}
-
-// Check if salary columns exist
-$checkColumnsSql = "SHOW COLUMNS FROM job_orders LIKE 'salary_min'";
-$checkResult = mysqli_query($conn, $checkColumnsSql);
-$hasSalaryColumns = mysqli_num_rows($checkResult) > 0;
-
-// Handle Status Update
-$message = '';
-$messageType = '';
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    // Update job status
-    if ($_POST['action'] === 'update_job_status') {
-        $newStatus = $_POST['new_status'] ?? 'closed';
-        $updateSql = "UPDATE job_orders SET status = ?, updated_at = NOW() 
-                      WHERE id = ? AND client_id = ?";
-        $stmt = mysqli_prepare($conn, $updateSql);
-        mysqli_stmt_bind_param($stmt, 'sii', $newStatus, $jobId, $clientId);
-        
-        if (mysqli_stmt_execute($stmt)) {
-            $message = 'Job status updated successfully!';
-            $messageType = 'success';
-            // Refresh job data
-            $job['status'] = $newStatus;
-        } else {
-            $message = 'Error updating job status.';
-            $messageType = 'error';
-        }
-        mysqli_stmt_close($stmt);
-    }
+foreach ($invoices as $invoice) {
+    $totalAmount += $invoice['amount'] ?? 0;
     
-    // Update applicant status
-    if ($_POST['action'] === 'update_applicant_status') {
-        $applicationId = intval($_POST['application_id'] ?? 0);
-        $newStatus = $_POST['new_status'] ?? 'pending';
-        
-        if ($applicationId > 0) {
-            $updateSql = "UPDATE applications SET status = ?, updated_at = NOW() 
-                          WHERE id = ? AND job_order_id = ?";
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'sii', $newStatus, $applicationId, $jobId);
-            
-            if (mysqli_stmt_execute($stmt)) {
-                $message = 'Applicant status updated successfully!';
-                $messageType = 'success';
-            } else {
-                $message = 'Error updating applicant status.';
-                $messageType = 'error';
-            }
-            mysqli_stmt_close($stmt);
-        }
+    if ($invoice['status'] === 'paid') {
+        $totalPaid++;
+        $totalPaidAmount += $invoice['amount'] ?? 0;
+    } elseif ($invoice['status'] === 'overdue') {
+        $totalOverdue++;
+    } else {
+        $totalPending++;
     }
 }
 
-// Get applicants for this job with their details
-$applicantsSql = "SELECT a.*, 
-                  ap.id as applicant_profile_id, ap.phone, ap.address, ap.resume_path,
-                  u.id as user_id, u.first_name, u.last_name, u.email,
-                  (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id AND status IN ('hired', 'shortlisted')) as other_applications
-                  FROM applications a
-                  JOIN applicants ap ON a.applicant_id = ap.id
-                  JOIN users u ON ap.user_id = u.id
-                  WHERE a.job_order_id = ?
-                  ORDER BY 
-                    CASE a.status 
-                      WHEN 'pending' THEN 1
-                      WHEN 'reviewed' THEN 2
-                      WHEN 'shortlisted' THEN 3
-                      WHEN 'hired' THEN 4
-                      WHEN 'rejected' THEN 5
-                      ELSE 6
-                    END,
-                    a.applied_at DESC";
-
-$stmt = mysqli_prepare($conn, $applicantsSql);
-mysqli_stmt_bind_param($stmt, 'i', $jobId);
-mysqli_stmt_execute($stmt);
-$applicantsResult = mysqli_stmt_get_result($stmt);
-$applicants = [];
-while ($row = mysqli_fetch_assoc($applicantsResult)) {
-    $applicants[] = $row;
-}
-mysqli_stmt_close($stmt);
-
-// Get status filter
+// =============================================
+// GET FILTER PARAMETERS
+// =============================================
 $statusFilter = $_GET['status'] ?? 'all';
-$filteredApplicants = $applicants;
+$searchQuery = $_GET['search'] ?? '';
+
+// Apply filters
+$filteredInvoices = $invoices;
+
 if ($statusFilter !== 'all') {
-    $filteredApplicants = array_filter($applicants, function($app) use ($statusFilter) {
-        return ($app['status'] ?? '') === $statusFilter;
+    $filteredInvoices = array_filter($filteredInvoices, function($inv) use ($statusFilter) {
+        return ($inv['status'] ?? '') === $statusFilter;
     });
 }
 
-// Get application status counts
-$statusCounts = [
-    'all' => count($applicants),
-    'pending' => 0,
-    'reviewed' => 0,
-    'shortlisted' => 0,
-    'hired' => 0,
-    'rejected' => 0
-];
-
-foreach ($applicants as $app) {
-    $status = $app['status'] ?? 'pending';
-    if (isset($statusCounts[$status])) {
-        $statusCounts[$status]++;
-    }
+if (!empty($searchQuery)) {
+    $searchLower = strtolower($searchQuery);
+    $filteredInvoices = array_filter($filteredInvoices, function($inv) use ($searchLower) {
+        return strpos(strtolower($inv['invoice_number'] ?? ''), $searchLower) !== false ||
+               strpos(strtolower($inv['description'] ?? ''), $searchLower) !== false;
+    });
 }
 
-// Check if there's a toast message from session
-if (isset($_SESSION['toast_message'])) {
-    $message = $_SESSION['toast_message'];
-    $messageType = $_SESSION['toast_type'] ?? 'info';
-    unset($_SESSION['toast_message']);
-    unset($_SESSION['toast_type']);
+// Status badge mapping
+$statusBadges = [
+    'paid' => 'badge-paid',
+    'pending' => 'badge-pending',
+    'overdue' => 'badge-overdue'
+];
+
+$statusLabels = [
+    'paid' => 'Paid',
+    'pending' => 'Pending',
+    'overdue' => 'Overdue'
+];
+
+// Get greeting
+$currentHour = date('H');
+$greeting = 'Good Evening';
+if ($currentHour < 12) {
+    $greeting = 'Good Morning';
+} elseif ($currentHour < 18) {
+    $greeting = 'Good Afternoon';
+}
+
+// =============================================
+// HANDLE INVOICE VIEW (MODAL)
+// =============================================
+$viewInvoiceId = isset($_GET['view']) ? (int)$_GET['view'] : 0;
+$viewInvoice = null;
+
+if ($viewInvoiceId > 0) {
+    $viewInvoice = getRecord("
+        SELECT * FROM invoices 
+        WHERE id = ? AND client_id = ?
+    ", [$viewInvoiceId, $clientId], "ii");
 }
 ?>
 <!DOCTYPE html>
@@ -203,11 +152,13 @@ if (isset($_SESSION['toast_message'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title><?php echo htmlspecialchars($job['title']); ?> - ISMERS Client</title>
+    <title>Invoices - ISMERS Client</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* Base styles - Same as previous */
+        /* ==========================================================================
+           INVOICES - CLEAN PROFESSIONAL UI
+           ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -235,6 +186,7 @@ if (isset($_SESSION['toast_message'])) {
             --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
             --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
             --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -263,7 +215,9 @@ if (isset($_SESSION['toast_message'])) {
         }
         a { text-decoration: none; color: inherit; }
 
-        /* Sidebar - Same as before */
+        /* =============================================
+           SIDEBAR
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -399,25 +353,6 @@ if (isset($_SESSION['toast_message'])) {
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.8125rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-        .sidebar-footer .logout-btn:hover { background: #fef2f2; }
-        .sidebar-footer .logout-btn .material-symbols-outlined { font-size: 1.125rem; }
 
         .sidebar-backdrop {
             display: none;
@@ -574,7 +509,9 @@ if (isset($_SESSION['toast_message'])) {
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* Breadcrumb */
+        /* =============================================
+           BREADCRUMB
+        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -603,6 +540,22 @@ if (isset($_SESSION['toast_message'])) {
         .breadcrumb-view .material-symbols-outlined { font-size: 1rem; }
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
+        /* =============================================
+           PAGE HEADER
+        ============================================= */
+        .page-header {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+        }
+        @media (min-width: 640px) { .page-header { flex-direction: row; align-items: center; justify-content: space-between; } }
+        .page-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); letter-spacing: -0.025em; }
+        .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
+
+        /* =============================================
+           BUTTONS
+        ============================================= */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -627,15 +580,322 @@ if (isset($_SESSION['toast_message'])) {
         .btn-success:hover { background: #047857; transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-danger { background: #dc2626; color: white; }
         .btn-danger:hover { background: #b91c1c; transform: translateY(-1px); box-shadow: var(--shadow-md); }
-        .btn-warning { background: #d97706; color: white; }
-        .btn-warning:hover { background: #b45309; transform: translateY(-1px); box-shadow: var(--shadow-md); }
-        .btn-info { background: #2563eb; color: white; }
-        .btn-info:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.6875rem; border-radius: 0.375rem; }
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Toast */
+        /* =============================================
+           STATS ROW
+        ============================================= */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.875rem;
+            margin-bottom: 1.25rem;
+        }
+        .stat-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+            padding: 1.25rem;
+            box-shadow: var(--shadow-xs);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .stat-card .stat-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .stat-card .stat-icon.primary { background: #eef0ff; color: #4f46e5; }
+        .stat-card .stat-icon.green { background: #d1fae5; color: #059669; }
+        .stat-card .stat-icon.yellow { background: #fef3c7; color: #d97706; }
+        .stat-card .stat-icon.red { background: #fee2e2; color: #dc2626; }
+        .stat-card .stat-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .stat-card .stat-info { display: flex; flex-direction: column; }
+        .stat-card .stat-number {
+            font-size: 1.75rem;
+            font-weight: 800;
+            color: var(--text-on-surface);
+            line-height: 1.2;
+        }
+        .stat-card .stat-label {
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-on-surface-variant);
+        }
+
+        /* =============================================
+           FILTERS
+        ============================================= */
+        .filters-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+            align-items: center;
+        }
+        .filter-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .filter-btn {
+            padding: 0.375rem 1rem;
+            border-radius: var(--radius-full);
+            border: 1px solid var(--slate-200);
+            background: var(--bg-surface);
+            color: var(--text-on-surface-variant);
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
+        .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .filter-btn .count {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.05rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6rem;
+            margin-left: 0.25rem;
+        }
+        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: var(--bg-surface);
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            transition: all var(--transition-fast);
+            flex: 1;
+            min-width: 200px;
+            max-width: 300px;
+            margin-left: auto;
+        }
+        .search-box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1); }
+        .search-box .material-symbols-outlined { color: var(--text-on-surface-variant); font-size: 1.25rem; }
+        .search-box input {
+            border: none;
+            outline: none;
+            padding: 0.375rem 0.5rem;
+            font-size: 0.8125rem;
+            font-family: var(--font-sans);
+            background: transparent;
+            width: 100%;
+            color: var(--text-on-surface);
+        }
+        .search-box input::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
+
+        /* =============================================
+           INVOICE TABLE
+        ============================================= */
+        .invoice-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-xs);
+            overflow: hidden;
+        }
+        .invoice-card .invoice-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .invoice-card .invoice-header .invoice-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .invoice-card .invoice-body { padding: 0; overflow-x: auto; }
+
+        .invoice-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8125rem;
+        }
+        .invoice-table thead { background: var(--bg-surface-low); }
+        .invoice-table th {
+            padding: 0.625rem 1rem;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            border-bottom: 2px solid var(--slate-200);
+        }
+        .invoice-table td {
+            padding: 0.625rem 1rem;
+            border-bottom: 1px solid var(--slate-200);
+            vertical-align: middle;
+        }
+        .invoice-table tr:last-child td { border-bottom: none; }
+        .invoice-table tbody tr:hover td { background: var(--bg-surface-low); }
+
+        .badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .badge-paid { background: #d1fae5; color: #059669; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-overdue { background: #fee2e2; color: #dc2626; }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-on-surface-variant);
+        }
+        .empty-state .material-symbols-outlined {
+            font-size: 4rem;
+            color: var(--slate-300);
+            display: block;
+            margin-bottom: 0.75rem;
+        }
+        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state p { font-size: 0.8125rem; }
+
+        /* =============================================
+           INVOICE DETAILS MODAL
+        ============================================= */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 600px;
+            width: 100%;
+            max-height: 90vh;
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            animation: modalSlideUp 0.3s ease-out;
+            display: flex;
+            flex-direction: column;
+        }
+        @keyframes modalSlideUp {
+            from { opacity: 0; transform: translateY(20px) scale(0.96); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .modal-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        .modal-header h2 {
+            font-size: 1.125rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .modal-header h2 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
+        .modal-close {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0.375rem;
+            border-radius: 0.375rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+        }
+        .modal-close:hover { background: var(--bg-surface-low); }
+        .modal-close .material-symbols-outlined { font-size: 1.25rem; }
+        .modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; }
+        .modal-footer {
+            padding: 0.875rem 1.5rem;
+            border-top: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.625rem;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
+
+        .invoice-detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .invoice-detail-item {
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.5rem;
+            border: 1px solid var(--slate-200);
+        }
+        .invoice-detail-item .label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .invoice-detail-item .value {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-top: 0.125rem;
+        }
+        .invoice-detail-item .value.green { color: #059669; }
+        .invoice-detail-item .value.red { color: #dc2626; }
+        .invoice-detail-item .value.yellow { color: #d97706; }
+
+        .invoice-items-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8125rem;
+            margin-top: 1rem;
+        }
+        .invoice-items-table th {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            border-bottom: 2px solid var(--slate-200);
+        }
+        .invoice-items-table td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--slate-100);
+        }
+        .invoice-items-table tr:last-child td { border-bottom: none; }
+
+        /* =============================================
+           TOAST
+        ============================================= */
         .toast {
             position: fixed;
             top: 1rem;
@@ -662,251 +922,50 @@ if (isset($_SESSION['toast_message'])) {
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* Job Details Card */
-        .job-detail-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: var(--shadow-xs);
+        /* =============================================
+           RESPONSIVE
+        ============================================= */
+        @media (min-width: 768px) {
+            .sidebar-backdrop { display: none !important; }
+            .mobile-menu-btn { display: none !important; }
+            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; }
+            .main-wrapper { margin-left: var(--sidebar-width); }
+            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+            .profile-dropdown-toggle .profile-name,
+            .profile-dropdown-toggle .profile-role { display: inline; }
         }
-        .job-detail-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            flex-wrap: wrap;
-            gap: 1rem;
-            margin-bottom: 1rem;
+        @media (max-width: 767px) {
+            .dashboard-sidebar { width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
+            .dashboard-sidebar.mobile-open { transform: translateX(0); }
+            .sidebar-toggle-btn { display: none !important; }
+            .mobile-menu-btn { display: flex; }
+            .main-wrapper { margin-left: 0 !important; }
+            .main-scroll { padding: 1rem; }
+            .top-header-left .separator { display: none; }
+            .profile-dropdown-toggle .profile-name,
+            .profile-dropdown-toggle .profile-role { display: none; }
+            .stats-row { grid-template-columns: 1fr 1fr; }
+            .filters-bar { flex-direction: column; align-items: stretch; }
+            .search-box { max-width: 100%; margin-left: 0; }
+            .invoice-table { font-size: 0.75rem; }
+            .invoice-table th, .invoice-table td { padding: 0.375rem 0.5rem; }
+            .invoice-detail-grid { grid-template-columns: 1fr; }
+            .modal { max-height: 95vh; margin: 0.5rem; }
         }
-        .job-detail-title {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--text-on-surface);
+        @media (max-width: 480px) {
+            .main-scroll { padding: 0.75rem; }
+            .stats-row { grid-template-columns: 1fr 1fr; }
+            .invoice-table { font-size: 0.6875rem; min-width: 300px; }
+            .invoice-detail-grid { grid-template-columns: 1fr; }
         }
-        .job-detail-meta {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1.25rem;
-            margin-top: 0.5rem;
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-        }
-        .job-detail-meta .material-symbols-outlined {
-            font-size: 1rem;
-            vertical-align: middle;
-        }
-        .job-detail-body {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            gap: 2rem;
-            margin-top: 1rem;
-        }
-        @media (max-width: 768px) {
-            .job-detail-body { grid-template-columns: 1fr; }
-        }
-        .job-detail-section h4 {
-            font-size: 0.8125rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-on-surface-variant);
-            margin-bottom: 0.5rem;
-        }
-        .job-detail-section p {
-            font-size: 0.875rem;
-            color: var(--text-on-surface);
-            line-height: 1.7;
-            white-space: pre-wrap;
-        }
-        .job-detail-section ul {
-            list-style: none;
-            padding: 0;
-        }
-        .job-detail-section ul li {
-            padding: 0.25rem 0;
-            font-size: 0.875rem;
-            color: var(--text-on-surface);
-            display: flex;
-            align-items: flex-start;
-            gap: 0.5rem;
-        }
-        .job-detail-section ul li .material-symbols-outlined {
-            font-size: 1rem;
-            color: var(--primary);
-            margin-top: 0.125rem;
-        }
-        .job-stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.75rem;
-        }
-        .job-stat-item {
-            background: var(--bg-surface-low);
-            padding: 0.75rem;
-            border-radius: 0.75rem;
-            text-align: center;
-        }
-        .job-stat-item .number {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--text-on-surface);
-        }
-        .job-stat-item .label {
-            font-size: 0.6875rem;
-            color: var(--text-on-surface-variant);
-        }
-        .job-stat-item .number.primary { color: var(--primary); }
-        .job-stat-item .number.green { color: #059669; }
-        .job-stat-item .number.yellow { color: #d97706; }
-        .job-stat-item .number.red { color: #dc2626; }
-        .job-stat-item .number.blue { color: #2563eb; }
-
-        .badge {
-            display: inline-block;
-            padding: 0.125rem 0.625rem;
-            border-radius: var(--radius-full);
-            font-size: 0.625rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-        }
-        .badge-lg {
-            padding: 0.25rem 0.875rem;
-            font-size: 0.75rem;
-        }
-        .badge-open { background: #dbeafe; color: #2563eb; }
-        .badge-ongoing { background: #e0e7ff; color: #4f46e5; }
-        .badge-closed { background: #f1f5f9; color: #64748b; }
-        .badge-on_hold { background: #fef3c7; color: #d97706; }
-        .badge-pending { background: #fef3c7; color: #d97706; }
-        .badge-reviewed { background: #dbeafe; color: #2563eb; }
-        .badge-shortlisted { background: #d1fae5; color: #059669; }
-        .badge-hired { background: #a7f3d0; color: #047857; }
-        .badge-rejected { background: #fee2e2; color: #dc2626; }
-
-        /* Applicant List */
-        .applicant-filters {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin-bottom: 1rem;
-        }
-        .filter-btn {
-            padding: 0.375rem 1rem;
-            border-radius: var(--radius-full);
-            border: 1px solid var(--slate-200);
-            background: var(--bg-surface);
-            color: var(--text-on-surface-variant);
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            font-family: var(--font-sans);
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
-        .filter-btn.active {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-        }
-        .filter-btn .count {
-            background: rgba(255, 255, 255, 0.2);
-            padding: 0.05rem 0.5rem;
-            border-radius: var(--radius-full);
-            font-size: 0.6rem;
-            margin-left: 0.25rem;
-        }
-        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
-
-        .applicant-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            padding: 1rem 1.25rem;
-            margin-bottom: 0.75rem;
-            transition: all var(--transition-fast);
-        }
-        .applicant-card:hover { box-shadow: var(--shadow-sm); border-color: var(--slate-300); }
-        .applicant-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-        }
-        .applicant-name {
-            font-weight: 700;
-            font-size: 0.9375rem;
-            color: var(--text-on-surface);
-        }
-        .applicant-name .material-symbols-outlined {
-            font-size: 1rem;
-            vertical-align: middle;
-            color: var(--primary);
-        }
-        .applicant-email {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-        .applicant-details {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1.25rem;
-            margin-top: 0.375rem;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-        .applicant-details .material-symbols-outlined {
-            font-size: 0.875rem;
-            vertical-align: middle;
-        }
-        .applicant-actions {
-            display: flex;
-            gap: 0.375rem;
-            flex-wrap: wrap;
-            margin-top: 0.625rem;
-        }
-        .applicant-status-select {
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.375rem;
-            border: 1.5px solid var(--slate-200);
-            font-size: 0.6875rem;
-            font-family: var(--font-sans);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-            cursor: pointer;
-        }
-        .applicant-status-select:focus {
-            outline: none;
-            border-color: var(--primary);
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 3rem 1.5rem;
-            color: var(--text-on-surface-variant);
-        }
-        .empty-state .material-symbols-outlined {
-            font-size: 3rem;
-            color: var(--slate-300);
-            display: block;
-            margin-bottom: 0.75rem;
-        }
-        .empty-state h3 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.8125rem; }
-
-        .action-buttons {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-
-        /* Profile Picture Styles */
+        .main-scroll::-webkit-scrollbar { width: 5px; }
+        .main-scroll::-webkit-scrollbar-track { background: transparent; }
+        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
+        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
+        
+        /* =============================================
+           PROFILE PICTURE STYLES
+        ============================================= */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -935,32 +994,6 @@ if (isset($_SESSION['toast_message'])) {
             border-radius: 50%;
             object-fit: cover;
         }
-
-        @media (min-width: 768px) {
-            .sidebar-backdrop { display: none !important; }
-            .mobile-menu-btn { display: none !important; }
-            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; }
-            .main-wrapper { margin-left: var(--sidebar-width); }
-            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
-        }
-        @media (max-width: 767px) {
-            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); }
-            .dashboard-sidebar.mobile-open { transform: translateX(0); }
-            .sidebar-toggle-btn { display: none !important; }
-            .mobile-menu-btn { display: flex; }
-            .main-wrapper { margin-left: 0 !important; }
-            .main-scroll { padding: 1rem; }
-            .job-stats-grid { grid-template-columns: 1fr 1fr; }
-        }
-        @media (max-width: 480px) {
-            .main-scroll { padding: 0.75rem; }
-            .job-detail-title { font-size: 1.25rem; }
-            .job-stats-grid { grid-template-columns: 1fr 1fr; }
-        }
-        .main-scroll::-webkit-scrollbar { width: 5px; }
-        .main-scroll::-webkit-scrollbar-track { background: transparent; }
-        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
-        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
     </style>
 </head>
 <body>
@@ -968,7 +1001,7 @@ if (isset($_SESSION['toast_message'])) {
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR - FIXED ===== -->
+    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -977,7 +1010,7 @@ if (isset($_SESSION['toast_message'])) {
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-        <nav class="sidebar-nav">
+       <nav class="sidebar-nav">
     <div class="nav-label">Main</div>
     <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
         <span class="material-symbols-outlined">dashboard</span>
@@ -1059,7 +1092,7 @@ if (isset($_SESSION['toast_message'])) {
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Job Details</span>
+                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Invoices</span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -1089,244 +1122,208 @@ if (isset($_SESSION['toast_message'])) {
 
         <main class="main-scroll">
             <div class="container">
-                <!-- Toast Messages -->
-                <?php if ($message): ?>
-                    <div class="toast <?php echo $messageType; ?>" id="toastMessage">
-                        <span class="material-symbols-outlined">
-                            <?php echo $messageType === 'success' ? 'check_circle' : ($messageType === 'error' ? 'error' : 'info'); ?>
-                        </span>
-                        <?php echo htmlspecialchars($message); ?>
-                    </div>
-                    <script>
-                        setTimeout(() => {
-                            const toast = document.getElementById('toastMessage');
-                            if (toast) toast.remove();
-                        }, 5000);
-                    </script>
-                <?php endif; ?>
-
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">work</span>
-                        <span>Job Details</span>
+                        <span class="material-symbols-outlined">receipt</span>
+                        <span>Invoices</span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">
-                            <?php echo htmlspecialchars($job['title']); ?>
+                            <?php echo htmlspecialchars($companyName); ?>
                         </span>
                     </div>
-                    <span class="breadcrumb-meta">Posted <?php echo date('M d, Y', strtotime($job['created_at'])); ?></span>
+                    <span class="breadcrumb-meta"><?php echo $totalInvoices; ?> invoices</span>
                 </div>
 
-                <!-- Job Details -->
-                <div class="job-detail-card">
-                    <div class="job-detail-header">
-                        <div>
-                            <h1 class="job-detail-title"><?php echo htmlspecialchars($job['title']); ?></h1>
-                            <div class="job-detail-meta">
-                                <span>
-                                    <span class="material-symbols-outlined">location_on</span>
-                                    <?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?>
-                                </span>
-                                <span>
-                                    <span class="material-symbols-outlined">work</span>
-                                    <?php echo ucfirst(str_replace('_', ' ', $job['job_type'] ?? 'Full-time')); ?>
-                                </span>
-                                <?php if ($hasSalaryColumns && (!empty($job['salary_min']) || !empty($job['salary_max']))): ?>
-                                    <span>
-                                        <span class="material-symbols-outlined">payments</span>
-                                        <?php if (!empty($job['salary_min']) && !empty($job['salary_max'])): ?>
-                                            ₱<?php echo number_format($job['salary_min']); ?> - ₱<?php echo number_format($job['salary_max']); ?>
-                                        <?php elseif (!empty($job['salary_min'])): ?>
-                                            ₱<?php echo number_format($job['salary_min']); ?>+
-                                        <?php elseif (!empty($job['salary_max'])): ?>
-                                            Up to ₱<?php echo number_format($job['salary_max']); ?>
-                                        <?php endif; ?>
-                                    </span>
-                                <?php endif; ?>
-                                <span>
-                                    <span class="material-symbols-outlined">people</span>
-                                    <?php echo $job['positions_available'] ?? 1; ?> positions
-                                </span>
-                            </div>
+                <!-- Page Header -->
+                <div class="page-header">
+                    <div>
+                        <h1>Invoices</h1>
+                        <p>View and manage your billing history</p>
+                    </div>
+                </div>
+
+                <!-- Stats -->
+                <div class="stats-row">
+                    <div class="stat-card">
+                        <div class="stat-icon primary">
+                            <span class="material-symbols-outlined">receipt_long</span>
                         </div>
-                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
-                            <span class="badge badge-lg badge-<?php echo $job['status']; ?>">
-                                <?php echo ucfirst(str_replace('_', ' ', $job['status'])); ?>
-                            </span>
-                            <form method="POST" style="display:inline;" id="statusForm">
-                                <input type="hidden" name="action" value="update_job_status">
-                                <select name="new_status" class="applicant-status-select" onchange="document.getElementById('statusForm').submit()" style="padding:0.375rem 0.75rem;">
-                                    <option value="open" <?php echo $job['status'] === 'open' ? 'selected' : ''; ?>>Open</option>
-                                    <option value="ongoing" <?php echo $job['status'] === 'ongoing' ? 'selected' : ''; ?>>Ongoing</option>
-                                    <option value="on_hold" <?php echo $job['status'] === 'on_hold' ? 'selected' : ''; ?>>On Hold</option>
-                                    <option value="closed" <?php echo $job['status'] === 'closed' ? 'selected' : ''; ?>>Closed</option>
-                                </select>
-                            </form>
+                        <div class="stat-info">
+                            <div class="stat-number"><?php echo $totalInvoices; ?></div>
+                            <div class="stat-label">Total Invoices</div>
                         </div>
                     </div>
-
-                    <div class="job-detail-body">
-                        <div>
-                            <div class="job-detail-section" style="margin-bottom:1.5rem;">
-                                <h4>Job Description</h4>
-                                <p><?php echo nl2br(htmlspecialchars($job['description'] ?? '')); ?></p>
-                            </div>
-                            <div class="job-detail-section">
-                                <h4>Requirements</h4>
-                                <p><?php echo nl2br(htmlspecialchars($job['requirements'] ?? '')); ?></p>
-                            </div>
+                    <div class="stat-card">
+                        <div class="stat-icon green">
+                            <span class="material-symbols-outlined">check_circle</span>
                         </div>
-                        <div>
-                            <div class="job-detail-section">
-                                <h4>Application Stats</h4>
-                                <div class="job-stats-grid">
-                                    <div class="job-stat-item">
-                                        <div class="number primary"><?php echo $job['total_applicants'] ?? 0; ?></div>
-                                        <div class="label">Total Applicants</div>
-                                    </div>
-                                    <div class="job-stat-item">
-                                        <div class="number yellow"><?php echo $job['pending_applicants'] ?? 0; ?></div>
-                                        <div class="label">Pending</div>
-                                    </div>
-                                    <div class="job-stat-item">
-                                        <div class="number blue"><?php echo $job['reviewed_applicants'] ?? 0; ?></div>
-                                        <div class="label">Reviewed</div>
-                                    </div>
-                                    <div class="job-stat-item">
-                                        <div class="number green"><?php echo $job['shortlisted_applicants'] ?? 0; ?></div>
-                                        <div class="label">Shortlisted</div>
-                                    </div>
-                                    <div class="job-stat-item">
-                                        <div class="number green" style="color:#047857;"><?php echo $job['hired_applicants'] ?? 0; ?></div>
-                                        <div class="label">Hired</div>
-                                    </div>
-                                    <div class="job-stat-item">
-                                        <div class="number red"><?php echo $job['rejected_applicants'] ?? 0; ?></div>
-                                        <div class="label">Rejected</div>
-                                    </div>
-                                </div>
-                            </div>
+                        <div class="stat-info">
+                            <div class="stat-number"><?php echo $totalPaid; ?></div>
+                            <div class="stat-label">Paid</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon yellow">
+                            <span class="material-symbols-outlined">hourglass_top</span>
+                        </div>
+                        <div class="stat-info">
+                            <div class="stat-number"><?php echo $totalPending; ?></div>
+                            <div class="stat-label">Pending</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon red">
+                            <span class="material-symbols-outlined">error</span>
+                        </div>
+                        <div class="stat-info">
+                            <div class="stat-number"><?php echo $totalOverdue; ?></div>
+                            <div class="stat-label">Overdue</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Applicants Section -->
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem; margin-bottom:1rem;">
-                    <h2 style="font-size:1.125rem; font-weight:700;">Applicants</h2>
-                    <span style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
-                        <?php echo count($applicants); ?> applicant<?php echo count($applicants) !== 1 ? 's' : ''; ?>
-                    </span>
-                </div>
-
-                <!-- Applicant Filters -->
-                <div class="applicant-filters">
-                    <a href="?id=<?php echo $jobId; ?>&status=all" class="filter-btn <?php echo $statusFilter === 'all' ? 'active' : ''; ?>">
-                        All <span class="count"><?php echo $statusCounts['all']; ?></span>
-                    </a>
-                    <a href="?id=<?php echo $jobId; ?>&status=pending" class="filter-btn <?php echo $statusFilter === 'pending' ? 'active' : ''; ?>">
-                        Pending <span class="count"><?php echo $statusCounts['pending']; ?></span>
-                    </a>
-                    <a href="?id=<?php echo $jobId; ?>&status=reviewed" class="filter-btn <?php echo $statusFilter === 'reviewed' ? 'active' : ''; ?>">
-                        Reviewed <span class="count"><?php echo $statusCounts['reviewed']; ?></span>
-                    </a>
-                    <a href="?id=<?php echo $jobId; ?>&status=shortlisted" class="filter-btn <?php echo $statusFilter === 'shortlisted' ? 'active' : ''; ?>">
-                        Shortlisted <span class="count"><?php echo $statusCounts['shortlisted']; ?></span>
-                    </a>
-                    <a href="?id=<?php echo $jobId; ?>&status=hired" class="filter-btn <?php echo $statusFilter === 'hired' ? 'active' : ''; ?>">
-                        Hired <span class="count"><?php echo $statusCounts['hired']; ?></span>
-                    </a>
-                    <a href="?id=<?php echo $jobId; ?>&status=rejected" class="filter-btn <?php echo $statusFilter === 'rejected' ? 'active' : ''; ?>">
-                        Rejected <span class="count"><?php echo $statusCounts['rejected']; ?></span>
-                    </a>
-                </div>
-
-                <!-- Applicant List -->
-                <?php if (empty($filteredApplicants)): ?>
-                    <div class="empty-state">
-                        <span class="material-symbols-outlined">person_off</span>
-                        <h3>No applicants found</h3>
-                        <p>
-                            <?php if ($statusFilter !== 'all'): ?>
-                                No applicants with status "<?php echo htmlspecialchars($statusFilter); ?>".
-                                <a href="?id=<?php echo $jobId; ?>&status=all" style="color:var(--primary); font-weight:600;">View all applicants</a>
-                            <?php else: ?>
-                                No one has applied to this job yet.
-                            <?php endif; ?>
-                        </p>
+                <!-- Filters -->
+                <div class="filters-bar">
+                    <div class="filter-group">
+                        <a href="?status=all" class="filter-btn <?php echo $statusFilter === 'all' ? 'active' : ''; ?>">
+                            All <span class="count"><?php echo $totalInvoices; ?></span>
+                        </a>
+                        <a href="?status=paid" class="filter-btn <?php echo $statusFilter === 'paid' ? 'active' : ''; ?>">
+                            Paid <span class="count"><?php echo $totalPaid; ?></span>
+                        </a>
+                        <a href="?status=pending" class="filter-btn <?php echo $statusFilter === 'pending' ? 'active' : ''; ?>">
+                            Pending <span class="count"><?php echo $totalPending; ?></span>
+                        </a>
+                        <a href="?status=overdue" class="filter-btn <?php echo $statusFilter === 'overdue' ? 'active' : ''; ?>">
+                            Overdue <span class="count"><?php echo $totalOverdue; ?></span>
+                        </a>
                     </div>
-                <?php else: ?>
-                    <?php foreach ($filteredApplicants as $app): ?>
-                        <div class="applicant-card">
-                            <div class="applicant-card-header">
-                                <div>
-                                    <div class="applicant-name">
-                                        <span class="material-symbols-outlined">person</span>
-                                        <?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?>
-                                    </div>
-                                    <div class="applicant-email"><?php echo htmlspecialchars($app['email']); ?></div>
-                                    <div class="applicant-details">
-                                        <?php if (!empty($app['phone'])): ?>
-                                            <span>
-                                                <span class="material-symbols-outlined">phone</span>
-                                                <?php echo htmlspecialchars($app['phone']); ?>
-                                            </span>
-                                        <?php endif; ?>
-                                        <?php if (!empty($app['address'])): ?>
-                                            <span>
-                                                <span class="material-symbols-outlined">location_on</span>
-                                                <?php echo htmlspecialchars($app['address']); ?>
-                                            </span>
-                                        <?php endif; ?>
-                                        <span>
-                                            <span class="material-symbols-outlined">schedule</span>
-                                            Applied <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?>
-                                        </span>
-                                        <?php if ($app['other_applications'] > 0): ?>
-                                            <span style="color:var(--primary);">
-                                                <span class="material-symbols-outlined">info</span>
-                                                <?php echo $app['other_applications']; ?> other application<?php echo $app['other_applications'] > 1 ? 's' : ''; ?>
-                                            </span>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                                <span class="badge badge-<?php echo $app['status']; ?>">
-                                    <?php echo ucfirst($app['status']); ?>
-                                </span>
+                    <form method="GET" class="search-box">
+                        <input type="hidden" name="status" value="<?php echo htmlspecialchars($statusFilter); ?>">
+                        <span class="material-symbols-outlined">search</span>
+                        <input type="text" name="search" placeholder="Search invoice # or description..." value="<?php echo htmlspecialchars($searchQuery); ?>">
+                    </form>
+                </div>
+
+                <!-- Invoice Table -->
+                <div class="invoice-card">
+                    <div class="invoice-header">
+                        <div class="invoice-title">Invoices</div>
+                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                            <?php echo count($filteredInvoices); ?> invoices
+                        </span>
+                    </div>
+                    <div class="invoice-body">
+                        <?php if (empty($filteredInvoices)): ?>
+                            <div class="empty-state">
+                                <span class="material-symbols-outlined">receipt_long</span>
+                                <h3>No invoices found</h3>
+                                <p>
+                                    <?php if ($statusFilter !== 'all' || !empty($searchQuery)): ?>
+                                        No invoices match your current filters.
+                                        <a href="invoices.php" style="color:var(--primary); font-weight:600;">Clear filters</a>
+                                    <?php else: ?>
+                                        You don't have any invoices yet.
+                                    <?php endif; ?>
+                                </p>
                             </div>
-                            <div class="applicant-actions">
-                                <form method="POST" style="display:flex; gap:0.375rem; flex-wrap:wrap; align-items:center;">
-                                    <input type="hidden" name="action" value="update_applicant_status">
-                                    <input type="hidden" name="application_id" value="<?php echo $app['id']; ?>">
-                                    <select name="new_status" class="applicant-status-select" onchange="this.form.submit()">
-                                        <option value="pending" <?php echo $app['status'] === 'pending' ? 'selected' : ''; ?>>Pending</option>
-                                        <option value="reviewed" <?php echo $app['status'] === 'reviewed' ? 'selected' : ''; ?>>Reviewed</option>
-                                        <option value="shortlisted" <?php echo $app['status'] === 'shortlisted' ? 'selected' : ''; ?>>Shortlist</option>
-                                        <option value="hired" <?php echo $app['status'] === 'hired' ? 'selected' : ''; ?>>Hire</option>
-                                        <option value="rejected" <?php echo $app['status'] === 'rejected' ? 'selected' : ''; ?>>Reject</option>
-                                    </select>
-                                    <button type="submit" class="btn btn-sm btn-primary" style="padding:0.25rem 0.625rem;">
-                                        <span class="material-symbols-outlined" style="font-size:0.875rem;">update</span>
-                                        Update
-                                    </button>
-                                </form>
-                                <?php if (!empty($app['resume_path'])): ?>
-                                    <a href="<?php echo htmlspecialchars($app['resume_path']); ?>" target="_blank" class="btn btn-sm btn-outline">
-                                        <span class="material-symbols-outlined" style="font-size:0.875rem;">description</span>
-                                        Resume
-                                    </a>
-                                <?php endif; ?>
+                        <?php else: ?>
+                            <div style="overflow-x:auto;">
+                                <table class="invoice-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Invoice #</th>
+                                            <th>Date</th>
+                                            <th>Description</th>
+                                            <th>Amount</th>
+                                            <th>Status</th>
+                                            <th style="text-align:center;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($filteredInvoices as $invoice): ?>
+                                            <tr>
+                                                <td>
+                                                    <span style="font-weight:600; color:var(--text-on-surface);">
+                                                        #<?php echo htmlspecialchars($invoice['invoice_number'] ?? 'N/A'); ?>
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <?php echo date('M d, Y', strtotime($invoice['invoice_date'] ?? 'now')); ?>
+                                                </td>
+                                                <td>
+                                                    <div style="font-size:0.8125rem; color:var(--text-on-surface-variant); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                                        <?php echo htmlspecialchars($invoice['description'] ?? '—'); ?>
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <span style="font-weight:700; color:var(--text-on-surface);">
+                                                        ₱<?php echo number_format($invoice['amount'] ?? 0, 2); ?>
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <span class="badge <?php echo $statusBadges[$invoice['status']] ?? 'badge-pending'; ?>">
+                                                        <?php echo $statusLabels[$invoice['status']] ?? ucfirst($invoice['status']); ?>
+                                                    </span>
+                                                </td>
+                                                <td style="text-align:center;">
+                                                    <button class="btn btn-primary btn-sm" onclick="viewInvoice(<?php echo $invoice['id']; ?>)">
+                                                        <span class="material-symbols-outlined">visibility</span>
+                                                        View
+                                                    </button>
+                                                    <button class="btn btn-outline btn-sm" onclick="downloadInvoice(<?php echo $invoice['id']; ?>)">
+                                                        <span class="material-symbols-outlined">download</span>
+                                                        Download
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
                             </div>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
 
+    <!-- =============================================
+    INVOICE DETAILS MODAL
+    ============================================= -->
+    <div class="modal-overlay" id="invoiceModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>
+                    <span class="material-symbols-outlined">receipt_long</span>
+                    Invoice Details
+                </h2>
+                <button class="modal-close" onclick="closeInvoiceModal()">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+            <div class="modal-body" id="invoiceModalBody">
+                <div id="invoiceContent">
+                    <!-- Content will be loaded via AJAX -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeInvoiceModal()">Close</button>
+                <button class="btn btn-primary" id="downloadInvoiceBtn" style="display:none;" onclick="downloadInvoiceFromModal()">
+                    <span class="material-symbols-outlined">download</span>
+                    Download PDF
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- =============================================
+    JAVASCRIPT
+    ============================================= -->
     <script>
         // =============================================
-        // SIDEBAR TOGGLE
+        // 1. SIDEBAR TOGGLE
         // =============================================
         const sidebar = document.getElementById('appSidebar');
         const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
@@ -1350,7 +1347,7 @@ if (isset($_SESSION['toast_message'])) {
         });
 
         // =============================================
-        // MOBILE SIDEBAR
+        // 2. MOBILE SIDEBAR
         // =============================================
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         const sidebarBackdrop = document.getElementById('sidebarBackdrop');
@@ -1370,8 +1367,14 @@ if (isset($_SESSION['toast_message'])) {
         mobileMenuBtn.addEventListener('click', openMobileSidebar);
         sidebarBackdrop.addEventListener('click', closeMobileSidebar);
 
+        document.querySelectorAll('.sidebar-main-link').forEach(link => {
+            link.addEventListener('click', function() {
+                if (window.innerWidth <= 768) closeMobileSidebar();
+            });
+        });
+
         // =============================================
-        // PROFILE DROPDOWN
+        // 3. PROFILE DROPDOWN
         // =============================================
         const profileToggle = document.getElementById('profileToggle');
         const profileMenu = document.getElementById('profileMenu');
@@ -1390,18 +1393,87 @@ if (isset($_SESSION['toast_message'])) {
         });
 
         // =============================================
-        // KEYBOARD SHORTCUTS
+        // 4. VIEW INVOICE
         // =============================================
+        function viewInvoice(id) {
+            const modal = document.getElementById('invoiceModal');
+            const content = document.getElementById('invoiceContent');
+            const downloadBtn = document.getElementById('downloadInvoiceBtn');
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+
+            content.innerHTML = '<div style="text-align:center; padding:2rem;"><div class="spinner" style="width:2rem; height:2rem; border:3px solid var(--slate-200); border-top-color:var(--primary); border-radius:50%; animation:spin 0.8s linear infinite; margin:0 auto;"></div><p style="margin-top:0.5rem; color:var(--text-on-surface-variant);">Loading invoice...</p></div>';
+            downloadBtn.style.display = 'none';
+
+            // Fetch invoice data
+            fetch('ajax/get_invoice.php?id=' + id)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    content.innerHTML = data.html;
+                    downloadBtn.style.display = 'flex';
+                    downloadBtn.dataset.id = id;
+                } else {
+                    content.innerHTML = `
+                        <div style="text-align:center; padding:2rem; color:#dc2626;">
+                            <span class="material-symbols-outlined" style="font-size:3rem;">error</span>
+                            <p style="margin-top:0.5rem;">${data.error || 'Failed to load invoice.'}</p>
+                        </div>
+                    `;
+                    downloadBtn.style.display = 'none';
+                }
+            })
+            .catch(error => {
+                content.innerHTML = `
+                    <div style="text-align:center; padding:2rem; color:#dc2626;">
+                        <span class="material-symbols-outlined" style="font-size:3rem;">error</span>
+                        <p style="margin-top:0.5rem;">Error loading invoice. Please try again.</p>
+                    </div>
+                `;
+                downloadBtn.style.display = 'none';
+            });
+        }
+
+        // =============================================
+        // 5. CLOSE INVOICE MODAL
+        // =============================================
+        function closeInvoiceModal() {
+            const modal = document.getElementById('invoiceModal');
+            modal.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        // Close modal on overlay click
+        document.getElementById('invoiceModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeInvoiceModal();
+            }
+        });
+
+        // Close modal on Escape key
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
-                closeMobileSidebar();
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
+                closeInvoiceModal();
             }
         });
 
         // =============================================
-        // RESPONSIVE HANDLING
+        // 6. DOWNLOAD INVOICE
+        // =============================================
+        function downloadInvoice(id) {
+            window.location.href = 'ajax/download_invoice.php?id=' + id;
+        }
+
+        function downloadInvoiceFromModal() {
+            const id = document.getElementById('downloadInvoiceBtn').dataset.id;
+            if (id) {
+                downloadInvoice(id);
+            }
+        }
+
+        // =============================================
+        // 7. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -1424,8 +1496,7 @@ if (isset($_SESSION['toast_message'])) {
             }, 250);
         });
 
-        console.log('📋 ISMERS Job Details loaded successfully!');
+        console.log('📄 Invoices loaded successfully!');
     </script>
-
 </body>
 </html>

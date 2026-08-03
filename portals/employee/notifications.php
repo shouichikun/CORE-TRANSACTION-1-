@@ -1,5 +1,5 @@
 <?php
-// portals/employee/dashboard.php - Employee Dashboard (CLEAN & PROFESSIONAL)
+// portals/employee/notifications.php - Employee Notifications
 session_start();
 
 // =============================================
@@ -30,119 +30,97 @@ $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 
 // =============================================
-// GET EMPLOYEE DATA - ONLY EXISTING COLUMNS
+// GET ALL NOTIFICATIONS
 // =============================================
-$employee = getRecord("
-    SELECT e.*, 
-           u.first_name, u.last_name, u.email, 
-           u.gender, u.birth_date
-    FROM employees e
-    JOIN users u ON e.user_id = u.id
-    WHERE e.user_id = ?
+$notifications = getRecords("
+    SELECT * FROM notifications 
+    WHERE user_id = ? 
+    ORDER BY created_at DESC
 ", [$userId], "i");
 
-if (!$employee) {
-    // Create employee record if doesn't exist
-    $insertSql = "INSERT INTO employees (user_id, first_name, last_name, email, hire_date, status, created_at) 
-                  VALUES (?, ?, ?, ?, NOW(), 'active', NOW())";
-    $newId = insertRecord($insertSql, [
-        $userId,
-        $firstName,
-        $_SESSION['last_name'] ?? 'User',
-        $email
-    ], "isss");
-    
-    if ($newId) {
-        $employee = getRecord("
-            SELECT e.*, 
-                   u.first_name, u.last_name, u.email, 
-                   u.gender, u.birth_date
-            FROM employees e
-            JOIN users u ON e.user_id = u.id
-            WHERE e.user_id = ?
-        ", [$userId], "i");
+// Count unread
+$unreadCount = 0;
+foreach ($notifications as $notif) {
+    if ($notif['is_read'] == 0) {
+        $unreadCount++;
     }
 }
 
 // =============================================
-// GET EMPLOYEE DETAILS WITH JOB INFO
+// HANDLE AJAX REQUESTS
 // =============================================
-$employeeDetails = getRecord("
-    SELECT e.*, 
-           jo.id as job_id, jo.title as job_title, jo.description as job_description,
-           jo.location as job_location, jo.job_type, jo.salary_range,
-           c.company_name, c.id as company_id,
-           a.id as application_id, a.interview_date, a.applied_at as hired_at
-    FROM employees e
-    LEFT JOIN applications a ON e.application_id = a.id
-    LEFT JOIN job_orders jo ON a.job_order_id = jo.id
-    LEFT JOIN clients c ON jo.client_id = c.id
-    WHERE e.user_id = ?
-", [$userId], "i");
-
-// =============================================
-// GET ATTENDANCE DATA
-// =============================================
-$todayAttendance = getRecord("
-    SELECT * FROM attendance 
-    WHERE user_id = ? AND DATE(check_in_time) = CURDATE()
-", [$userId], "i");
-
-$hasCheckedIn = $todayAttendance && !empty($todayAttendance['check_in_time']) && empty($todayAttendance['check_out_time']);
-$hasCheckedOut = $todayAttendance && !empty($todayAttendance['check_out_time']);
-
-// Get attendance stats for the month
-$attendanceStats = getRecord("
-    SELECT 
-        COUNT(DISTINCT DATE(check_in_time)) as total_days,
-        SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) as days_present,
-        SUM(CASE WHEN check_in_time IS NULL THEN 1 ELSE 0 END) as days_absent
-    FROM attendance 
-    WHERE user_id = ? AND MONTH(check_in_time) = MONTH(CURDATE()) AND YEAR(check_in_time) = YEAR(CURDATE())
-", [$userId], "i");
-
-// Get recent attendance records (last 7 days)
-$recentAttendance = getRecords("
-    SELECT * FROM attendance 
-    WHERE user_id = ? 
-    ORDER BY check_in_time DESC
-    LIMIT 7
-", [$userId], "i");
-
-// =============================================
-// GET NOTIFICATION COUNT
-// =============================================
-$notificationCount = getRecord("
-    SELECT COUNT(*) as count FROM notifications 
-    WHERE user_id = ? AND is_read = 0
-", [$userId], "i");
-$totalNotifications = $notificationCount['count'] ?? 0;
-
-// =============================================
-// CALCULATE TENURE
-// =============================================
-$hireDate = $employee['hire_date'] ?? date('Y-m-d');
-$tenureDays = floor((time() - strtotime($hireDate)) / (60 * 60 * 24));
-$tenureYears = floor($tenureDays / 365);
-$tenureMonths = floor(($tenureDays % 365) / 30);
-$tenureDaysRemaining = $tenureDays % 30;
-
-$tenureString = '';
-if ($tenureYears > 0) {
-    $tenureString .= $tenureYears . ' year' . ($tenureYears > 1 ? 's' : '');
-}
-if ($tenureMonths > 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureMonths . ' month' . ($tenureMonths > 1 ? 's' : '');
-}
-if ($tenureDaysRemaining > 0 && $tenureYears == 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureDaysRemaining . ' day' . ($tenureDaysRemaining > 1 ? 's' : '');
-}
-if (empty($tenureString)) {
-    $tenureString = 'New hire';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
+    header('Content-Type: application/json');
+    
+    $action = $_POST['action'] ?? '';
+    
+    // MARK ALL AS READ
+    if ($action === 'mark_all_read') {
+        $sql = "UPDATE notifications SET is_read = 1, read_at = NOW() WHERE user_id = ? AND is_read = 0";
+        $result = updateRecord($sql, [$userId], "i");
+        
+        if ($result) {
+            echo json_encode(['success' => true, 'message' => 'All notifications marked as read.']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to mark notifications as read.']);
+        }
+        exit;
+    }
+    
+    // MARK SINGLE AS READ
+    if ($action === 'mark_read') {
+        $notificationId = isset($_POST['notification_id']) ? (int)$_POST['notification_id'] : 0;
+        
+        if ($notificationId > 0) {
+            $sql = "UPDATE notifications SET is_read = 1, read_at = NOW() WHERE id = ? AND user_id = ?";
+            $result = updateRecord($sql, [$notificationId, $userId], "ii");
+            
+            if ($result) {
+                echo json_encode(['success' => true, 'message' => 'Notification marked as read.']);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'Failed to mark notification as read.']);
+            }
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Invalid notification ID.']);
+        }
+        exit;
+    }
+    
+    // DELETE NOTIFICATION
+    if ($action === 'delete') {
+        $notificationId = isset($_POST['notification_id']) ? (int)$_POST['notification_id'] : 0;
+        
+        if ($notificationId > 0) {
+            $sql = "DELETE FROM notifications WHERE id = ? AND user_id = ?";
+            $result = deleteRecord($sql, [$notificationId, $userId], "ii");
+            
+            if ($result) {
+                echo json_encode(['success' => true, 'message' => 'Notification deleted.']);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'Failed to delete notification.']);
+            }
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Invalid notification ID.']);
+        }
+        exit;
+    }
+    
+    echo json_encode(['success' => false, 'error' => 'Invalid action.']);
+    exit;
 }
 
 // =============================================
-// GET GREETING (SIMPLE)
+// GET UNREAD COUNT FOR BADGE (AJAX)
+// =============================================
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'count') {
+    header('Content-Type: application/json');
+    $count = getRecord("SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0", [$userId], "i");
+    echo json_encode(['count' => $count['count'] ?? 0]);
+    exit;
+}
+
+// =============================================
+// GET GREETING
 // =============================================
 $currentHour = date('H');
 $greeting = 'Good Evening';
@@ -157,12 +135,12 @@ if ($currentHour < 12) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Employee Dashboard - ISMERS</title>
+    <title>Notifications - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - EMPLOYEE DASHBOARD (CLEAN)
+           MATERIAL 3 DESIGN SYSTEM - NOTIFICATIONS
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -215,7 +193,7 @@ if ($currentHour < 12) {
         a { text-decoration: none; color: inherit; }
 
         /* =============================================
-           SIDEBAR (MATCHING PROFILE.PHP)
+           SIDEBAR
         ============================================= */
         .dashboard-sidebar {
             position: fixed;
@@ -608,175 +586,89 @@ if ($currentHour < 12) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
 
         /* =============================================
-           WELCOME CARD (CLEAN & COMPACT)
+           NOTIFICATION LIST
         ============================================= */
-        .welcome-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-sm);
-            padding: 1.5rem 2rem;
-            margin-bottom: 1.5rem;
+        .notification-list {
             display: flex;
             flex-direction: column;
-            gap: 0.5rem;
-        }
-        @media (min-width: 640px) {
-            .welcome-card {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
-        }
-        .welcome-card .welcome-text h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-on-surface); }
-        .welcome-card .welcome-text p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
-        .welcome-card .welcome-text .company-name { color: var(--primary); font-weight: 600; }
-        .welcome-card .welcome-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-
-        /* =============================================
-           STATS CARDS
-        ============================================= */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr;
             gap: 0.75rem;
-            margin-bottom: 1.5rem;
         }
-        @media (min-width: 480px) { .stats-grid { grid-template-columns: 1fr 1fr; } }
-        @media (min-width: 768px) { .stats-grid { grid-template-columns: repeat(4, 1fr); } }
 
-        .stat-card {
+        .notification-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            padding: 1rem 1.25rem;
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
-            padding: 1rem 1.25rem;
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
+            transition: all var(--transition-fast);
         }
-        .stat-card .stat-top {
+        .notification-item:hover {
+            box-shadow: var(--shadow-md);
+            border-color: var(--slate-300);
+        }
+        .notification-item.unread {
+            border-left: 4px solid var(--primary);
+            background: var(--bg-surface-low);
+        }
+        .notification-item.read {
+            opacity: 0.7;
+        }
+        .notification-item .notif-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-        }
-        .stat-card .stat-number { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); line-height: 1.2; }
-        .stat-card .stat-label { font-size: 0.6875rem; color: var(--text-on-surface-variant); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-top: 0.125rem; }
-        .stat-card .stat-icon {
-            display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 2.25rem;
-            height: 2.25rem;
-            border-radius: 0.5rem;
-            background: rgba(79, 70, 229, 0.1);
-            color: var(--primary);
-        }
-        .stat-card .stat-icon.green { background: rgba(34, 197, 94, 0.1); color: #22c55e; }
-        .stat-card .stat-icon.red { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
-        .stat-card .stat-icon.yellow { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
-        .stat-card .stat-icon.blue { background: rgba(37, 99, 235, 0.1); color: #2563eb; }
-        .stat-card .stat-icon .material-symbols-outlined { font-size: 1.25rem; }
-
-        /* =============================================
-           ATTENDANCE STATUS
-        ============================================= */
-        .attendance-status {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1.5rem;
-            padding: 1rem 1.25rem;
-            background: var(--bg-surface-low);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            margin-bottom: 1.25rem;
-        }
-        .attendance-status .status-item {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .attendance-status .status-item .status-dot {
-            width: 0.625rem;
-            height: 0.625rem;
-            border-radius: 50%;
             flex-shrink: 0;
         }
-        .attendance-status .status-item .status-dot.green { background: var(--success-color); }
-        .attendance-status .status-item .status-dot.red { background: var(--error-color); }
-        .attendance-status .status-item .status-dot.yellow { background: var(--warning-color); }
-        .attendance-status .status-item .status-dot.gray { background: var(--slate-500); }
-        .attendance-status .status-item .status-label { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
-        .attendance-status .status-item .status-value { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
-
-        /* =============================================
-           CARD
-        ============================================= */
-        .card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-sm);
-            overflow: hidden;
+        .notification-item .notif-icon.info { background: rgba(79, 70, 229, 0.1); color: var(--primary); }
+        .notification-item .notif-icon.success { background: rgba(34, 197, 94, 0.1); color: #22c55e; }
+        .notification-item .notif-icon.warning { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
+        .notification-item .notif-icon.error { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
+        .notification-item .notif-icon .material-symbols-outlined { font-size: 1.25rem; }
+        .notification-item .notif-content {
+            flex: 1;
         }
-        .card-header {
-            padding: 1.25rem 1.5rem;
-            border-bottom: 1px solid var(--slate-200);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.75rem;
+        .notification-item .notif-content .notif-title {
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
         }
-        .card-header h3 {
-            font-size: 1rem;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.625rem;
-        }
-        .card-header h3 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
-        .card-header .card-action { font-size: 0.8125rem; color: var(--primary); font-weight: 600; text-decoration: none; }
-        .card-header .card-action:hover { text-decoration: underline; }
-        .card-body { padding: 1.25rem 1.5rem; }
-
-        .attendance-table {
-            width: 100%;
-            border-collapse: collapse;
+        .notification-item .notif-content .notif-message {
             font-size: 0.8125rem;
-        }
-        .attendance-table thead { background: var(--bg-surface-low); }
-        .attendance-table th {
-            padding: 0.5rem 0.75rem;
-            text-align: left;
-            font-weight: 600;
-            font-size: 0.6875rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
             color: var(--text-on-surface-variant);
-            border-bottom: 2px solid var(--slate-200);
+            margin-top: 0.125rem;
         }
-        .attendance-table td {
-            padding: 0.5rem 0.75rem;
-            border-bottom: 1px solid var(--slate-200);
-            vertical-align: middle;
+        .notification-item .notif-content .notif-time {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
         }
-        .attendance-table tr:last-child td { border-bottom: none; }
-        .attendance-table .status-badge {
-            display: inline-block;
-            padding: 0.125rem 0.5rem;
-            border-radius: var(--radius-full);
+        .notification-item .notif-content .notif-time .material-symbols-outlined { font-size: 0.875rem; }
+        .notification-item .notif-actions {
+            display: flex;
+            gap: 0.25rem;
+            flex-shrink: 0;
+        }
+        .notification-item .notif-actions .btn-sm {
+            padding: 0.25rem 0.5rem;
             font-size: 0.625rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
-        .attendance-table .status-badge.present { background: #d1fae5; color: #059669; }
-        .attendance-table .status-badge.absent { background: #fecaca; color: #dc2626; }
+        .notification-item .notif-actions .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
         .empty-state {
             text-align: center;
-            padding: 2rem 1.5rem;
+            padding: 4rem 1.5rem;
         }
-        .empty-state .material-symbols-outlined { font-size: 3rem; color: var(--slate-200); display: block; margin-bottom: 0.75rem; }
-        .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state .material-symbols-outlined { font-size: 4rem; color: var(--slate-200); display: block; margin-bottom: 1rem; }
+        .empty-state h4 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
 
         .toast {
@@ -820,20 +712,14 @@ if ($currentHour < 12) {
             .top-header-left .separator { display: none; }
             .profile-dropdown-toggle .profile-name,
             .profile-dropdown-toggle .profile-role { display: none; }
-            .welcome-card { padding: 1rem; }
-            .stats-grid { grid-template-columns: 1fr 1fr; }
-            .attendance-table { font-size: 0.75rem; }
+            .notification-item { flex-direction: column; align-items: stretch; }
+            .notification-item .notif-actions { align-self: flex-end; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
             .breadcrumb-bar { padding: 0.75rem 1rem; }
             .page-header h1 { font-size: 1.25rem; }
-            .stats-grid { grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-            .stat-card { padding: 0.75rem 1rem; }
-            .stat-card .stat-number { font-size: 1.25rem; }
-            .card-header { padding: 0.75rem 1rem; }
-            .card-body { padding: 0.75rem 1rem; }
-            .attendance-table { font-size: 0.6875rem; min-width: 300px; }
+            .notification-item { padding: 0.75rem 1rem; }
         }
         .main-scroll::-webkit-scrollbar { width: 6px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -845,7 +731,7 @@ if ($currentHour < 12) {
 
 <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-<!-- ===== SIDEBAR (MATCHING PROFILE.PHP) ===== -->
+<!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
@@ -856,7 +742,7 @@ if ($currentHour < 12) {
     </div>
     <nav class="sidebar-nav">
         <div class="nav-label">Main</div>
-        <a href="dashboard.php" class="sidebar-main-link active">
+        <a href="dashboard.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">dashboard</span>
             <span class="nav-text">Dashboard</span>
         </a>
@@ -884,9 +770,12 @@ if ($currentHour < 12) {
             <span class="material-symbols-outlined">group</span>
             <span class="nav-text">Directory</span>
         </a>
-        <a href="announcements.php" class="sidebar-main-link">
-            <span class="material-symbols-outlined">campaign</span>
-            <span class="nav-text">Announcements</span>
+        <a href="notifications.php" class="sidebar-main-link active">
+            <span class="material-symbols-outlined">notifications</span>
+            <span class="nav-text">Notifications</span>
+            <?php if ($unreadCount > 0): ?>
+                <span class="nav-badge"><?php echo $unreadCount; ?></span>
+            <?php endif; ?>
         </a>
     </nav>
     <div class="sidebar-footer">
@@ -908,18 +797,9 @@ if ($currentHour < 12) {
             <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><span class="material-symbols-outlined">menu</span></button>
             <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar"><span class="material-symbols-outlined">chevron_left</span></button>
             <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem;">Dashboard</span>
+            <span style="font-weight:600; font-size:0.875rem;">Notifications</span>
         </div>
         <div style="display:flex; align-items:center; gap:0.5rem;">
-            <!-- Notification Bell with Click Handler -->
-            <div class="notification-wrapper" style="position:relative;">
-                <button class="notification-btn" id="notificationBtn" onclick="viewNotifications()" style="background:none;border:none;cursor:pointer;padding:0.5rem;border-radius:0.75rem;color:var(--text-on-surface-variant);position:relative;">
-                    <span class="material-symbols-outlined" style="font-size:1.5rem;">notifications</span>
-                    <span class="notification-badge" id="notifBadge" style="position:absolute;top:0.25rem;right:0.25rem;background:#dc2626;color:white;font-size:0.625rem;font-weight:700;min-width:1.25rem;height:1.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0 0.25rem;<?php echo $totalNotifications > 0 ? '' : 'display:none;'; ?>">
-                        <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
-                    </span>
-                </button>
-            </div>
             <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
@@ -944,155 +824,73 @@ if ($currentHour < 12) {
             <!-- Breadcrumb -->
             <div class="breadcrumb-bar">
                 <div class="breadcrumb-view">
-                    <span class="material-symbols-outlined">dashboard</span>
-                    <span>Dashboard</span>
+                    <span class="material-symbols-outlined">notifications</span>
+                    <span>Notifications</span>
                     <span class="status-dot"></span>
                     <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                    <span style="font-weight:400; color:var(--text-on-surface-variant);"><?php echo date('l, F j, Y'); ?></span>
-                </div>
-                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">Tenure: <?php echo $tenureString; ?></span>
-            </div>
-
-            <!-- Clean Welcome Card -->
-            <div class="welcome-card">
-                <div class="welcome-text">
-                    <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
-                    <p>
-                        Welcome to your dashboard.
-                        <?php if ($employeeDetails && $employeeDetails['company_name']): ?>
-                            <span class="company-name"><?php echo htmlspecialchars($employeeDetails['company_name']); ?></span> • 
-                            <?php echo htmlspecialchars($employee['position'] ?? 'Employee'); ?>
-                        <?php endif; ?>
-                    </p>
-                </div>
-                <div class="welcome-actions">
-                    <?php if (!$hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-success btn-sm" onclick="checkIn()"><span class="material-symbols-outlined">login</span> Check In</button>
-                    <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-danger btn-sm" onclick="checkOut()"><span class="material-symbols-outlined">logout</span> Check Out</button>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">verified</span> Checked In</span>
-                    <?php else: ?>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">check_circle</span> Completed</span>
-                    <?php endif; ?>
-                </div>
-            </div>
-
-            <!-- Stats -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number"><?php echo $attendanceStats['days_present'] ?? 0; ?></div>
-                            <div class="stat-label">Days Present</div>
-                        </div>
-                        <div class="stat-icon green"><span class="material-symbols-outlined">check_circle</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#dc2626;"><?php echo $attendanceStats['days_absent'] ?? 0; ?></div>
-                            <div class="stat-label">Days Absent</div>
-                        </div>
-                        <div class="stat-icon red"><span class="material-symbols-outlined">event_busy</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#f59e0b;"><?php echo $attendanceStats['days_late'] ?? 0; ?></div>
-                            <div class="stat-label">Late Arrivals</div>
-                        </div>
-                        <div class="stat-icon yellow"><span class="material-symbols-outlined">warning</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#2563eb;"><?php echo $attendanceStats['days_overtime'] ?? 0; ?></div>
-                            <div class="stat-label">Overtime Days</div>
-                        </div>
-                        <div class="stat-icon blue"><span class="material-symbols-outlined">timer</span></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Attendance Status -->
-            <div class="attendance-status">
-                <div class="status-item">
-                    <span class="status-dot <?php echo $hasCheckedIn ? 'green' : 'gray'; ?>"></span>
-                    <span class="status-label">Today's Status:</span>
-                    <span class="status-value">
-                        <?php 
-                        if ($hasCheckedOut) echo 'Checked Out';
-                        elseif ($hasCheckedIn) echo 'Checked In';
-                        else echo 'Not Checked In';
-                        ?>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo $unreadCount; ?> unread · <?php echo count($notifications); ?> total
                     </span>
                 </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">This Month:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_present'] ?? 0; ?>/<?php echo $attendanceStats['total_days'] ?? 0; ?> days</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot yellow"></span>
-                    <span class="status-label">Late:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_late'] ?? 0; ?>x</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">Overtime:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_overtime'] ?? 0; ?>x</span>
+                <div style="display:flex; gap:0.5rem;">
+                    <?php if ($unreadCount > 0): ?>
+                        <button class="btn btn-primary btn-sm" onclick="markAllRead()">
+                            <span class="material-symbols-outlined">done_all</span>
+                            Mark All Read
+                        </button>
+                    <?php endif; ?>
                 </div>
             </div>
 
-            <!-- Recent Attendance -->
-            <div class="card">
-                <div class="card-header">
-                    <h3><span class="material-symbols-outlined">history</span> Recent Attendance</h3>
-                    <a href="attendance.php" class="card-action">View All →</a>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Notifications</h1>
+                    <p>Stay updated with the latest announcements and alerts</p>
                 </div>
-                <div class="card-body">
-                    <?php if (empty($recentAttendance)): ?>
-                        <div class="empty-state">
-                            <span class="material-symbols-outlined">inbox</span>
-                            <h4>No Attendance Records</h4>
-                            <p>Your attendance records will appear here once you start checking in.</p>
+            </div>
+
+            <!-- Notification List -->
+            <div class="notification-list" id="notificationList">
+                <?php if (empty($notifications)): ?>
+                    <div class="empty-state">
+                        <span class="material-symbols-outlined">notifications_off</span>
+                        <h4>All Clear!</h4>
+                        <p>You don't have any notifications at the moment.</p>
+                    </div>
+                <?php else: ?>
+                    <?php foreach ($notifications as $notif): ?>
+                        <?php
+                        $isUnread = $notif['is_read'] == 0;
+                        $icon = $notif['icon'] ?? 'info';
+                        $type = $notif['type'] ?? 'info';
+                        $timeAgo = time_elapsed_string($notif['created_at']);
+                        ?>
+                        <div class="notification-item <?php echo $isUnread ? 'unread' : 'read'; ?>" id="notif-<?php echo $notif['id']; ?>">
+                            <div class="notif-icon <?php echo $type; ?>">
+                                <span class="material-symbols-outlined"><?php echo $icon; ?></span>
+                            </div>
+                            <div class="notif-content">
+                                <div class="notif-title"><?php echo htmlspecialchars($notif['title']); ?></div>
+                                <div class="notif-message"><?php echo htmlspecialchars($notif['message']); ?></div>
+                                <div class="notif-time">
+                                    <span class="material-symbols-outlined">schedule</span>
+                                    <?php echo $timeAgo; ?>
+                                </div>
+                            </div>
+                            <div class="notif-actions">
+                                <?php if ($isUnread): ?>
+                                    <button class="btn btn-success btn-sm" onclick="markRead(<?php echo $notif['id']; ?>)">
+                                        <span class="material-symbols-outlined">check</span>
+                                    </button>
+                                <?php endif; ?>
+                                <button class="btn btn-danger btn-sm" onclick="deleteNotification(<?php echo $notif['id']; ?>)">
+                                    <span class="material-symbols-outlined">delete</span>
+                                </button>
+                            </div>
                         </div>
-                    <?php else: ?>
-                        <div style="overflow-x:auto;">
-                            <table class="attendance-table">
-                                <thead>
-                                    <tr>
-                                        <th>Date</th>
-                                        <th>Check In</th>
-                                        <th>Check Out</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($recentAttendance as $record): ?>
-                                        <?php
-                                        $status = 'present';
-                                        $statusLabel = 'Present';
-                                        if (!$record['check_in_time']) {
-                                            $status = 'absent';
-                                            $statusLabel = 'Absent';
-                                        }
-                                        ?>
-                                        <tr>
-                                            <td><?php echo date('M d, Y', strtotime($record['check_in_time'] ?? $record['created_at'])); ?></td>
-                                            <td><?php echo $record['check_in_time'] ? date('h:i A', strtotime($record['check_in_time'])) : '—'; ?></td>
-                                            <td><?php echo $record['check_out_time'] ? date('h:i A', strtotime($record['check_out_time'])) : '—'; ?></td>
-                                            <td><span class="status-badge <?php echo $status; ?>"><?php echo $statusLabel; ?></span></td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php endif; ?>
-                </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
             </div>
         </div>
     </main>
@@ -1173,74 +971,133 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 4. NOTIFICATION BUTTON - FIXED
+    // 4. MARK ALL READ
     // =============================================
-    function viewNotifications() {
-        // Redirect to notifications page or open modal
-        window.location.href = 'notifications.php';
-    }
+    function markAllRead() {
+        if (!confirm('Mark all notifications as read?')) return;
 
-    // =============================================
-    // 5. CHECK IN / CHECK OUT
-    // =============================================
-    function checkIn() {
-        const btn = event.target.closest('button');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
+        const formData = new FormData();
+        formData.append('action', 'mark_all_read');
 
-        fetch('ajax/attendance.php', {
+        fetch('notifications.php', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=check_in'
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                showToast('Checked in successfully at ' + data.time, 'success');
-                setTimeout(() => location.reload(), 1500);
+                showToast(data.message, 'success');
+                setTimeout(() => location.reload(), 1000);
             } else {
-                showToast(data.error || 'Failed to check in.', 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
+                showToast(data.error || 'Failed to mark all as read.', 'error');
             }
         })
         .catch(error => {
-            showToast('Error checking in. Please try again.', 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
-        });
-    }
-
-    function checkOut() {
-        const btn = event.target.closest('button');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
-
-        fetch('ajax/attendance.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=check_out'
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast('Checked out successfully at ' + data.time, 'success');
-                setTimeout(() => location.reload(), 1500);
-            } else {
-                showToast(data.error || 'Failed to check out.', 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
-            }
-        })
-        .catch(error => {
-            showToast('Error checking out. Please try again.', 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
+            showToast('Error. Please try again.', 'error');
         });
     }
 
     // =============================================
-    // 6. TOAST SYSTEM
+    // 5. MARK SINGLE READ
+    // =============================================
+    function markRead(id) {
+        const formData = new FormData();
+        formData.append('action', 'mark_read');
+        formData.append('notification_id', id);
+
+        fetch('notifications.php', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const item = document.getElementById('notif-' + id);
+                if (item) {
+                    item.classList.remove('unread');
+                    item.classList.add('read');
+                    // Remove the mark button
+                    const markBtn = item.querySelector('.btn-success');
+                    if (markBtn) markBtn.remove();
+                    // Update badge
+                    updateBadge();
+                }
+                showToast(data.message, 'success');
+            } else {
+                showToast(data.error || 'Failed to mark as read.', 'error');
+            }
+        })
+        .catch(error => {
+            showToast('Error. Please try again.', 'error');
+        });
+    }
+
+    // =============================================
+    // 6. DELETE NOTIFICATION
+    // =============================================
+    function deleteNotification(id) {
+        if (!confirm('Delete this notification?')) return;
+
+        const formData = new FormData();
+        formData.append('action', 'delete');
+        formData.append('notification_id', id);
+
+        fetch('notifications.php', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const item = document.getElementById('notif-' + id);
+                if (item) item.remove();
+                // Check if empty
+                const list = document.getElementById('notificationList');
+                if (list && list.children.length === 0) {
+                    list.innerHTML = `
+                        <div class="empty-state">
+                            <span class="material-symbols-outlined">notifications_off</span>
+                            <h4>All Clear!</h4>
+                            <p>You don't have any notifications at the moment.</p>
+                        </div>
+                    `;
+                }
+                updateBadge();
+                showToast(data.message, 'success');
+            } else {
+                showToast(data.error || 'Failed to delete.', 'error');
+            }
+        })
+        .catch(error => {
+            showToast('Error. Please try again.', 'error');
+        });
+    }
+
+    // =============================================
+    // 7. UPDATE BADGE
+    // =============================================
+    function updateBadge() {
+        fetch('notifications.php?ajax=count')
+        .then(response => response.json())
+        .then(data => {
+            const badge = document.querySelector('.nav-badge');
+            if (badge) {
+                if (data.count > 0) {
+                    badge.textContent = data.count;
+                    badge.style.display = 'block';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+        })
+        .catch(error => console.error('Error updating badge:', error));
+    }
+
+    // =============================================
+    // 8. TOAST SYSTEM
     // =============================================
     function showToast(message, type = 'info') {
         const existingToast = document.querySelector('.toast');
@@ -1260,7 +1117,7 @@ JAVASCRIPT
     }
 
     // =============================================
-    // 7. RESPONSIVE HANDLING
+    // 9. RESPONSIVE HANDLING
     // =============================================
     let resizeTimer;
     window.addEventListener('resize', function() {
@@ -1284,7 +1141,7 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 8. KEYBOARD ACCESSIBILITY
+    // 10. KEYBOARD ACCESSIBILITY
     // =============================================
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
@@ -1294,7 +1151,7 @@ JAVASCRIPT
         }
     });
 
-    console.log('Employee Dashboard loaded successfully.');
+    console.log('Notifications loaded successfully.');
 </script>
 </body>
 </html>

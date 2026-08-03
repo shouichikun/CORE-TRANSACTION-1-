@@ -1,5 +1,5 @@
 <?php
-// portals/employee/dashboard.php - Employee Dashboard (CLEAN & PROFESSIONAL)
+// portals/employee/leaves.php - Employee Leave Management (CLEAN & MINIMAL)
 session_start();
 
 // =============================================
@@ -30,139 +30,222 @@ $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 
 // =============================================
-// GET EMPLOYEE DATA - ONLY EXISTING COLUMNS
+// GET EMPLOYEE DATA
 // =============================================
 $employee = getRecord("
     SELECT e.*, 
-           u.first_name, u.last_name, u.email, 
-           u.gender, u.birth_date
+           u.first_name, u.last_name, u.email
     FROM employees e
     JOIN users u ON e.user_id = u.id
     WHERE e.user_id = ?
 ", [$userId], "i");
 
-if (!$employee) {
-    // Create employee record if doesn't exist
-    $insertSql = "INSERT INTO employees (user_id, first_name, last_name, email, hire_date, status, created_at) 
-                  VALUES (?, ?, ?, ?, NOW(), 'active', NOW())";
-    $newId = insertRecord($insertSql, [
-        $userId,
-        $firstName,
-        $_SESSION['last_name'] ?? 'User',
-        $email
-    ], "isss");
+// =============================================
+// LEAVE TYPES
+// =============================================
+$leaveTypes = [
+    'vacation' => 'Vacation Leave',
+    'sick' => 'Sick Leave',
+    'emergency' => 'Emergency Leave',
+    'maternity' => 'Maternity Leave',
+    'paternity' => 'Paternity Leave',
+    'bereavement' => 'Bereavement Leave',
+    'training' => 'Training/Seminar',
+    'others' => 'Others'
+];
+
+// =============================================
+// GET LEAVE BALANCES (Still needed for validation)
+// =============================================
+$leaveBalances = getRecord("
+    SELECT 
+        SUM(CASE WHEN leave_type = 'vacation' AND status = 'approved' THEN days_count ELSE 0 END) as vacation_used,
+        SUM(CASE WHEN leave_type = 'sick' AND status = 'approved' THEN days_count ELSE 0 END) as sick_used,
+        SUM(CASE WHEN leave_type = 'emergency' AND status = 'approved' THEN days_count ELSE 0 END) as emergency_used,
+        SUM(CASE WHEN leave_type = 'maternity' AND status = 'approved' THEN days_count ELSE 0 END) as maternity_used,
+        SUM(CASE WHEN leave_type = 'paternity' AND status = 'approved' THEN days_count ELSE 0 END) as paternity_used,
+        SUM(CASE WHEN leave_type = 'bereavement' AND status = 'approved' THEN days_count ELSE 0 END) as bereavement_used,
+        SUM(CASE WHEN leave_type = 'training' AND status = 'approved' THEN days_count ELSE 0 END) as training_used,
+        SUM(CASE WHEN leave_type = 'others' AND status = 'approved' THEN days_count ELSE 0 END) as others_used
+    FROM leave_requests 
+    WHERE user_id = ?
+", [$userId], "i");
+
+// Default annual leave credits (configurable)
+$annualCredits = [
+    'vacation' => 15,
+    'sick' => 10,
+    'emergency' => 5,
+    'maternity' => 60,
+    'paternity' => 7,
+    'bereavement' => 3,
+    'training' => 5,
+    'others' => 5
+];
+
+// Calculate remaining balances (for dropdown display only)
+$balances = [];
+foreach ($annualCredits as $type => $total) {
+    $used = $leaveBalances[$type . '_used'] ?? 0;
+    $remaining = max(0, $total - $used);
+    $balances[$type] = [
+        'total' => $total,
+        'used' => $used,
+        'remaining' => $remaining
+    ];
+}
+
+// =============================================
+// GET LEAVE REQUESTS
+// =============================================
+$leaveRequests = getRecords("
+    SELECT * FROM leave_requests 
+    WHERE user_id = ? 
+    ORDER BY created_at DESC
+", [$userId], "i");
+
+// =============================================
+// HANDLE FORM SUBMISSION
+// =============================================
+$message = '';
+$messageType = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
     
-    if ($newId) {
-        $employee = getRecord("
-            SELECT e.*, 
-                   u.first_name, u.last_name, u.email, 
-                   u.gender, u.birth_date
-            FROM employees e
-            JOIN users u ON e.user_id = u.id
-            WHERE e.user_id = ?
-        ", [$userId], "i");
+    // =============================================
+    // SUBMIT LEAVE REQUEST
+    // =============================================
+    if ($action === 'submit_leave') {
+        $leave_type = $_POST['leave_type'] ?? '';
+        $start_date = $_POST['start_date'] ?? '';
+        $end_date = $_POST['end_date'] ?? '';
+        $reason = trim($_POST['reason'] ?? '');
+        
+        $errors = [];
+        if (empty($leave_type)) $errors[] = 'Please select a leave type.';
+        if (empty($start_date)) $errors[] = 'Please select a start date.';
+        if (empty($end_date)) $errors[] = 'Please select an end date.';
+        if ($start_date > $end_date) $errors[] = 'End date must be after start date.';
+        if (empty($reason)) $errors[] = 'Please provide a reason.';
+        
+        // Calculate days count (excluding weekends)
+        if (empty($errors)) {
+            $daysCount = 0;
+            $current = new DateTime($start_date);
+            $end = new DateTime($end_date);
+            
+            while ($current <= $end) {
+                $dayOfWeek = $current->format('N');
+                if ($dayOfWeek < 6) { // Monday to Friday
+                    $daysCount++;
+                }
+                $current->modify('+1 day');
+            }
+            
+            if ($daysCount == 0) {
+                $errors[] = 'No working days selected.';
+            }
+        }
+        
+        if (empty($errors)) {
+            // Check if leave type has enough balance
+            $balance = $balances[$leave_type]['remaining'] ?? 0;
+            if ($daysCount > $balance) {
+                $errors[] = 'Insufficient leave balance. Available: ' . $balance . ' days, Requested: ' . $daysCount . ' days.';
+            }
+        }
+        
+        if (empty($errors)) {
+            $sql = "INSERT INTO leave_requests (user_id, leave_type, start_date, end_date, days_count, reason, status, created_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', NOW())";
+            
+            $result = insertRecord($sql, [
+                $userId,
+                $leave_type,
+                $start_date,
+                $end_date,
+                $daysCount,
+                $reason
+            ], "isssis");
+            
+            if ($result) {
+                logActivity($userId, 'Leave Request Submitted', 'leave_requests', $result, 
+                    'Requested ' . $daysCount . ' days of ' . $leaveTypes[$leave_type]);
+                $message = 'Leave request submitted successfully!';
+                $messageType = 'success';
+                
+                // Refresh data
+                $leaveRequests = getRecords("
+                    SELECT * FROM leave_requests 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC
+                ", [$userId], "i");
+            } else {
+                $message = 'Failed to submit leave request. Please try again.';
+                $messageType = 'error';
+            }
+        } else {
+            $message = implode('<br>', $errors);
+            $messageType = 'error';
+        }
+    }
+    
+    // =============================================
+    // CANCEL LEAVE REQUEST
+    // =============================================
+    if ($action === 'cancel_leave') {
+        $leave_id = isset($_POST['leave_id']) ? (int)$_POST['leave_id'] : 0;
+        
+        if ($leave_id > 0) {
+            $sql = "UPDATE leave_requests SET status = 'cancelled' WHERE id = ? AND user_id = ? AND status = 'pending'";
+            $result = updateRecord($sql, [$leave_id, $userId], "ii");
+            
+            if ($result) {
+                logActivity($userId, 'Leave Request Cancelled', 'leave_requests', $leave_id, 'Cancelled leave request');
+                $message = 'Leave request cancelled.';
+                $messageType = 'success';
+                
+                // Refresh data
+                $leaveRequests = getRecords("
+                    SELECT * FROM leave_requests 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC
+                ", [$userId], "i");
+            } else {
+                $message = 'Failed to cancel leave request.';
+                $messageType = 'error';
+            }
+        }
     }
 }
 
-// =============================================
-// GET EMPLOYEE DETAILS WITH JOB INFO
-// =============================================
-$employeeDetails = getRecord("
-    SELECT e.*, 
-           jo.id as job_id, jo.title as job_title, jo.description as job_description,
-           jo.location as job_location, jo.job_type, jo.salary_range,
-           c.company_name, c.id as company_id,
-           a.id as application_id, a.interview_date, a.applied_at as hired_at
-    FROM employees e
-    LEFT JOIN applications a ON e.application_id = a.id
-    LEFT JOIN job_orders jo ON a.job_order_id = jo.id
-    LEFT JOIN clients c ON jo.client_id = c.id
-    WHERE e.user_id = ?
-", [$userId], "i");
+// Status badge mapping
+$statusBadges = [
+    'pending' => 'badge-pending',
+    'approved' => 'badge-approved',
+    'rejected' => 'badge-rejected',
+    'cancelled' => 'badge-cancelled'
+];
 
-// =============================================
-// GET ATTENDANCE DATA
-// =============================================
-$todayAttendance = getRecord("
-    SELECT * FROM attendance 
-    WHERE user_id = ? AND DATE(check_in_time) = CURDATE()
-", [$userId], "i");
-
-$hasCheckedIn = $todayAttendance && !empty($todayAttendance['check_in_time']) && empty($todayAttendance['check_out_time']);
-$hasCheckedOut = $todayAttendance && !empty($todayAttendance['check_out_time']);
-
-// Get attendance stats for the month
-$attendanceStats = getRecord("
-    SELECT 
-        COUNT(DISTINCT DATE(check_in_time)) as total_days,
-        SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) as days_present,
-        SUM(CASE WHEN check_in_time IS NULL THEN 1 ELSE 0 END) as days_absent
-    FROM attendance 
-    WHERE user_id = ? AND MONTH(check_in_time) = MONTH(CURDATE()) AND YEAR(check_in_time) = YEAR(CURDATE())
-", [$userId], "i");
-
-// Get recent attendance records (last 7 days)
-$recentAttendance = getRecords("
-    SELECT * FROM attendance 
-    WHERE user_id = ? 
-    ORDER BY check_in_time DESC
-    LIMIT 7
-", [$userId], "i");
-
-// =============================================
-// GET NOTIFICATION COUNT
-// =============================================
-$notificationCount = getRecord("
-    SELECT COUNT(*) as count FROM notifications 
-    WHERE user_id = ? AND is_read = 0
-", [$userId], "i");
-$totalNotifications = $notificationCount['count'] ?? 0;
-
-// =============================================
-// CALCULATE TENURE
-// =============================================
-$hireDate = $employee['hire_date'] ?? date('Y-m-d');
-$tenureDays = floor((time() - strtotime($hireDate)) / (60 * 60 * 24));
-$tenureYears = floor($tenureDays / 365);
-$tenureMonths = floor(($tenureDays % 365) / 30);
-$tenureDaysRemaining = $tenureDays % 30;
-
-$tenureString = '';
-if ($tenureYears > 0) {
-    $tenureString .= $tenureYears . ' year' . ($tenureYears > 1 ? 's' : '');
-}
-if ($tenureMonths > 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureMonths . ' month' . ($tenureMonths > 1 ? 's' : '');
-}
-if ($tenureDaysRemaining > 0 && $tenureYears == 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureDaysRemaining . ' day' . ($tenureDaysRemaining > 1 ? 's' : '');
-}
-if (empty($tenureString)) {
-    $tenureString = 'New hire';
-}
-
-// =============================================
-// GET GREETING (SIMPLE)
-// =============================================
-$currentHour = date('H');
-$greeting = 'Good Evening';
-if ($currentHour < 12) {
-    $greeting = 'Good Morning';
-} elseif ($currentHour < 18) {
-    $greeting = 'Good Afternoon';
-}
+$statusLabels = [
+    'pending' => 'Pending',
+    'approved' => 'Approved',
+    'rejected' => 'Rejected',
+    'cancelled' => 'Cancelled'
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Employee Dashboard - ISMERS</title>
+    <title>Leave Management - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - EMPLOYEE DASHBOARD (CLEAN)
+           MATERIAL 3 DESIGN SYSTEM - LEAVE MANAGEMENT (MINIMAL)
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -215,7 +298,7 @@ if ($currentHour < 12) {
         a { text-decoration: none; color: inherit; }
 
         /* =============================================
-           SIDEBAR (MATCHING PROFILE.PHP)
+           SIDEBAR
         ============================================= */
         .dashboard-sidebar {
             position: fixed;
@@ -608,143 +691,120 @@ if ($currentHour < 12) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
 
         /* =============================================
-           WELCOME CARD (CLEAN & COMPACT)
+           FORM SECTION
         ============================================= */
-        .welcome-card {
+        .form-section {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             padding: 1.5rem 2rem;
             margin-bottom: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
         }
-        @media (min-width: 640px) {
-            .welcome-card {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
+        .form-section .form-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 1rem;
         }
-        .welcome-card .welcome-text h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-on-surface); }
-        .welcome-card .welcome-text p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
-        .welcome-card .welcome-text .company-name { color: var(--primary); font-weight: 600; }
-        .welcome-card .welcome-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-
-        /* =============================================
-           STATS CARDS
-        ============================================= */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 0.75rem;
-            margin-bottom: 1.5rem;
+        .form-section .form-group {
+            margin-bottom: 1rem;
         }
-        @media (min-width: 480px) { .stats-grid { grid-template-columns: 1fr 1fr; } }
-        @media (min-width: 768px) { .stats-grid { grid-template-columns: repeat(4, 1fr); } }
-
-        .stat-card {
+        .form-section .form-group:last-child { margin-bottom: 0; }
+        .form-section .form-group label {
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-bottom: 0.25rem;
+        }
+        .form-section .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
+        .form-section .form-group .form-control {
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            border: 2px solid var(--slate-200);
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
             background: var(--bg-surface);
-            border-radius: var(--radius-xl);
-            padding: 1rem 1.25rem;
-            border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-sm);
+            color: var(--text-on-surface);
         }
-        .stat-card .stat-top {
+        .form-section .form-group .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
+        }
+        .form-section .form-group .form-control::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
+        .form-section .form-group textarea.form-control { resize: vertical; min-height: 80px; }
+        .form-section .form-group select.form-control {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 1rem center;
+            padding-right: 2.5rem;
+        }
+        .form-section .form-group .helper-text {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+        .form-section .form-group .helper-text .material-symbols-outlined { font-size: 0.875rem; vertical-align: middle; }
+        .form-section .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        @media (max-width: 640px) {
+            .form-section .form-row { grid-template-columns: 1fr; }
+        }
+        .form-section .form-actions {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-        }
-        .stat-card .stat-number { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); line-height: 1.2; }
-        .stat-card .stat-label { font-size: 0.6875rem; color: var(--text-on-surface-variant); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-top: 0.125rem; }
-        .stat-card .stat-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 2.25rem;
-            height: 2.25rem;
-            border-radius: 0.5rem;
-            background: rgba(79, 70, 229, 0.1);
-            color: var(--primary);
-        }
-        .stat-card .stat-icon.green { background: rgba(34, 197, 94, 0.1); color: #22c55e; }
-        .stat-card .stat-icon.red { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
-        .stat-card .stat-icon.yellow { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
-        .stat-card .stat-icon.blue { background: rgba(37, 99, 235, 0.1); color: #2563eb; }
-        .stat-card .stat-icon .material-symbols-outlined { font-size: 1.25rem; }
-
-        /* =============================================
-           ATTENDANCE STATUS
-        ============================================= */
-        .attendance-status {
-            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--slate-200);
             flex-wrap: wrap;
-            gap: 1.5rem;
-            padding: 1rem 1.25rem;
-            background: var(--bg-surface-low);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            margin-bottom: 1.25rem;
         }
-        .attendance-status .status-item {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .attendance-status .status-item .status-dot {
-            width: 0.625rem;
-            height: 0.625rem;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        .attendance-status .status-item .status-dot.green { background: var(--success-color); }
-        .attendance-status .status-item .status-dot.red { background: var(--error-color); }
-        .attendance-status .status-item .status-dot.yellow { background: var(--warning-color); }
-        .attendance-status .status-item .status-dot.gray { background: var(--slate-500); }
-        .attendance-status .status-item .status-label { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
-        .attendance-status .status-item .status-value { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
 
         /* =============================================
-           CARD
+           HISTORY SECTION (FULL WIDTH)
         ============================================= */
-        .card {
+        .history-section {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
         }
-        .card-header {
-            padding: 1.25rem 1.5rem;
+        .history-section .history-header {
+            padding: 1rem 2rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 0.75rem;
+            gap: 0.5rem;
         }
-        .card-header h3 {
-            font-size: 1rem;
+        .history-section .history-header .history-title {
+            font-size: 0.875rem;
             font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.625rem;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
-        .card-header h3 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
-        .card-header .card-action { font-size: 0.8125rem; color: var(--primary); font-weight: 600; text-decoration: none; }
-        .card-header .card-action:hover { text-decoration: underline; }
-        .card-body { padding: 1.25rem 1.5rem; }
+        .history-section .history-body { padding: 0; overflow-x: auto; }
 
-        .attendance-table {
+        .leave-table {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.8125rem;
         }
-        .attendance-table thead { background: var(--bg-surface-low); }
-        .attendance-table th {
-            padding: 0.5rem 0.75rem;
+        .leave-table thead { background: var(--bg-surface-low); }
+        .leave-table th {
+            padding: 0.625rem 1rem;
             text-align: left;
             font-weight: 600;
             font-size: 0.6875rem;
@@ -753,31 +813,35 @@ if ($currentHour < 12) {
             color: var(--text-on-surface-variant);
             border-bottom: 2px solid var(--slate-200);
         }
-        .attendance-table td {
-            padding: 0.5rem 0.75rem;
+        .leave-table td {
+            padding: 0.625rem 1rem;
             border-bottom: 1px solid var(--slate-200);
             vertical-align: middle;
         }
-        .attendance-table tr:last-child td { border-bottom: none; }
-        .attendance-table .status-badge {
+        .leave-table tr:last-child td { border-bottom: none; }
+        .leave-table tbody tr:hover td { background: var(--bg-surface-low); }
+
+        .badge {
             display: inline-block;
-            padding: 0.125rem 0.5rem;
+            padding: 0.125rem 0.625rem;
             border-radius: var(--radius-full);
             font-size: 0.625rem;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.03em;
         }
-        .attendance-table .status-badge.present { background: #d1fae5; color: #059669; }
-        .attendance-table .status-badge.absent { background: #fecaca; color: #dc2626; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-approved { background: #d1fae5; color: #059669; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
+        .badge-cancelled { background: #f3f4f6; color: #6b7280; }
 
         .empty-state {
             text-align: center;
-            padding: 2rem 1.5rem;
+            padding: 3rem 1.5rem;
         }
         .empty-state .material-symbols-outlined { font-size: 3rem; color: var(--slate-200); display: block; margin-bottom: 0.75rem; }
         .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
+        .empty-state p { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
 
         .toast {
             position: fixed;
@@ -820,20 +884,16 @@ if ($currentHour < 12) {
             .top-header-left .separator { display: none; }
             .profile-dropdown-toggle .profile-name,
             .profile-dropdown-toggle .profile-role { display: none; }
-            .welcome-card { padding: 1rem; }
-            .stats-grid { grid-template-columns: 1fr 1fr; }
-            .attendance-table { font-size: 0.75rem; }
+            .form-section { padding: 1rem; }
+            .leave-table { font-size: 0.75rem; }
+            .leave-table th, .leave-table td { padding: 0.375rem 0.5rem; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
             .breadcrumb-bar { padding: 0.75rem 1rem; }
             .page-header h1 { font-size: 1.25rem; }
-            .stats-grid { grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-            .stat-card { padding: 0.75rem 1rem; }
-            .stat-card .stat-number { font-size: 1.25rem; }
-            .card-header { padding: 0.75rem 1rem; }
-            .card-body { padding: 0.75rem 1rem; }
-            .attendance-table { font-size: 0.6875rem; min-width: 300px; }
+            .form-section .form-row { grid-template-columns: 1fr; }
+            .leave-table { font-size: 0.6875rem; min-width: 300px; }
         }
         .main-scroll::-webkit-scrollbar { width: 6px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -845,7 +905,7 @@ if ($currentHour < 12) {
 
 <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-<!-- ===== SIDEBAR (MATCHING PROFILE.PHP) ===== -->
+<!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
@@ -856,7 +916,7 @@ if ($currentHour < 12) {
     </div>
     <nav class="sidebar-nav">
         <div class="nav-label">Main</div>
-        <a href="dashboard.php" class="sidebar-main-link active">
+        <a href="dashboard.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">dashboard</span>
             <span class="nav-text">Dashboard</span>
         </a>
@@ -864,7 +924,7 @@ if ($currentHour < 12) {
             <span class="material-symbols-outlined">person</span>
             <span class="nav-text">My Profile</span>
         </a>
-        <a href="leaves.php" class="sidebar-main-link">
+        <a href="leaves.php" class="sidebar-main-link active">
             <span class="material-symbols-outlined">beach_access</span>
             <span class="nav-text">Leaves</span>
         </a>
@@ -908,19 +968,9 @@ if ($currentHour < 12) {
             <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><span class="material-symbols-outlined">menu</span></button>
             <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar"><span class="material-symbols-outlined">chevron_left</span></button>
             <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem;">Dashboard</span>
+            <span style="font-weight:600; font-size:0.875rem;">Leave Management</span>
         </div>
         <div style="display:flex; align-items:center; gap:0.5rem;">
-            <!-- Notification Bell with Click Handler -->
-            <div class="notification-wrapper" style="position:relative;">
-                <button class="notification-btn" id="notificationBtn" onclick="viewNotifications()" style="background:none;border:none;cursor:pointer;padding:0.5rem;border-radius:0.75rem;color:var(--text-on-surface-variant);position:relative;">
-                    <span class="material-symbols-outlined" style="font-size:1.5rem;">notifications</span>
-                    <span class="notification-badge" id="notifBadge" style="position:absolute;top:0.25rem;right:0.25rem;background:#dc2626;color:white;font-size:0.625rem;font-weight:700;min-width:1.25rem;height:1.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0 0.25rem;<?php echo $totalNotifications > 0 ? '' : 'display:none;'; ?>">
-                        <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
-                    </span>
-                </button>
-            </div>
-            <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
@@ -941,151 +991,172 @@ if ($currentHour < 12) {
     <!-- Scrollable Content -->
     <main class="main-scroll">
         <div class="container">
+
             <!-- Breadcrumb -->
             <div class="breadcrumb-bar">
                 <div class="breadcrumb-view">
-                    <span class="material-symbols-outlined">dashboard</span>
-                    <span>Dashboard</span>
+                    <span class="material-symbols-outlined">beach_access</span>
+                    <span>Leave Management</span>
                     <span class="status-dot"></span>
                     <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                    <span style="font-weight:400; color:var(--text-on-surface-variant);"><?php echo date('l, F j, Y'); ?></span>
-                </div>
-                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">Tenure: <?php echo $tenureString; ?></span>
-            </div>
-
-            <!-- Clean Welcome Card -->
-            <div class="welcome-card">
-                <div class="welcome-text">
-                    <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
-                    <p>
-                        Welcome to your dashboard.
-                        <?php if ($employeeDetails && $employeeDetails['company_name']): ?>
-                            <span class="company-name"><?php echo htmlspecialchars($employeeDetails['company_name']); ?></span> • 
-                            <?php echo htmlspecialchars($employee['position'] ?? 'Employee'); ?>
-                        <?php endif; ?>
-                    </p>
-                </div>
-                <div class="welcome-actions">
-                    <?php if (!$hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-success btn-sm" onclick="checkIn()"><span class="material-symbols-outlined">login</span> Check In</button>
-                    <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-danger btn-sm" onclick="checkOut()"><span class="material-symbols-outlined">logout</span> Check Out</button>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">verified</span> Checked In</span>
-                    <?php else: ?>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">check_circle</span> Completed</span>
-                    <?php endif; ?>
-                </div>
-            </div>
-
-            <!-- Stats -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number"><?php echo $attendanceStats['days_present'] ?? 0; ?></div>
-                            <div class="stat-label">Days Present</div>
-                        </div>
-                        <div class="stat-icon green"><span class="material-symbols-outlined">check_circle</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#dc2626;"><?php echo $attendanceStats['days_absent'] ?? 0; ?></div>
-                            <div class="stat-label">Days Absent</div>
-                        </div>
-                        <div class="stat-icon red"><span class="material-symbols-outlined">event_busy</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#f59e0b;"><?php echo $attendanceStats['days_late'] ?? 0; ?></div>
-                            <div class="stat-label">Late Arrivals</div>
-                        </div>
-                        <div class="stat-icon yellow"><span class="material-symbols-outlined">warning</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#2563eb;"><?php echo $attendanceStats['days_overtime'] ?? 0; ?></div>
-                            <div class="stat-label">Overtime Days</div>
-                        </div>
-                        <div class="stat-icon blue"><span class="material-symbols-outlined">timer</span></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Attendance Status -->
-            <div class="attendance-status">
-                <div class="status-item">
-                    <span class="status-dot <?php echo $hasCheckedIn ? 'green' : 'gray'; ?>"></span>
-                    <span class="status-label">Today's Status:</span>
-                    <span class="status-value">
-                        <?php 
-                        if ($hasCheckedOut) echo 'Checked Out';
-                        elseif ($hasCheckedIn) echo 'Checked In';
-                        else echo 'Not Checked In';
-                        ?>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo count($leaveRequests); ?> requests
                     </span>
                 </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">This Month:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_present'] ?? 0; ?>/<?php echo $attendanceStats['total_days'] ?? 0; ?> days</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot yellow"></span>
-                    <span class="status-label">Late:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_late'] ?? 0; ?>x</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">Overtime:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_overtime'] ?? 0; ?>x</span>
+                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    <?php echo date('l, F j, Y'); ?>
+                </span>
+            </div>
+
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Leave Management</h1>
+                    <p>Request and track your leave requests</p>
                 </div>
             </div>
 
-            <!-- Recent Attendance -->
-            <div class="card">
-                <div class="card-header">
-                    <h3><span class="material-symbols-outlined">history</span> Recent Attendance</h3>
-                    <a href="attendance.php" class="card-action">View All →</a>
+            <!-- Toast Messages -->
+            <?php if (!empty($message)): ?>
+                <div class="message <?php echo $messageType; ?>" id="toastMessage" style="padding:0.875rem 1.25rem; border-radius:0.75rem; font-size:0.875rem; margin-bottom:1rem; display:flex; align-items:flex-start; gap:0.75rem; border:1px solid transparent; <?php echo $messageType === 'success' ? 'background:#f0fdf4; border-color:#bbf7d0; color:#16a34a;' : ($messageType === 'error' ? 'background:#fef2f2; border-color:#fecaca; color:#dc2626;' : 'background:#dbeafe; border-color:#93c5fd; color:#2563eb;'); ?>">
+                    <span class="material-symbols-outlined" style="font-size:1.25rem; flex-shrink:0; margin-top:0.0625rem;">
+                        <?php echo $messageType === 'success' ? 'check_circle' : ($messageType === 'error' ? 'error' : 'info'); ?>
+                    </span>
+                    <div>
+                        <strong><?php echo $messageType === 'success' ? 'Success!' : ($messageType === 'error' ? 'Error:' : 'Info:'); ?></strong>
+                        <span style="display:block; font-weight:400;"><?php echo $message; ?></span>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <?php if (empty($recentAttendance)): ?>
+                <script>
+                    setTimeout(() => {
+                        const toast = document.getElementById('toastMessage');
+                        if (toast) toast.remove();
+                    }, 5000);
+                </script>
+            <?php endif; ?>
+
+            <!-- Leave Request Form -->
+            <div class="form-section">
+                <div class="form-title">Request Leave</div>
+                <form method="POST" action="" id="leaveForm">
+                    <input type="hidden" name="action" value="submit_leave">
+                    
+                    <div class="form-group">
+                        <label>Leave Type <span class="required">*</span></label>
+                        <select name="leave_type" class="form-control" required>
+                            <option value="">Select leave type...</option>
+                            <?php foreach ($leaveTypes as $key => $label): ?>
+                                <option value="<?php echo $key; ?>">
+                                    <?php echo $label; ?> 
+                                    (<?php echo $balances[$key]['remaining'] ?? 0; ?> days left)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Start Date <span class="required">*</span></label>
+                            <input type="date" name="start_date" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label>End Date <span class="required">*</span></label>
+                            <input type="date" name="end_date" class="form-control" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Reason <span class="required">*</span></label>
+                        <textarea name="reason" class="form-control" placeholder="Provide details about your leave request..." rows="3" required></textarea>
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined">info</span>
+                            Be specific to help HR process your request faster
+                        </div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">
+                            <span class="material-symbols-outlined">send</span>
+                            Submit Request
+                        </button>
+                        <button type="reset" class="btn btn-outline">
+                            <span class="material-symbols-outlined">clear</span>
+                            Reset
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Leave History Table -->
+            <div class="history-section">
+                <div class="history-header">
+                    <div class="history-title">Leave History</div>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                        <?php echo count($leaveRequests); ?> requests
+                    </span>
+                </div>
+                <div class="history-body">
+                    <?php if (empty($leaveRequests)): ?>
                         <div class="empty-state">
                             <span class="material-symbols-outlined">inbox</span>
-                            <h4>No Attendance Records</h4>
-                            <p>Your attendance records will appear here once you start checking in.</p>
+                            <h4>No Leave Requests</h4>
+                            <p>You haven't submitted any leave requests yet.</p>
                         </div>
                     <?php else: ?>
                         <div style="overflow-x:auto;">
-                            <table class="attendance-table">
+                            <table class="leave-table">
                                 <thead>
                                     <tr>
-                                        <th>Date</th>
-                                        <th>Check In</th>
-                                        <th>Check Out</th>
+                                        <th>Type</th>
+                                        <th>Date Range</th>
+                                        <th>Days</th>
+                                        <th>Reason</th>
                                         <th>Status</th>
+                                        <th style="text-align:center;">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($recentAttendance as $record): ?>
-                                        <?php
-                                        $status = 'present';
-                                        $statusLabel = 'Present';
-                                        if (!$record['check_in_time']) {
-                                            $status = 'absent';
-                                            $statusLabel = 'Absent';
-                                        }
+                                    <?php foreach ($leaveRequests as $request): ?>
+                                        <?php 
+                                        $typeLabel = $leaveTypes[$request['leave_type']] ?? ucfirst($request['leave_type']);
+                                        $status = $request['status'] ?? 'pending';
+                                        $canCancel = $status === 'pending';
                                         ?>
                                         <tr>
-                                            <td><?php echo date('M d, Y', strtotime($record['check_in_time'] ?? $record['created_at'])); ?></td>
-                                            <td><?php echo $record['check_in_time'] ? date('h:i A', strtotime($record['check_in_time'])) : '—'; ?></td>
-                                            <td><?php echo $record['check_out_time'] ? date('h:i A', strtotime($record['check_out_time'])) : '—'; ?></td>
-                                            <td><span class="status-badge <?php echo $status; ?>"><?php echo $statusLabel; ?></span></td>
+                                            <td>
+                                                <span style="font-weight:600; font-size:0.8125rem;"><?php echo htmlspecialchars($typeLabel); ?></span>
+                                            </td>
+                                            <td>
+                                                <div style="font-size:0.8125rem;">
+                                                    <?php echo date('M d, Y', strtotime($request['start_date'])); ?>
+                                                    <?php if ($request['end_date'] != $request['start_date']): ?>
+                                                        - <?php echo date('M d, Y', strtotime($request['end_date'])); ?>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <span style="font-weight:600; color:var(--text-on-surface);"><?php echo $request['days_count']; ?></span>
+                                            </td>
+                                            <td>
+                                                <div style="font-size:0.8125rem; color:var(--text-on-surface-variant); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                                    <?php echo htmlspecialchars($request['reason'] ?? '—'); ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <span class="badge <?php echo $statusBadges[$status] ?? 'badge-pending'; ?>">
+                                                    <?php echo $statusLabels[$status] ?? ucfirst($status); ?>
+                                                </span>
+                                            </td>
+                                            <td style="text-align:center;">
+                                                <?php if ($canCancel): ?>
+                                                    <button class="btn btn-danger btn-sm" onclick="cancelLeave(<?php echo $request['id']; ?>)">
+                                                        <span class="material-symbols-outlined">cancel</span>
+                                                        Cancel
+                                                    </button>
+                                                <?php else: ?>
+                                                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">—</span>
+                                                <?php endif; ?>
+                                            </td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -1094,6 +1165,7 @@ if ($currentHour < 12) {
                     <?php endif; ?>
                 </div>
             </div>
+
         </div>
     </main>
 </div>
@@ -1173,74 +1245,36 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 4. NOTIFICATION BUTTON - FIXED
+    // 4. CANCEL LEAVE REQUEST
     // =============================================
-    function viewNotifications() {
-        // Redirect to notifications page or open modal
-        window.location.href = 'notifications.php';
-    }
+    function cancelLeave(id) {
+        if (!confirm('Are you sure you want to cancel this leave request?')) return;
 
-    // =============================================
-    // 5. CHECK IN / CHECK OUT
-    // =============================================
-    function checkIn() {
-        const btn = event.target.closest('button');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
+        const formData = new FormData();
+        formData.append('action', 'cancel_leave');
+        formData.append('leave_id', id);
 
-        fetch('ajax/attendance.php', {
+        fetch('leaves.php', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=check_in'
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                showToast('Checked in successfully at ' + data.time, 'success');
-                setTimeout(() => location.reload(), 1500);
+                showToast(data.message, 'success');
+                setTimeout(() => location.reload(), 1000);
             } else {
-                showToast(data.error || 'Failed to check in.', 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
+                showToast(data.error || 'Failed to cancel request.', 'error');
             }
         })
         .catch(error => {
-            showToast('Error checking in. Please try again.', 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
-        });
-    }
-
-    function checkOut() {
-        const btn = event.target.closest('button');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
-
-        fetch('ajax/attendance.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=check_out'
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast('Checked out successfully at ' + data.time, 'success');
-                setTimeout(() => location.reload(), 1500);
-            } else {
-                showToast(data.error || 'Failed to check out.', 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
-            }
-        })
-        .catch(error => {
-            showToast('Error checking out. Please try again.', 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
+            showToast('Error. Please try again.', 'error');
         });
     }
 
     // =============================================
-    // 6. TOAST SYSTEM
+    // 5. TOAST SYSTEM
     // =============================================
     function showToast(message, type = 'info') {
         const existingToast = document.querySelector('.toast');
@@ -1260,7 +1294,7 @@ JAVASCRIPT
     }
 
     // =============================================
-    // 7. RESPONSIVE HANDLING
+    // 6. RESPONSIVE HANDLING
     // =============================================
     let resizeTimer;
     window.addEventListener('resize', function() {
@@ -1284,7 +1318,7 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 8. KEYBOARD ACCESSIBILITY
+    // 7. KEYBOARD ACCESSIBILITY
     // =============================================
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
@@ -1294,7 +1328,7 @@ JAVASCRIPT
         }
     });
 
-    console.log('Employee Dashboard loaded successfully.');
+    console.log('Leave Management loaded successfully.');
 </script>
 </body>
 </html>

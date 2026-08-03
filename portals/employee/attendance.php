@@ -1,5 +1,5 @@
 <?php
-// portals/employee/dashboard.php - Employee Dashboard (CLEAN & PROFESSIONAL)
+// portals/employee/attendance.php - Employee Attendance Management (FINAL FIX)
 session_start();
 
 // =============================================
@@ -30,58 +30,18 @@ $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 
 // =============================================
-// GET EMPLOYEE DATA - ONLY EXISTING COLUMNS
+// GET EMPLOYEE DATA
 // =============================================
 $employee = getRecord("
     SELECT e.*, 
-           u.first_name, u.last_name, u.email, 
-           u.gender, u.birth_date
+           u.first_name, u.last_name, u.email
     FROM employees e
     JOIN users u ON e.user_id = u.id
     WHERE e.user_id = ?
 ", [$userId], "i");
 
-if (!$employee) {
-    // Create employee record if doesn't exist
-    $insertSql = "INSERT INTO employees (user_id, first_name, last_name, email, hire_date, status, created_at) 
-                  VALUES (?, ?, ?, ?, NOW(), 'active', NOW())";
-    $newId = insertRecord($insertSql, [
-        $userId,
-        $firstName,
-        $_SESSION['last_name'] ?? 'User',
-        $email
-    ], "isss");
-    
-    if ($newId) {
-        $employee = getRecord("
-            SELECT e.*, 
-                   u.first_name, u.last_name, u.email, 
-                   u.gender, u.birth_date
-            FROM employees e
-            JOIN users u ON e.user_id = u.id
-            WHERE e.user_id = ?
-        ", [$userId], "i");
-    }
-}
-
 // =============================================
-// GET EMPLOYEE DETAILS WITH JOB INFO
-// =============================================
-$employeeDetails = getRecord("
-    SELECT e.*, 
-           jo.id as job_id, jo.title as job_title, jo.description as job_description,
-           jo.location as job_location, jo.job_type, jo.salary_range,
-           c.company_name, c.id as company_id,
-           a.id as application_id, a.interview_date, a.applied_at as hired_at
-    FROM employees e
-    LEFT JOIN applications a ON e.application_id = a.id
-    LEFT JOIN job_orders jo ON a.job_order_id = jo.id
-    LEFT JOIN clients c ON jo.client_id = c.id
-    WHERE e.user_id = ?
-", [$userId], "i");
-
-// =============================================
-// GET ATTENDANCE DATA
+// GET TODAY'S ATTENDANCE
 // =============================================
 $todayAttendance = getRecord("
     SELECT * FROM attendance 
@@ -90,60 +50,39 @@ $todayAttendance = getRecord("
 
 $hasCheckedIn = $todayAttendance && !empty($todayAttendance['check_in_time']) && empty($todayAttendance['check_out_time']);
 $hasCheckedOut = $todayAttendance && !empty($todayAttendance['check_out_time']);
+$isFaceVerified = $todayAttendance && $todayAttendance['is_face_verified'] == 1;
 
-// Get attendance stats for the month
-$attendanceStats = getRecord("
+// =============================================
+// GET ATTENDANCE STATS FOR THE MONTH (Only existing columns)
+// =============================================
+$monthStats = getRecord("
     SELECT 
-        COUNT(DISTINCT DATE(check_in_time)) as total_days,
+        COUNT(*) as total_days,
         SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) as days_present,
         SUM(CASE WHEN check_in_time IS NULL THEN 1 ELSE 0 END) as days_absent
     FROM attendance 
     WHERE user_id = ? AND MONTH(check_in_time) = MONTH(CURDATE()) AND YEAR(check_in_time) = YEAR(CURDATE())
 ", [$userId], "i");
 
-// Get recent attendance records (last 7 days)
-$recentAttendance = getRecords("
+// =============================================
+// GET ATTENDANCE HISTORY
+// =============================================
+$attendanceHistory = getRecords("
     SELECT * FROM attendance 
     WHERE user_id = ? 
     ORDER BY check_in_time DESC
-    LIMIT 7
 ", [$userId], "i");
 
 // =============================================
-// GET NOTIFICATION COUNT
+// CALCULATE STATS FOR DISPLAY
 // =============================================
-$notificationCount = getRecord("
-    SELECT COUNT(*) as count FROM notifications 
-    WHERE user_id = ? AND is_read = 0
-", [$userId], "i");
-$totalNotifications = $notificationCount['count'] ?? 0;
+$totalDays = $monthStats['total_days'] ?? 0;
+$daysPresent = $monthStats['days_present'] ?? 0;
+$daysAbsent = $monthStats['days_absent'] ?? 0;
 
-// =============================================
-// CALCULATE TENURE
-// =============================================
-$hireDate = $employee['hire_date'] ?? date('Y-m-d');
-$tenureDays = floor((time() - strtotime($hireDate)) / (60 * 60 * 24));
-$tenureYears = floor($tenureDays / 365);
-$tenureMonths = floor(($tenureDays % 365) / 30);
-$tenureDaysRemaining = $tenureDays % 30;
+$attendanceRate = $totalDays > 0 ? round(($daysPresent / $totalDays) * 100) : 0;
 
-$tenureString = '';
-if ($tenureYears > 0) {
-    $tenureString .= $tenureYears . ' year' . ($tenureYears > 1 ? 's' : '');
-}
-if ($tenureMonths > 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureMonths . ' month' . ($tenureMonths > 1 ? 's' : '');
-}
-if ($tenureDaysRemaining > 0 && $tenureYears == 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureDaysRemaining . ' day' . ($tenureDaysRemaining > 1 ? 's' : '');
-}
-if (empty($tenureString)) {
-    $tenureString = 'New hire';
-}
-
-// =============================================
-// GET GREETING (SIMPLE)
-// =============================================
+// Get greeting
 $currentHour = date('H');
 $greeting = 'Good Evening';
 if ($currentHour < 12) {
@@ -157,12 +96,12 @@ if ($currentHour < 12) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Employee Dashboard - ISMERS</title>
+    <title>Attendance - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - EMPLOYEE DASHBOARD (CLEAN)
+           MATERIAL 3 DESIGN SYSTEM - ATTENDANCE MANAGEMENT (CLEAN)
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -215,7 +154,7 @@ if ($currentHour < 12) {
         a { text-decoration: none; color: inherit; }
 
         /* =============================================
-           SIDEBAR (MATCHING PROFILE.PHP)
+           SIDEBAR
         ============================================= */
         .dashboard-sidebar {
             position: fixed;
@@ -608,33 +547,7 @@ if ($currentHour < 12) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
 
         /* =============================================
-           WELCOME CARD (CLEAN & COMPACT)
-        ============================================= */
-        .welcome-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-sm);
-            padding: 1.5rem 2rem;
-            margin-bottom: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-        @media (min-width: 640px) {
-            .welcome-card {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
-        }
-        .welcome-card .welcome-text h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-on-surface); }
-        .welcome-card .welcome-text p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
-        .welcome-card .welcome-text .company-name { color: var(--primary); font-weight: 600; }
-        .welcome-card .welcome-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-
-        /* =============================================
-           STATS CARDS
+           STATS GRID
         ============================================= */
         .stats-grid {
             display: grid;
@@ -676,66 +589,86 @@ if ($currentHour < 12) {
         .stat-card .stat-icon .material-symbols-outlined { font-size: 1.25rem; }
 
         /* =============================================
-           ATTENDANCE STATUS
+           TODAY'S STATUS
         ============================================= */
-        .attendance-status {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1.5rem;
-            padding: 1rem 1.25rem;
-            background: var(--bg-surface-low);
-            border-radius: var(--radius-xl);
+        .today-status {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
-            margin-bottom: 1.25rem;
+            box-shadow: var(--shadow-sm);
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
         }
-        .attendance-status .status-item {
+        .today-status .status-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 1rem;
+        }
+        .today-status .status-content {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 1rem;
         }
-        .attendance-status .status-item .status-dot {
-            width: 0.625rem;
-            height: 0.625rem;
+        .today-status .status-content .status-left {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .today-status .status-content .status-left .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .today-status .status-content .status-left .status-item .status-dot {
+            width: 0.75rem;
+            height: 0.75rem;
             border-radius: 50%;
             flex-shrink: 0;
         }
-        .attendance-status .status-item .status-dot.green { background: var(--success-color); }
-        .attendance-status .status-item .status-dot.red { background: var(--error-color); }
-        .attendance-status .status-item .status-dot.yellow { background: var(--warning-color); }
-        .attendance-status .status-item .status-dot.gray { background: var(--slate-500); }
-        .attendance-status .status-item .status-label { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
-        .attendance-status .status-item .status-value { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
+        .today-status .status-content .status-left .status-item .status-dot.green { background: var(--success-color); }
+        .today-status .status-content .status-left .status-item .status-dot.red { background: var(--error-color); }
+        .today-status .status-content .status-left .status-item .status-dot.gray { background: var(--slate-500); }
+        .today-status .status-content .status-left .status-item .status-label { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
+        .today-status .status-content .status-left .status-item .status-value { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .today-status .status-content .status-right {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
 
         /* =============================================
-           CARD
+           HISTORY TABLE
         ============================================= */
-        .card {
+        .history-section {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
         }
-        .card-header {
-            padding: 1.25rem 1.5rem;
+        .history-section .history-header {
+            padding: 1rem 2rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 0.75rem;
+            gap: 0.5rem;
         }
-        .card-header h3 {
-            font-size: 1rem;
+        .history-section .history-header .history-title {
+            font-size: 0.875rem;
             font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.625rem;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
-        .card-header h3 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
-        .card-header .card-action { font-size: 0.8125rem; color: var(--primary); font-weight: 600; text-decoration: none; }
-        .card-header .card-action:hover { text-decoration: underline; }
-        .card-body { padding: 1.25rem 1.5rem; }
+        .history-section .history-body { padding: 0; overflow-x: auto; }
 
         .attendance-table {
             width: 100%;
@@ -744,7 +677,7 @@ if ($currentHour < 12) {
         }
         .attendance-table thead { background: var(--bg-surface-low); }
         .attendance-table th {
-            padding: 0.5rem 0.75rem;
+            padding: 0.625rem 1rem;
             text-align: left;
             font-weight: 600;
             font-size: 0.6875rem;
@@ -754,30 +687,32 @@ if ($currentHour < 12) {
             border-bottom: 2px solid var(--slate-200);
         }
         .attendance-table td {
-            padding: 0.5rem 0.75rem;
+            padding: 0.625rem 1rem;
             border-bottom: 1px solid var(--slate-200);
             vertical-align: middle;
         }
         .attendance-table tr:last-child td { border-bottom: none; }
-        .attendance-table .status-badge {
+        .attendance-table tbody tr:hover td { background: var(--bg-surface-low); }
+
+        .badge {
             display: inline-block;
-            padding: 0.125rem 0.5rem;
+            padding: 0.125rem 0.625rem;
             border-radius: var(--radius-full);
             font-size: 0.625rem;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.03em;
         }
-        .attendance-table .status-badge.present { background: #d1fae5; color: #059669; }
-        .attendance-table .status-badge.absent { background: #fecaca; color: #dc2626; }
+        .badge-present { background: #d1fae5; color: #059669; }
+        .badge-absent { background: #fecaca; color: #dc2626; }
 
         .empty-state {
             text-align: center;
-            padding: 2rem 1.5rem;
+            padding: 3rem 1.5rem;
         }
         .empty-state .material-symbols-outlined { font-size: 3rem; color: var(--slate-200); display: block; margin-bottom: 0.75rem; }
         .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
+        .empty-state p { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
 
         .toast {
             position: fixed;
@@ -820,9 +755,13 @@ if ($currentHour < 12) {
             .top-header-left .separator { display: none; }
             .profile-dropdown-toggle .profile-name,
             .profile-dropdown-toggle .profile-role { display: none; }
-            .welcome-card { padding: 1rem; }
             .stats-grid { grid-template-columns: 1fr 1fr; }
+            .today-status { padding: 1rem; }
+            .today-status .status-content { flex-direction: column; align-items: flex-start; }
+            .today-status .status-content .status-right { width: 100%; }
+            .today-status .status-content .status-right .btn { flex: 1; justify-content: center; }
             .attendance-table { font-size: 0.75rem; }
+            .attendance-table th, .attendance-table td { padding: 0.375rem 0.5rem; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
@@ -831,8 +770,6 @@ if ($currentHour < 12) {
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 0.5rem; }
             .stat-card { padding: 0.75rem 1rem; }
             .stat-card .stat-number { font-size: 1.25rem; }
-            .card-header { padding: 0.75rem 1rem; }
-            .card-body { padding: 0.75rem 1rem; }
             .attendance-table { font-size: 0.6875rem; min-width: 300px; }
         }
         .main-scroll::-webkit-scrollbar { width: 6px; }
@@ -845,7 +782,7 @@ if ($currentHour < 12) {
 
 <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-<!-- ===== SIDEBAR (MATCHING PROFILE.PHP) ===== -->
+<!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
@@ -856,7 +793,7 @@ if ($currentHour < 12) {
     </div>
     <nav class="sidebar-nav">
         <div class="nav-label">Main</div>
-        <a href="dashboard.php" class="sidebar-main-link active">
+        <a href="dashboard.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">dashboard</span>
             <span class="nav-text">Dashboard</span>
         </a>
@@ -868,7 +805,7 @@ if ($currentHour < 12) {
             <span class="material-symbols-outlined">beach_access</span>
             <span class="nav-text">Leaves</span>
         </a>
-        <a href="attendance.php" class="sidebar-main-link">
+        <a href="attendance.php" class="sidebar-main-link active">
             <span class="material-symbols-outlined">schedule</span>
             <span class="nav-text">Attendance</span>
         </a>
@@ -908,19 +845,9 @@ if ($currentHour < 12) {
             <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><span class="material-symbols-outlined">menu</span></button>
             <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar"><span class="material-symbols-outlined">chevron_left</span></button>
             <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem;">Dashboard</span>
+            <span style="font-weight:600; font-size:0.875rem;">Attendance</span>
         </div>
         <div style="display:flex; align-items:center; gap:0.5rem;">
-            <!-- Notification Bell with Click Handler -->
-            <div class="notification-wrapper" style="position:relative;">
-                <button class="notification-btn" id="notificationBtn" onclick="viewNotifications()" style="background:none;border:none;cursor:pointer;padding:0.5rem;border-radius:0.75rem;color:var(--text-on-surface-variant);position:relative;">
-                    <span class="material-symbols-outlined" style="font-size:1.5rem;">notifications</span>
-                    <span class="notification-badge" id="notifBadge" style="position:absolute;top:0.25rem;right:0.25rem;background:#dc2626;color:white;font-size:0.625rem;font-weight:700;min-width:1.25rem;height:1.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0 0.25rem;<?php echo $totalNotifications > 0 ? '' : 'display:none;'; ?>">
-                        <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
-                    </span>
-                </button>
-            </div>
-            <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
@@ -941,48 +868,56 @@ if ($currentHour < 12) {
     <!-- Scrollable Content -->
     <main class="main-scroll">
         <div class="container">
+
             <!-- Breadcrumb -->
             <div class="breadcrumb-bar">
                 <div class="breadcrumb-view">
-                    <span class="material-symbols-outlined">dashboard</span>
-                    <span>Dashboard</span>
+                    <span class="material-symbols-outlined">schedule</span>
+                    <span>Attendance</span>
                     <span class="status-dot"></span>
                     <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                    <span style="font-weight:400; color:var(--text-on-surface-variant);"><?php echo date('l, F j, Y'); ?></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo date('F Y'); ?>
+                    </span>
                 </div>
-                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">Tenure: <?php echo $tenureString; ?></span>
+                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    <?php echo date('l, F j, Y'); ?>
+                </span>
             </div>
 
-            <!-- Clean Welcome Card -->
-            <div class="welcome-card">
-                <div class="welcome-text">
-                    <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
-                    <p>
-                        Welcome to your dashboard.
-                        <?php if ($employeeDetails && $employeeDetails['company_name']): ?>
-                            <span class="company-name"><?php echo htmlspecialchars($employeeDetails['company_name']); ?></span> • 
-                            <?php echo htmlspecialchars($employee['position'] ?? 'Employee'); ?>
-                        <?php endif; ?>
-                    </p>
-                </div>
-                <div class="welcome-actions">
-                    <?php if (!$hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-success btn-sm" onclick="checkIn()"><span class="material-symbols-outlined">login</span> Check In</button>
-                    <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-danger btn-sm" onclick="checkOut()"><span class="material-symbols-outlined">logout</span> Check Out</button>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">verified</span> Checked In</span>
-                    <?php else: ?>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">check_circle</span> Completed</span>
-                    <?php endif; ?>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Attendance</h1>
+                    <p>Track your daily attendance and view your history</p>
                 </div>
             </div>
+
+            <!-- Toast Messages -->
+            <?php if (!empty($message)): ?>
+                <div class="message <?php echo $messageType; ?>" id="toastMessage" style="padding:0.875rem 1.25rem; border-radius:0.75rem; font-size:0.875rem; margin-bottom:1rem; display:flex; align-items:flex-start; gap:0.75rem; border:1px solid transparent; <?php echo $messageType === 'success' ? 'background:#f0fdf4; border-color:#bbf7d0; color:#16a34a;' : ($messageType === 'error' ? 'background:#fef2f2; border-color:#fecaca; color:#dc2626;' : 'background:#dbeafe; border-color:#93c5fd; color:#2563eb;'); ?>">
+                    <span class="material-symbols-outlined" style="font-size:1.25rem; flex-shrink:0; margin-top:0.0625rem;">
+                        <?php echo $messageType === 'success' ? 'check_circle' : ($messageType === 'error' ? 'error' : 'info'); ?>
+                    </span>
+                    <div>
+                        <strong><?php echo $messageType === 'success' ? 'Success!' : ($messageType === 'error' ? 'Error:' : 'Info:'); ?></strong>
+                        <span style="display:block; font-weight:400;"><?php echo $message; ?></span>
+                    </div>
+                </div>
+                <script>
+                    setTimeout(() => {
+                        const toast = document.getElementById('toastMessage');
+                        if (toast) toast.remove();
+                    }, 5000);
+                </script>
+            <?php endif; ?>
 
             <!-- Stats -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-top">
                         <div>
-                            <div class="stat-number"><?php echo $attendanceStats['days_present'] ?? 0; ?></div>
+                            <div class="stat-number"><?php echo $daysPresent; ?></div>
                             <div class="stat-label">Days Present</div>
                         </div>
                         <div class="stat-icon green"><span class="material-symbols-outlined">check_circle</span></div>
@@ -991,7 +926,7 @@ if ($currentHour < 12) {
                 <div class="stat-card">
                     <div class="stat-top">
                         <div>
-                            <div class="stat-number" style="color:#dc2626;"><?php echo $attendanceStats['days_absent'] ?? 0; ?></div>
+                            <div class="stat-number" style="color:#dc2626;"><?php echo $daysAbsent; ?></div>
                             <div class="stat-label">Days Absent</div>
                         </div>
                         <div class="stat-icon red"><span class="material-symbols-outlined">event_busy</span></div>
@@ -1000,65 +935,85 @@ if ($currentHour < 12) {
                 <div class="stat-card">
                     <div class="stat-top">
                         <div>
-                            <div class="stat-number" style="color:#f59e0b;"><?php echo $attendanceStats['days_late'] ?? 0; ?></div>
-                            <div class="stat-label">Late Arrivals</div>
+                            <div class="stat-number" style="color:#2563eb;"><?php echo $attendanceRate; ?>%</div>
+                            <div class="stat-label">Attendance Rate</div>
                         </div>
-                        <div class="stat-icon yellow"><span class="material-symbols-outlined">warning</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#2563eb;"><?php echo $attendanceStats['days_overtime'] ?? 0; ?></div>
-                            <div class="stat-label">Overtime Days</div>
-                        </div>
-                        <div class="stat-icon blue"><span class="material-symbols-outlined">timer</span></div>
+                        <div class="stat-icon blue"><span class="material-symbols-outlined">trending_up</span></div>
                     </div>
                 </div>
             </div>
 
-            <!-- Attendance Status -->
-            <div class="attendance-status">
-                <div class="status-item">
-                    <span class="status-dot <?php echo $hasCheckedIn ? 'green' : 'gray'; ?>"></span>
-                    <span class="status-label">Today's Status:</span>
-                    <span class="status-value">
-                        <?php 
-                        if ($hasCheckedOut) echo 'Checked Out';
-                        elseif ($hasCheckedIn) echo 'Checked In';
-                        else echo 'Not Checked In';
-                        ?>
+            <!-- Today's Status -->
+            <div class="today-status">
+                <div class="status-title">Today's Status</div>
+                <div class="status-content">
+                    <div class="status-left">
+                        <div class="status-item">
+                            <span class="status-dot <?php echo $hasCheckedIn ? ($hasCheckedOut ? 'green' : 'green') : 'gray'; ?>"></span>
+                            <span class="status-label">Status:</span>
+                            <span class="status-value">
+                                <?php 
+                                if ($hasCheckedOut) echo 'Checked Out';
+                                elseif ($hasCheckedIn) echo 'Checked In';
+                                else echo 'Not Checked In';
+                                ?>
+                            </span>
+                        </div>
+                        <?php if ($todayAttendance): ?>
+                            <div class="status-item">
+                                <span class="status-label">Check In:</span>
+                                <span class="status-value"><?php echo date('h:i A', strtotime($todayAttendance['check_in_time'])); ?></span>
+                            </div>
+                            <?php if ($todayAttendance['check_out_time']): ?>
+                                <div class="status-item">
+                                    <span class="status-label">Check Out:</span>
+                                    <span class="status-value"><?php echo date('h:i A', strtotime($todayAttendance['check_out_time'])); ?></span>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($isFaceVerified): ?>
+                                <div class="status-item">
+                                    <span class="status-dot green"></span>
+                                    <span class="status-label">Face Verified:</span>
+                                    <span class="status-value">✓</span>
+                                </div>
+                            <?php endif; ?>
+                        <?php endif; ?>
+                    </div>
+                    <div class="status-right">
+                        <?php if (!$hasCheckedIn): ?>
+                            <button class="btn btn-success" onclick="checkIn()">
+                                <span class="material-symbols-outlined">login</span>
+                                Check In
+                            </button>
+                        <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
+                            <button class="btn btn-danger" onclick="checkOut()">
+                                <span class="material-symbols-outlined">logout</span>
+                                Check Out
+                            </button>
+                        <?php else: ?>
+                            <span class="btn btn-outline" style="cursor:default;">
+                                <span class="material-symbols-outlined">check_circle</span>
+                                Completed
+                            </span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Attendance History -->
+            <div class="history-section">
+                <div class="history-header">
+                    <div class="history-title">Attendance History</div>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                        <?php echo count($attendanceHistory); ?> records
                     </span>
                 </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">This Month:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_present'] ?? 0; ?>/<?php echo $attendanceStats['total_days'] ?? 0; ?> days</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot yellow"></span>
-                    <span class="status-label">Late:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_late'] ?? 0; ?>x</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">Overtime:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_overtime'] ?? 0; ?>x</span>
-                </div>
-            </div>
-
-            <!-- Recent Attendance -->
-            <div class="card">
-                <div class="card-header">
-                    <h3><span class="material-symbols-outlined">history</span> Recent Attendance</h3>
-                    <a href="attendance.php" class="card-action">View All →</a>
-                </div>
-                <div class="card-body">
-                    <?php if (empty($recentAttendance)): ?>
+                <div class="history-body">
+                    <?php if (empty($attendanceHistory)): ?>
                         <div class="empty-state">
                             <span class="material-symbols-outlined">inbox</span>
                             <h4>No Attendance Records</h4>
-                            <p>Your attendance records will appear here once you start checking in.</p>
+                            <p>You haven't checked in yet.</p>
                         </div>
                     <?php else: ?>
                         <div style="overflow-x:auto;">
@@ -1072,7 +1027,7 @@ if ($currentHour < 12) {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($recentAttendance as $record): ?>
+                                    <?php foreach ($attendanceHistory as $record): ?>
                                         <?php
                                         $status = 'present';
                                         $statusLabel = 'Present';
@@ -1085,7 +1040,7 @@ if ($currentHour < 12) {
                                             <td><?php echo date('M d, Y', strtotime($record['check_in_time'] ?? $record['created_at'])); ?></td>
                                             <td><?php echo $record['check_in_time'] ? date('h:i A', strtotime($record['check_in_time'])) : '—'; ?></td>
                                             <td><?php echo $record['check_out_time'] ? date('h:i A', strtotime($record['check_out_time'])) : '—'; ?></td>
-                                            <td><span class="status-badge <?php echo $status; ?>"><?php echo $statusLabel; ?></span></td>
+                                            <td><span class="badge <?php echo $status; ?>"><?php echo $statusLabel; ?></span></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -1094,6 +1049,7 @@ if ($currentHour < 12) {
                     <?php endif; ?>
                 </div>
             </div>
+
         </div>
     </main>
 </div>
@@ -1173,15 +1129,7 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 4. NOTIFICATION BUTTON - FIXED
-    // =============================================
-    function viewNotifications() {
-        // Redirect to notifications page or open modal
-        window.location.href = 'notifications.php';
-    }
-
-    // =============================================
-    // 5. CHECK IN / CHECK OUT
+    // 4. CHECK IN / CHECK OUT
     // =============================================
     function checkIn() {
         const btn = event.target.closest('button');
@@ -1240,7 +1188,7 @@ JAVASCRIPT
     }
 
     // =============================================
-    // 6. TOAST SYSTEM
+    // 5. TOAST SYSTEM
     // =============================================
     function showToast(message, type = 'info') {
         const existingToast = document.querySelector('.toast');
@@ -1260,7 +1208,7 @@ JAVASCRIPT
     }
 
     // =============================================
-    // 7. RESPONSIVE HANDLING
+    // 6. RESPONSIVE HANDLING
     // =============================================
     let resizeTimer;
     window.addEventListener('resize', function() {
@@ -1284,7 +1232,7 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 8. KEYBOARD ACCESSIBILITY
+    // 7. KEYBOARD ACCESSIBILITY
     // =============================================
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
@@ -1294,7 +1242,7 @@ JAVASCRIPT
         }
     });
 
-    console.log('Employee Dashboard loaded successfully.');
+    console.log('Attendance Management loaded successfully.');
 </script>
 </body>
 </html>

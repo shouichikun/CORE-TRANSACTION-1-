@@ -1,5 +1,5 @@
 <?php
-// portals/employee/dashboard.php - Employee Dashboard (CLEAN & PROFESSIONAL)
+// portals/employee/performance.php - Employee Performance Management
 session_start();
 
 // =============================================
@@ -30,120 +30,221 @@ $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 
 // =============================================
-// GET EMPLOYEE DATA - ONLY EXISTING COLUMNS
+// GET EMPLOYEE DATA
 // =============================================
 $employee = getRecord("
     SELECT e.*, 
-           u.first_name, u.last_name, u.email, 
-           u.gender, u.birth_date
+           u.first_name, u.last_name, u.email
     FROM employees e
     JOIN users u ON e.user_id = u.id
     WHERE e.user_id = ?
 ", [$userId], "i");
 
-if (!$employee) {
-    // Create employee record if doesn't exist
-    $insertSql = "INSERT INTO employees (user_id, first_name, last_name, email, hire_date, status, created_at) 
-                  VALUES (?, ?, ?, ?, NOW(), 'active', NOW())";
-    $newId = insertRecord($insertSql, [
-        $userId,
-        $firstName,
-        $_SESSION['last_name'] ?? 'User',
-        $email
-    ], "isss");
+// =============================================
+// GET PERFORMANCE REVIEWS
+// =============================================
+$reviews = getRecords("
+    SELECT * FROM performance_reviews 
+    WHERE employee_id = ? 
+    ORDER BY review_date DESC
+", [$userId], "i");
+
+// =============================================
+// GET PERFORMANCE GOALS
+// =============================================
+$goals = getRecords("
+    SELECT * FROM performance_goals 
+    WHERE user_id = ? 
+    ORDER BY created_at DESC
+", [$userId], "i");
+
+// =============================================
+// GET PERFORMANCE STATS
+// =============================================
+$stats = getRecord("
+    SELECT 
+        COUNT(*) as total_reviews,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_reviews,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_reviews,
+        AVG(manager_rating) as avg_rating
+    FROM performance_reviews 
+    WHERE employee_id = ?
+", [$userId], "i");
+
+$totalReviews = $stats['total_reviews'] ?? 0;
+$completedReviews = $stats['completed_reviews'] ?? 0;
+$pendingReviews = $stats['pending_reviews'] ?? 0;
+$avgRating = $stats['avg_rating'] ?? 0;
+
+// =============================================
+// HANDLE FORM SUBMISSION (SELF-EVALUATION)
+// =============================================
+$message = '';
+$messageType = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
     
-    if ($newId) {
-        $employee = getRecord("
-            SELECT e.*, 
-                   u.first_name, u.last_name, u.email, 
-                   u.gender, u.birth_date
-            FROM employees e
-            JOIN users u ON e.user_id = u.id
-            WHERE e.user_id = ?
-        ", [$userId], "i");
+    // =============================================
+    // SUBMIT SELF-EVALUATION
+    // =============================================
+    if ($action === 'submit_self_eval') {
+        $self_rating = isset($_POST['self_rating']) ? (int)$_POST['self_rating'] : 0;
+        $self_feedback = trim($_POST['self_feedback'] ?? '');
+        $achievements = trim($_POST['achievements'] ?? '');
+        $improvements = trim($_POST['improvements'] ?? '');
+        
+        $errors = [];
+        if ($self_rating < 1 || $self_rating > 5) {
+            $errors[] = 'Please select a rating between 1 and 5.';
+        }
+        if (empty($self_feedback)) {
+            $errors[] = 'Please provide your feedback.';
+        }
+        
+        if (empty($errors)) {
+            $sql = "INSERT INTO performance_reviews 
+                    (employee_id, self_rating, self_feedback, achievements, improvements, status, review_date, created_at) 
+                    VALUES (?, ?, ?, ?, ?, 'pending', NOW(), NOW())";
+            
+            $result = insertRecord($sql, [
+                $userId,
+                $self_rating,
+                $self_feedback,
+                $achievements,
+                $improvements
+            ], "issss");
+            
+            if ($result) {
+                logActivity($userId, 'Self Evaluation Submitted', 'performance_reviews', $result, 'Submitted self-evaluation');
+                $message = 'Self-evaluation submitted successfully!';
+                $messageType = 'success';
+                
+                // Refresh data
+                $reviews = getRecords("
+                    SELECT * FROM performance_reviews 
+                    WHERE employee_id = ? 
+                    ORDER BY review_date DESC
+                ", [$userId], "i");
+            } else {
+                $message = 'Failed to submit evaluation. Please try again.';
+                $messageType = 'error';
+            }
+        } else {
+            $message = implode('<br>', $errors);
+            $messageType = 'error';
+        }
+    }
+    
+    // =============================================
+    // ADD A GOAL
+    // =============================================
+    if ($action === 'add_goal') {
+        $goal_title = trim($_POST['goal_title'] ?? '');
+        $goal_description = trim($_POST['goal_description'] ?? '');
+        $target_date = $_POST['target_date'] ?? '';
+        
+        $errors = [];
+        if (empty($goal_title)) {
+            $errors[] = 'Please enter a goal title.';
+        }
+        if (empty($target_date)) {
+            $errors[] = 'Please select a target date.';
+        }
+        
+        if (empty($errors)) {
+            $sql = "INSERT INTO performance_goals (user_id, title, description, target_date, status, created_at) 
+                    VALUES (?, ?, ?, ?, 'active', NOW())";
+            
+            $result = insertRecord($sql, [
+                $userId,
+                $goal_title,
+                $goal_description,
+                $target_date
+            ], "isss");
+            
+            if ($result) {
+                logActivity($userId, 'Goal Added', 'performance_goals', $result, 'Added goal: ' . $goal_title);
+                $message = 'Goal added successfully!';
+                $messageType = 'success';
+                
+                // Refresh data
+                $goals = getRecords("
+                    SELECT * FROM performance_goals 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC
+                ", [$userId], "i");
+            } else {
+                $message = 'Failed to add goal. Please try again.';
+                $messageType = 'error';
+            }
+        } else {
+            $message = implode('<br>', $errors);
+            $messageType = 'error';
+        }
+    }
+    
+    // =============================================
+    // UPDATE GOAL STATUS
+    // =============================================
+    if ($action === 'update_goal') {
+        $goal_id = isset($_POST['goal_id']) ? (int)$_POST['goal_id'] : 0;
+        $status = $_POST['status'] ?? 'active';
+        
+        if ($goal_id > 0) {
+            $sql = "UPDATE performance_goals SET status = ?, updated_at = NOW() WHERE id = ? AND user_id = ?";
+            $result = updateRecord($sql, [$status, $goal_id, $userId], "sii");
+            
+            if ($result) {
+                logActivity($userId, 'Goal Status Updated', 'performance_goals', $goal_id, 'Updated goal status to ' . $status);
+                $message = 'Goal status updated!';
+                $messageType = 'success';
+                
+                // Refresh data
+                $goals = getRecords("
+                    SELECT * FROM performance_goals 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC
+                ", [$userId], "i");
+            } else {
+                $message = 'Failed to update goal status.';
+                $messageType = 'error';
+            }
+        }
     }
 }
 
-// =============================================
-// GET EMPLOYEE DETAILS WITH JOB INFO
-// =============================================
-$employeeDetails = getRecord("
-    SELECT e.*, 
-           jo.id as job_id, jo.title as job_title, jo.description as job_description,
-           jo.location as job_location, jo.job_type, jo.salary_range,
-           c.company_name, c.id as company_id,
-           a.id as application_id, a.interview_date, a.applied_at as hired_at
-    FROM employees e
-    LEFT JOIN applications a ON e.application_id = a.id
-    LEFT JOIN job_orders jo ON a.job_order_id = jo.id
-    LEFT JOIN clients c ON jo.client_id = c.id
-    WHERE e.user_id = ?
-", [$userId], "i");
-
-// =============================================
-// GET ATTENDANCE DATA
-// =============================================
-$todayAttendance = getRecord("
-    SELECT * FROM attendance 
-    WHERE user_id = ? AND DATE(check_in_time) = CURDATE()
-", [$userId], "i");
-
-$hasCheckedIn = $todayAttendance && !empty($todayAttendance['check_in_time']) && empty($todayAttendance['check_out_time']);
-$hasCheckedOut = $todayAttendance && !empty($todayAttendance['check_out_time']);
-
-// Get attendance stats for the month
-$attendanceStats = getRecord("
-    SELECT 
-        COUNT(DISTINCT DATE(check_in_time)) as total_days,
-        SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) as days_present,
-        SUM(CASE WHEN check_in_time IS NULL THEN 1 ELSE 0 END) as days_absent
-    FROM attendance 
-    WHERE user_id = ? AND MONTH(check_in_time) = MONTH(CURDATE()) AND YEAR(check_in_time) = YEAR(CURDATE())
-", [$userId], "i");
-
-// Get recent attendance records (last 7 days)
-$recentAttendance = getRecords("
-    SELECT * FROM attendance 
-    WHERE user_id = ? 
-    ORDER BY check_in_time DESC
-    LIMIT 7
-", [$userId], "i");
-
-// =============================================
-// GET NOTIFICATION COUNT
-// =============================================
-$notificationCount = getRecord("
-    SELECT COUNT(*) as count FROM notifications 
-    WHERE user_id = ? AND is_read = 0
-", [$userId], "i");
-$totalNotifications = $notificationCount['count'] ?? 0;
-
-// =============================================
-// CALCULATE TENURE
-// =============================================
-$hireDate = $employee['hire_date'] ?? date('Y-m-d');
-$tenureDays = floor((time() - strtotime($hireDate)) / (60 * 60 * 24));
-$tenureYears = floor($tenureDays / 365);
-$tenureMonths = floor(($tenureDays % 365) / 30);
-$tenureDaysRemaining = $tenureDays % 30;
-
-$tenureString = '';
-if ($tenureYears > 0) {
-    $tenureString .= $tenureYears . ' year' . ($tenureYears > 1 ? 's' : '');
-}
-if ($tenureMonths > 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureMonths . ' month' . ($tenureMonths > 1 ? 's' : '');
-}
-if ($tenureDaysRemaining > 0 && $tenureYears == 0) {
-    $tenureString .= ($tenureString ? ', ' : '') . $tenureDaysRemaining . ' day' . ($tenureDaysRemaining > 1 ? 's' : '');
-}
-if (empty($tenureString)) {
-    $tenureString = 'New hire';
+// Format rating display
+function displayStars($rating) {
+    $html = '';
+    for ($i = 1; $i <= 5; $i++) {
+        if ($i <= $rating) {
+            $html .= '<span class="star-filled">★</span>';
+        } else {
+            $html .= '<span class="star-empty">☆</span>';
+        }
+    }
+    return $html;
 }
 
-// =============================================
-// GET GREETING (SIMPLE)
-// =============================================
+// Status badge mapping
+$statusBadges = [
+    'pending' => 'badge-pending',
+    'completed' => 'badge-completed',
+    'active' => 'badge-active',
+    'achieved' => 'badge-achieved',
+    'missed' => 'badge-missed'
+];
+
+$statusLabels = [
+    'pending' => 'Pending',
+    'completed' => 'Completed',
+    'active' => 'Active',
+    'achieved' => 'Achieved',
+    'missed' => 'Missed'
+];
+
+// Get greeting
 $currentHour = date('H');
 $greeting = 'Good Evening';
 if ($currentHour < 12) {
@@ -157,12 +258,12 @@ if ($currentHour < 12) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Employee Dashboard - ISMERS</title>
+    <title>Performance - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - EMPLOYEE DASHBOARD (CLEAN)
+           MATERIAL 3 DESIGN SYSTEM - PERFORMANCE MANAGEMENT
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -215,7 +316,7 @@ if ($currentHour < 12) {
         a { text-decoration: none; color: inherit; }
 
         /* =============================================
-           SIDEBAR (MATCHING PROFILE.PHP)
+           SIDEBAR
         ============================================= */
         .dashboard-sidebar {
             position: fixed;
@@ -608,33 +709,7 @@ if ($currentHour < 12) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
 
         /* =============================================
-           WELCOME CARD (CLEAN & COMPACT)
-        ============================================= */
-        .welcome-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-sm);
-            padding: 1.5rem 2rem;
-            margin-bottom: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-        @media (min-width: 640px) {
-            .welcome-card {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
-        }
-        .welcome-card .welcome-text h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-on-surface); }
-        .welcome-card .welcome-text p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
-        .welcome-card .welcome-text .company-name { color: var(--primary); font-weight: 600; }
-        .welcome-card .welcome-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-
-        /* =============================================
-           STATS CARDS
+           STATS GRID
         ============================================= */
         .stats-grid {
             display: grid;
@@ -657,8 +732,20 @@ if ($currentHour < 12) {
             justify-content: space-between;
             align-items: flex-start;
         }
-        .stat-card .stat-number { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); line-height: 1.2; }
-        .stat-card .stat-label { font-size: 0.6875rem; color: var(--text-on-surface-variant); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-top: 0.125rem; }
+        .stat-card .stat-number { 
+            font-size: 1.75rem; 
+            font-weight: 800; 
+            color: var(--text-on-surface); 
+            line-height: 1.2; 
+        }
+        .stat-card .stat-label { 
+            font-size: 0.6875rem; 
+            color: var(--text-on-surface-variant); 
+            text-transform: uppercase; 
+            letter-spacing: 0.05em; 
+            font-weight: 600; 
+            margin-top: 0.125rem; 
+        }
         .stat-card .stat-icon {
             display: inline-flex;
             align-items: center;
@@ -676,75 +763,42 @@ if ($currentHour < 12) {
         .stat-card .stat-icon .material-symbols-outlined { font-size: 1.25rem; }
 
         /* =============================================
-           ATTENDANCE STATUS
+           PERFORMANCE REVIEWS
         ============================================= */
-        .attendance-status {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1.5rem;
-            padding: 1rem 1.25rem;
-            background: var(--bg-surface-low);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            margin-bottom: 1.25rem;
-        }
-        .attendance-status .status-item {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .attendance-status .status-item .status-dot {
-            width: 0.625rem;
-            height: 0.625rem;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        .attendance-status .status-item .status-dot.green { background: var(--success-color); }
-        .attendance-status .status-item .status-dot.red { background: var(--error-color); }
-        .attendance-status .status-item .status-dot.yellow { background: var(--warning-color); }
-        .attendance-status .status-item .status-dot.gray { background: var(--slate-500); }
-        .attendance-status .status-item .status-label { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
-        .attendance-status .status-item .status-value { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
-
-        /* =============================================
-           CARD
-        ============================================= */
-        .card {
+        .reviews-section {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
         }
-        .card-header {
-            padding: 1.25rem 1.5rem;
+        .reviews-section .reviews-header {
+            padding: 1rem 2rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 0.75rem;
+            gap: 0.5rem;
         }
-        .card-header h3 {
-            font-size: 1rem;
+        .reviews-section .reviews-header .reviews-title {
+            font-size: 0.875rem;
             font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.625rem;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
-        .card-header h3 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
-        .card-header .card-action { font-size: 0.8125rem; color: var(--primary); font-weight: 600; text-decoration: none; }
-        .card-header .card-action:hover { text-decoration: underline; }
-        .card-body { padding: 1.25rem 1.5rem; }
+        .reviews-section .reviews-body { padding: 0; overflow-x: auto; }
 
-        .attendance-table {
+        .reviews-table {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.8125rem;
         }
-        .attendance-table thead { background: var(--bg-surface-low); }
-        .attendance-table th {
-            padding: 0.5rem 0.75rem;
+        .reviews-table thead { background: var(--bg-surface-low); }
+        .reviews-table th {
+            padding: 0.625rem 1rem;
             text-align: left;
             font-weight: 600;
             font-size: 0.6875rem;
@@ -753,31 +807,196 @@ if ($currentHour < 12) {
             color: var(--text-on-surface-variant);
             border-bottom: 2px solid var(--slate-200);
         }
-        .attendance-table td {
-            padding: 0.5rem 0.75rem;
+        .reviews-table td {
+            padding: 0.625rem 1rem;
             border-bottom: 1px solid var(--slate-200);
             vertical-align: middle;
         }
-        .attendance-table tr:last-child td { border-bottom: none; }
-        .attendance-table .status-badge {
+        .reviews-table tr:last-child td { border-bottom: none; }
+        .reviews-table tbody tr:hover td { background: var(--bg-surface-low); }
+
+        .badge {
             display: inline-block;
-            padding: 0.125rem 0.5rem;
+            padding: 0.125rem 0.625rem;
             border-radius: var(--radius-full);
             font-size: 0.625rem;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.03em;
         }
-        .attendance-table .status-badge.present { background: #d1fae5; color: #059669; }
-        .attendance-table .status-badge.absent { background: #fecaca; color: #dc2626; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-completed { background: #d1fae5; color: #059669; }
+        .badge-active { background: #dbeafe; color: #2563eb; }
+        .badge-achieved { background: #d1fae5; color: #059669; }
+        .badge-missed { background: #fecaca; color: #dc2626; }
+
+        .star-filled { color: #f59e0b; }
+        .star-empty { color: #d1d5db; }
 
         .empty-state {
             text-align: center;
-            padding: 2rem 1.5rem;
+            padding: 3rem 1.5rem;
         }
         .empty-state .material-symbols-outlined { font-size: 3rem; color: var(--slate-200); display: block; margin-bottom: 0.75rem; }
         .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
+        .empty-state p { font-size: 0.8125rem; color: var(--text-on-surface-variant); }
+
+        /* =============================================
+           SELF-EVALUATION FORM
+        ============================================= */
+        .form-section {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
+        }
+        .form-section .form-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 1rem;
+        }
+        .form-section .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-section .form-group:last-child { margin-bottom: 0; }
+        .form-section .form-group label {
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-bottom: 0.25rem;
+        }
+        .form-section .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
+        .form-section .form-group .form-control {
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            border: 2px solid var(--slate-200);
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+        }
+        .form-section .form-group .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
+        }
+        .form-section .form-group .form-control::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
+        .form-section .form-group textarea.form-control { resize: vertical; min-height: 80px; }
+        .form-section .form-group select.form-control {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 1rem center;
+            padding-right: 2.5rem;
+        }
+        .form-section .form-group .helper-text {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+        .form-section .form-group .helper-text .material-symbols-outlined { font-size: 0.875rem; vertical-align: middle; }
+        .form-section .form-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
+
+        /* =============================================
+           GOALS SECTION
+        ============================================= */
+        .goals-section {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+            margin-bottom: 1.5rem;
+        }
+        .goals-section .goals-header {
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .goals-section .goals-header .goals-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .goals-section .goals-body { padding: 0; overflow-x: auto; }
+
+        .goals-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8125rem;
+        }
+        .goals-table thead { background: var(--bg-surface-low); }
+        .goals-table th {
+            padding: 0.625rem 1rem;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            border-bottom: 2px solid var(--slate-200);
+        }
+        .goals-table td {
+            padding: 0.625rem 1rem;
+            border-bottom: 1px solid var(--slate-200);
+            vertical-align: middle;
+        }
+        .goals-table tr:last-child td { border-bottom: none; }
+        .goals-table tbody tr:hover td { background: var(--bg-surface-low); }
+
+        /* =============================================
+           ADD GOAL FORM (INLINE)
+        ============================================= */
+        .add-goal-section {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
+        }
+        .add-goal-section .add-goal-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface-variant);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 1rem;
+        }
+        .add-goal-section .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+        }
+        @media (max-width: 768px) {
+            .add-goal-section .form-row { grid-template-columns: 1fr; }
+        }
+        .add-goal-section .form-actions {
+            margin-top: 1rem;
+            display: flex;
+            gap: 0.75rem;
+        }
 
         .toast {
             position: fixed;
@@ -820,9 +1039,14 @@ if ($currentHour < 12) {
             .top-header-left .separator { display: none; }
             .profile-dropdown-toggle .profile-name,
             .profile-dropdown-toggle .profile-role { display: none; }
-            .welcome-card { padding: 1rem; }
             .stats-grid { grid-template-columns: 1fr 1fr; }
-            .attendance-table { font-size: 0.75rem; }
+            .reviews-table { font-size: 0.75rem; }
+            .reviews-table th, .reviews-table td { padding: 0.375rem 0.5rem; }
+            .goals-table { font-size: 0.75rem; }
+            .goals-table th, .goals-table td { padding: 0.375rem 0.5rem; }
+            .form-section { padding: 1rem; }
+            .add-goal-section { padding: 1rem; }
+            .add-goal-section .form-row { grid-template-columns: 1fr; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
@@ -831,9 +1055,10 @@ if ($currentHour < 12) {
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 0.5rem; }
             .stat-card { padding: 0.75rem 1rem; }
             .stat-card .stat-number { font-size: 1.25rem; }
-            .card-header { padding: 0.75rem 1rem; }
-            .card-body { padding: 0.75rem 1rem; }
-            .attendance-table { font-size: 0.6875rem; min-width: 300px; }
+            .form-section { padding: 0.75rem; }
+            .add-goal-section { padding: 0.75rem; }
+            .reviews-table { font-size: 0.6875rem; min-width: 300px; }
+            .goals-table { font-size: 0.6875rem; min-width: 300px; }
         }
         .main-scroll::-webkit-scrollbar { width: 6px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -845,7 +1070,7 @@ if ($currentHour < 12) {
 
 <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-<!-- ===== SIDEBAR (MATCHING PROFILE.PHP) ===== -->
+<!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
@@ -856,7 +1081,7 @@ if ($currentHour < 12) {
     </div>
     <nav class="sidebar-nav">
         <div class="nav-label">Main</div>
-        <a href="dashboard.php" class="sidebar-main-link active">
+        <a href="dashboard.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">dashboard</span>
             <span class="nav-text">Dashboard</span>
         </a>
@@ -876,7 +1101,7 @@ if ($currentHour < 12) {
             <span class="material-symbols-outlined">payments</span>
             <span class="nav-text">Payroll</span>
         </a>
-        <a href="performance.php" class="sidebar-main-link">
+        <a href="performance.php" class="sidebar-main-link active">
             <span class="material-symbols-outlined">stars</span>
             <span class="nav-text">Performance</span>
         </a>
@@ -908,19 +1133,9 @@ if ($currentHour < 12) {
             <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><span class="material-symbols-outlined">menu</span></button>
             <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar"><span class="material-symbols-outlined">chevron_left</span></button>
             <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem;">Dashboard</span>
+            <span style="font-weight:600; font-size:0.875rem;">Performance</span>
         </div>
         <div style="display:flex; align-items:center; gap:0.5rem;">
-            <!-- Notification Bell with Click Handler -->
-            <div class="notification-wrapper" style="position:relative;">
-                <button class="notification-btn" id="notificationBtn" onclick="viewNotifications()" style="background:none;border:none;cursor:pointer;padding:0.5rem;border-radius:0.75rem;color:var(--text-on-surface-variant);position:relative;">
-                    <span class="material-symbols-outlined" style="font-size:1.5rem;">notifications</span>
-                    <span class="notification-badge" id="notifBadge" style="position:absolute;top:0.25rem;right:0.25rem;background:#dc2626;color:white;font-size:0.625rem;font-weight:700;min-width:1.25rem;height:1.25rem;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0 0.25rem;<?php echo $totalNotifications > 0 ? '' : 'display:none;'; ?>">
-                        <?php echo $totalNotifications > 0 ? $totalNotifications : ''; ?>
-                    </span>
-                </button>
-            </div>
-            <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'E'); ?></span>
@@ -941,49 +1156,66 @@ if ($currentHour < 12) {
     <!-- Scrollable Content -->
     <main class="main-scroll">
         <div class="container">
+
             <!-- Breadcrumb -->
             <div class="breadcrumb-bar">
                 <div class="breadcrumb-view">
-                    <span class="material-symbols-outlined">dashboard</span>
-                    <span>Dashboard</span>
+                    <span class="material-symbols-outlined">stars</span>
+                    <span>Performance</span>
                     <span class="status-dot"></span>
                     <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                    <span style="font-weight:400; color:var(--text-on-surface-variant);"><?php echo date('l, F j, Y'); ?></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo $totalReviews; ?> reviews
+                    </span>
                 </div>
-                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">Tenure: <?php echo $tenureString; ?></span>
+                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    <?php echo date('F Y'); ?>
+                </span>
             </div>
 
-            <!-- Clean Welcome Card -->
-            <div class="welcome-card">
-                <div class="welcome-text">
-                    <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
-                    <p>
-                        Welcome to your dashboard.
-                        <?php if ($employeeDetails && $employeeDetails['company_name']): ?>
-                            <span class="company-name"><?php echo htmlspecialchars($employeeDetails['company_name']); ?></span> • 
-                            <?php echo htmlspecialchars($employee['position'] ?? 'Employee'); ?>
-                        <?php endif; ?>
-                    </p>
-                </div>
-                <div class="welcome-actions">
-                    <?php if (!$hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-success btn-sm" onclick="checkIn()"><span class="material-symbols-outlined">login</span> Check In</button>
-                    <?php elseif ($hasCheckedIn && !$hasCheckedOut): ?>
-                        <button class="btn btn-danger btn-sm" onclick="checkOut()"><span class="material-symbols-outlined">logout</span> Check Out</button>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">verified</span> Checked In</span>
-                    <?php else: ?>
-                        <span class="btn btn-outline btn-sm" style="cursor:default;"><span class="material-symbols-outlined">check_circle</span> Completed</span>
-                    <?php endif; ?>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Performance</h1>
+                    <p>Track your performance reviews, goals, and achievements</p>
                 </div>
             </div>
+
+            <!-- Toast Messages -->
+            <?php if (!empty($message)): ?>
+                <div class="message <?php echo $messageType; ?>" id="toastMessage" style="padding:0.875rem 1.25rem; border-radius:0.75rem; font-size:0.875rem; margin-bottom:1rem; display:flex; align-items:flex-start; gap:0.75rem; border:1px solid transparent; <?php echo $messageType === 'success' ? 'background:#f0fdf4; border-color:#bbf7d0; color:#16a34a;' : ($messageType === 'error' ? 'background:#fef2f2; border-color:#fecaca; color:#dc2626;' : 'background:#dbeafe; border-color:#93c5fd; color:#2563eb;'); ?>">
+                    <span class="material-symbols-outlined" style="font-size:1.25rem; flex-shrink:0; margin-top:0.0625rem;">
+                        <?php echo $messageType === 'success' ? 'check_circle' : ($messageType === 'error' ? 'error' : 'info'); ?>
+                    </span>
+                    <div>
+                        <strong><?php echo $messageType === 'success' ? 'Success!' : ($messageType === 'error' ? 'Error:' : 'Info:'); ?></strong>
+                        <span style="display:block; font-weight:400;"><?php echo $message; ?></span>
+                    </div>
+                </div>
+                <script>
+                    setTimeout(() => {
+                        const toast = document.getElementById('toastMessage');
+                        if (toast) toast.remove();
+                    }, 5000);
+                </script>
+            <?php endif; ?>
 
             <!-- Stats -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-top">
                         <div>
-                            <div class="stat-number"><?php echo $attendanceStats['days_present'] ?? 0; ?></div>
-                            <div class="stat-label">Days Present</div>
+                            <div class="stat-number"><?php echo $totalReviews; ?></div>
+                            <div class="stat-label">Total Reviews</div>
+                        </div>
+                        <div class="stat-icon blue"><span class="material-symbols-outlined">receipt_long</span></div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-top">
+                        <div>
+                            <div class="stat-number" style="color:#22c55e;"><?php echo $completedReviews; ?></div>
+                            <div class="stat-label">Completed</div>
                         </div>
                         <div class="stat-icon green"><span class="material-symbols-outlined">check_circle</span></div>
                     </div>
@@ -991,101 +1223,78 @@ if ($currentHour < 12) {
                 <div class="stat-card">
                     <div class="stat-top">
                         <div>
-                            <div class="stat-number" style="color:#dc2626;"><?php echo $attendanceStats['days_absent'] ?? 0; ?></div>
-                            <div class="stat-label">Days Absent</div>
+                            <div class="stat-number" style="color:#f59e0b;"><?php echo $pendingReviews; ?></div>
+                            <div class="stat-label">Pending</div>
                         </div>
-                        <div class="stat-icon red"><span class="material-symbols-outlined">event_busy</span></div>
+                        <div class="stat-icon yellow"><span class="material-symbols-outlined">pending</span></div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-top">
                         <div>
-                            <div class="stat-number" style="color:#f59e0b;"><?php echo $attendanceStats['days_late'] ?? 0; ?></div>
-                            <div class="stat-label">Late Arrivals</div>
+                            <div class="stat-number" style="color:#f59e0b;"><?php echo $avgRating > 0 ? number_format($avgRating, 1) . '/5' : 'N/A'; ?></div>
+                            <div class="stat-label">Avg Rating</div>
                         </div>
-                        <div class="stat-icon yellow"><span class="material-symbols-outlined">warning</span></div>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-top">
-                        <div>
-                            <div class="stat-number" style="color:#2563eb;"><?php echo $attendanceStats['days_overtime'] ?? 0; ?></div>
-                            <div class="stat-label">Overtime Days</div>
-                        </div>
-                        <div class="stat-icon blue"><span class="material-symbols-outlined">timer</span></div>
+                        <div class="stat-icon"><span class="material-symbols-outlined">star</span></div>
                     </div>
                 </div>
             </div>
 
-            <!-- Attendance Status -->
-            <div class="attendance-status">
-                <div class="status-item">
-                    <span class="status-dot <?php echo $hasCheckedIn ? 'green' : 'gray'; ?>"></span>
-                    <span class="status-label">Today's Status:</span>
-                    <span class="status-value">
-                        <?php 
-                        if ($hasCheckedOut) echo 'Checked Out';
-                        elseif ($hasCheckedIn) echo 'Checked In';
-                        else echo 'Not Checked In';
-                        ?>
+            <!-- Performance Reviews -->
+            <div class="reviews-section">
+                <div class="reviews-header">
+                    <div class="reviews-title">Performance Reviews</div>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                        <?php echo $totalReviews; ?> reviews
                     </span>
                 </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">This Month:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_present'] ?? 0; ?>/<?php echo $attendanceStats['total_days'] ?? 0; ?> days</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot yellow"></span>
-                    <span class="status-label">Late:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_late'] ?? 0; ?>x</span>
-                </div>
-                <div class="status-item">
-                    <span class="status-dot green"></span>
-                    <span class="status-label">Overtime:</span>
-                    <span class="status-value"><?php echo $attendanceStats['days_overtime'] ?? 0; ?>x</span>
-                </div>
-            </div>
-
-            <!-- Recent Attendance -->
-            <div class="card">
-                <div class="card-header">
-                    <h3><span class="material-symbols-outlined">history</span> Recent Attendance</h3>
-                    <a href="attendance.php" class="card-action">View All →</a>
-                </div>
-                <div class="card-body">
-                    <?php if (empty($recentAttendance)): ?>
+                <div class="reviews-body">
+                    <?php if (empty($reviews)): ?>
                         <div class="empty-state">
-                            <span class="material-symbols-outlined">inbox</span>
-                            <h4>No Attendance Records</h4>
-                            <p>Your attendance records will appear here once you start checking in.</p>
+                            <span class="material-symbols-outlined">rate_review</span>
+                            <h4>No Reviews Yet</h4>
+                            <p>Your performance reviews will appear here once completed.</p>
                         </div>
                     <?php else: ?>
                         <div style="overflow-x:auto;">
-                            <table class="attendance-table">
+                            <table class="reviews-table">
                                 <thead>
                                     <tr>
-                                        <th>Date</th>
-                                        <th>Check In</th>
-                                        <th>Check Out</th>
+                                        <th>Review Date</th>
+                                        <th>Self Rating</th>
+                                        <th>Manager Rating</th>
                                         <th>Status</th>
+                                        <th style="text-align:center;">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($recentAttendance as $record): ?>
-                                        <?php
-                                        $status = 'present';
-                                        $statusLabel = 'Present';
-                                        if (!$record['check_in_time']) {
-                                            $status = 'absent';
-                                            $statusLabel = 'Absent';
-                                        }
-                                        ?>
+                                    <?php foreach ($reviews as $review): ?>
                                         <tr>
-                                            <td><?php echo date('M d, Y', strtotime($record['check_in_time'] ?? $record['created_at'])); ?></td>
-                                            <td><?php echo $record['check_in_time'] ? date('h:i A', strtotime($record['check_in_time'])) : '—'; ?></td>
-                                            <td><?php echo $record['check_out_time'] ? date('h:i A', strtotime($record['check_out_time'])) : '—'; ?></td>
-                                            <td><span class="status-badge <?php echo $status; ?>"><?php echo $statusLabel; ?></span></td>
+                                            <td>
+                                                <div style="font-weight:500; color:var(--text-on-surface);">
+                                                    <?php echo date('M d, Y', strtotime($review['review_date'])); ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div style="display:flex; gap:0.25rem;">
+                                                    <?php echo displayStars($review['self_rating'] ?? 0); ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div style="display:flex; gap:0.25rem;">
+                                                    <?php echo displayStars($review['manager_rating'] ?? 0); ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <span class="badge <?php echo $statusBadges[$review['status']] ?? 'badge-pending'; ?>">
+                                                    <?php echo $statusLabels[$review['status']] ?? ucfirst($review['status']); ?>
+                                                </span>
+                                            </td>
+                                            <td style="text-align:center;">
+                                                <button class="btn btn-primary btn-sm" onclick="viewReview(<?php echo $review['id']; ?>)">
+                                                    <span class="material-symbols-outlined">visibility</span>
+                                                </button>
+                                            </td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -1094,6 +1303,159 @@ if ($currentHour < 12) {
                     <?php endif; ?>
                 </div>
             </div>
+
+            <!-- Self-Evaluation Form -->
+            <div class="form-section">
+                <div class="form-title">Submit Self-Evaluation</div>
+                <form method="POST" action="" id="selfEvalForm">
+                    <input type="hidden" name="action" value="submit_self_eval">
+                    
+                    <div class="form-group">
+                        <label>Self Rating <span class="required">*</span></label>
+                        <select name="self_rating" class="form-control" required>
+                            <option value="">Select rating...</option>
+                            <option value="5">5 - Excellent</option>
+                            <option value="4">4 - Good</option>
+                            <option value="3">3 - Satisfactory</option>
+                            <option value="2">2 - Needs Improvement</option>
+                            <option value="1">1 - Unsatisfactory</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Self Feedback <span class="required">*</span></label>
+                        <textarea name="self_feedback" class="form-control" placeholder="Describe your performance during this period..." rows="3" required></textarea>
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined">info</span>
+                            Be honest and specific about your performance
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Achievements</label>
+                        <textarea name="achievements" class="form-control" placeholder="List your key achievements..." rows="2"></textarea>
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined">info</span>
+                            What did you accomplish during this period?
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Areas for Improvement</label>
+                        <textarea name="improvements" class="form-control" placeholder="What areas do you want to improve?" rows="2"></textarea>
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined">info</span>
+                            Be honest about areas where you can grow
+                        </div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">
+                            <span class="material-symbols-outlined">send</span>
+                            Submit Evaluation
+                        </button>
+                        <button type="reset" class="btn btn-outline">
+                            <span class="material-symbols-outlined">clear</span>
+                            Reset
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Add Goal Form -->
+            <div class="add-goal-section">
+                <div class="add-goal-title">Add New Goal</div>
+                <form method="POST" action="" id="addGoalForm">
+                    <input type="hidden" name="action" value="add_goal">
+                    
+                    <div class="form-row">
+                        <div class="form-group" style="margin:0;">
+                            <label>Goal Title <span class="required">*</span></label>
+                            <input type="text" name="goal_title" class="form-control" placeholder="e.g., Complete Project X" required>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label>Description</label>
+                            <input type="text" name="goal_description" class="form-control" placeholder="Brief description of the goal">
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label>Target Date <span class="required">*</span></label>
+                            <input type="date" name="target_date" class="form-control" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-actions" style="margin-top:1rem;">
+                        <button type="submit" class="btn btn-success">
+                            <span class="material-symbols-outlined">add</span>
+                            Add Goal
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Goals Table -->
+            <div class="goals-section">
+                <div class="goals-header">
+                    <div class="goals-title">My Goals</div>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                        <?php echo count($goals); ?> goals
+                    </span>
+                </div>
+                <div class="goals-body">
+                    <?php if (empty($goals)): ?>
+                        <div class="empty-state">
+                            <span class="material-symbols-outlined">goal</span>
+                            <h4>No Goals Set</h4>
+                            <p>Start setting goals to track your professional development.</p>
+                        </div>
+                    <?php else: ?>
+                        <div style="overflow-x:auto;">
+                            <table class="goals-table">
+                                <thead>
+                                    <tr>
+                                        <th>Goal</th>
+                                        <th>Description</th>
+                                        <th>Target Date</th>
+                                        <th>Status</th>
+                                        <th style="text-align:center;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($goals as $goal): ?>
+                                        <tr>
+                                            <td>
+                                                <span style="font-weight:600; color:var(--text-on-surface);">
+                                                    <?php echo htmlspecialchars($goal['title']); ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <div style="font-size:0.8125rem; color:var(--text-on-surface-variant); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                                    <?php echo htmlspecialchars($goal['description'] ?? '—'); ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <?php echo date('M d, Y', strtotime($goal['target_date'])); ?>
+                                            </td>
+                                            <td>
+                                                <span class="badge <?php echo $statusBadges[$goal['status']] ?? 'badge-active'; ?>">
+                                                    <?php echo $statusLabels[$goal['status']] ?? ucfirst($goal['status']); ?>
+                                                </span>
+                                            </td>
+                                            <td style="text-align:center;">
+                                                <select class="form-control" style="width:auto; display:inline-block; padding:0.25rem 0.5rem; font-size:0.75rem;" onchange="updateGoalStatus(<?php echo $goal['id']; ?>, this.value)">
+                                                    <option value="active" <?php echo ($goal['status'] ?? 'active') === 'active' ? 'selected' : ''; ?>>Active</option>
+                                                    <option value="achieved" <?php echo ($goal['status'] ?? '') === 'achieved' ? 'selected' : ''; ?>>Achieved</option>
+                                                    <option value="missed" <?php echo ($goal['status'] ?? '') === 'missed' ? 'selected' : ''; ?>>Missed</option>
+                                                </select>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
         </div>
     </main>
 </div>
@@ -1173,69 +1535,38 @@ JAVASCRIPT
     });
 
     // =============================================
-    // 4. NOTIFICATION BUTTON - FIXED
+    // 4. VIEW REVIEW DETAILS
     // =============================================
-    function viewNotifications() {
-        // Redirect to notifications page or open modal
-        window.location.href = 'notifications.php';
+    function viewReview(id) {
+        alert('Review details feature coming soon! ID: ' + id);
+        // You can implement a modal or AJAX call here
     }
 
     // =============================================
-    // 5. CHECK IN / CHECK OUT
+    // 5. UPDATE GOAL STATUS
     // =============================================
-    function checkIn() {
-        const btn = event.target.closest('button');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
+    function updateGoalStatus(goalId, status) {
+        const formData = new FormData();
+        formData.append('action', 'update_goal');
+        formData.append('goal_id', goalId);
+        formData.append('status', status);
 
-        fetch('ajax/attendance.php', {
+        fetch('performance.php', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=check_in'
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                showToast('Checked in successfully at ' + data.time, 'success');
-                setTimeout(() => location.reload(), 1500);
+                showToast(data.message, 'success');
+                setTimeout(() => location.reload(), 1000);
             } else {
-                showToast(data.error || 'Failed to check in.', 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
+                showToast(data.error || 'Failed to update status.', 'error');
             }
         })
         .catch(error => {
-            showToast('Error checking in. Please try again.', 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-outlined">login</span> Check In';
-        });
-    }
-
-    function checkOut() {
-        const btn = event.target.closest('button');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Processing...';
-
-        fetch('ajax/attendance.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=check_out'
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast('Checked out successfully at ' + data.time, 'success');
-                setTimeout(() => location.reload(), 1500);
-            } else {
-                showToast(data.error || 'Failed to check out.', 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
-            }
-        })
-        .catch(error => {
-            showToast('Error checking out. Please try again.', 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="material-symbols-outlined">logout</span> Check Out';
+            showToast('Error. Please try again.', 'error');
         });
     }
 
@@ -1294,7 +1625,7 @@ JAVASCRIPT
         }
     });
 
-    console.log('Employee Dashboard loaded successfully.');
+    console.log('Performance Management loaded successfully.');
 </script>
 </body>
 </html>

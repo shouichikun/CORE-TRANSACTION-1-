@@ -1,0 +1,7 @@
+[04-Aug-2026 00:13:38 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Table 'core1_db.invoices' doesn't exist in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT * ...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(93): executeQuery('\r\n    SELECT * ...', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\client\invoices.php(63): getRecords('\r\n    SELECT * ...', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
