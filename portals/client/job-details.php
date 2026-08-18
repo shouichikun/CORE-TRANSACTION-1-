@@ -1,8 +1,9 @@
 <?php
-// portals/client/view_job.php - View Job Details & Manage Applicants
+// portals/client/job-details.php - AI-Powered Job Details & Applicant Management
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -20,6 +21,11 @@ $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
+
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
 
 // Get client profile
 $client = getRecord("
@@ -81,10 +87,180 @@ if (!$job) {
     exit;
 }
 
+// Parse skills from job
+$skillsData = json_decode($job['skills_required'] ?? '{}', true);
+$jobSkills = $skillsData['skills'] ?? [];
+$jobQualifications = $skillsData['qualifications'] ?? [];
+$jobExperience = $skillsData['experience'] ?? [];
+
 // Check if salary columns exist
 $checkColumnsSql = "SHOW COLUMNS FROM job_orders LIKE 'salary_min'";
 $checkResult = mysqli_query($conn, $checkColumnsSql);
 $hasSalaryColumns = mysqli_num_rows($checkResult) > 0;
+
+// =============================================
+// AI HELPER FUNCTIONS
+// =============================================
+
+/**
+ * Calculate AI match score for an applicant against a job
+ */
+function calculateAIMatchScore($job, $applicant) {
+    global $aiService;
+    
+    try {
+        // Parse job skills
+        $skillsData = json_decode($job['skills_required'] ?? '{}', true);
+        $jobSkills = $skillsData['skills'] ?? [];
+        
+        // Get applicant skills from their profile
+        $applicantSkills = [];
+        if (!empty($applicant['skills'])) {
+            // Skills might be stored as comma-separated or JSON
+            if (is_string($applicant['skills'])) {
+                // Check if it's JSON
+                $decoded = json_decode($applicant['skills'], true);
+                if (is_array($decoded)) {
+                    $applicantSkills = $decoded;
+                } else {
+                    $applicantSkills = array_map('trim', explode(',', $applicant['skills']));
+                }
+            } elseif (is_array($applicant['skills'])) {
+                $applicantSkills = $applicant['skills'];
+            }
+        }
+        
+        // Extract years from experience text
+        $experienceYears = 0;
+        if (!empty($applicant['experience'])) {
+            $expText = $applicant['experience'];
+            // Try to extract years from text like "5 years", "3+ years", "2-4 years"
+            if (preg_match('/(\d+)\s*(?:\+|\-)?\s*years?/i', $expText, $matches)) {
+                $experienceYears = intval($matches[1]);
+            } elseif (preg_match('/(\d+)\s*(?:\+|\-)?\s*yrs?/i', $expText, $matches)) {
+                $experienceYears = intval($matches[1]);
+            } else {
+                // Fallback: try to find any number
+                preg_match('/(\d+)/', $expText, $matches);
+                $experienceYears = isset($matches[1]) ? intval($matches[1]) : 0;
+            }
+        }
+        
+        $result = $aiService->calculateMatchScore([
+            'job_title' => $job['title'],
+            'job_skills' => $jobSkills,
+            'job_experience' => $job['experience_level'] ?? 'Mid',
+            'applicant_skills' => $applicantSkills,
+            'applicant_experience' => $experienceYears
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            return [
+                'success' => true,
+                'score' => $result['match_score'] ?? 0,
+                'strengths' => $result['strengths'] ?? [],
+                'gaps' => $result['gaps'] ?? [],
+                'recommendation' => $result['recommendation'] ?? '',
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Match Score Error: " . $e->getMessage());
+    }
+    
+    return [
+        'success' => false,
+        'score' => 0,
+        'error' => 'Could not calculate match score'
+    ];
+}
+
+/**
+ * Get AI job insights
+ */
+function getAIJobInsights($job) {
+    global $aiService;
+    
+    try {
+        $skillsData = json_decode($job['skills_required'] ?? '{}', true);
+        $jobSkills = $skillsData['skills'] ?? [];
+        
+        $result = $aiService->getJobInsights([
+            'title' => $job['title'],
+            'skills' => $jobSkills,
+            'experience_level' => $job['experience_level'] ?? 'Mid',
+            'location' => $job['location'] ?? '',
+            'job_type' => $job['job_type'] ?? 'Full-time'
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            return [
+                'success' => true,
+                'market_demand' => $result['market_demand'] ?? 'Medium',
+                'salary_range' => $result['salary_range'] ?? '',
+                'top_cities' => $result['top_cities'] ?? [],
+                'trending_skills' => $result['trending_skills'] ?? [],
+                'recommendations' => $result['recommendations'] ?? [],
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Insights Error: " . $e->getMessage());
+    }
+    
+    return [
+        'success' => false,
+        'error' => 'Could not generate job insights'
+    ];
+}
+
+// Handle AJAX requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    // =============================================
+    // GET AI MATCH SCORE (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'get_ai_match') {
+        header('Content-Type: application/json');
+        $applicantId = intval($_POST['applicant_id'] ?? 0);
+        
+        if ($applicantId <= 0) {
+            echo json_encode(['success' => false, 'error' => 'Invalid applicant ID']);
+            exit;
+        }
+        
+        // Get applicant details
+        $applicantSql = "SELECT a.*, ap.*, u.first_name, u.last_name, u.email
+                        FROM applications a
+                        JOIN applicants ap ON a.applicant_id = ap.id
+                        JOIN users u ON ap.user_id = u.id
+                        WHERE a.id = ? AND a.job_order_id = ?";
+        $stmt = mysqli_prepare($conn, $applicantSql);
+        mysqli_stmt_bind_param($stmt, 'ii', $applicantId, $jobId);
+        mysqli_stmt_execute($stmt);
+        $applicantResult = mysqli_stmt_get_result($stmt);
+        $applicant = mysqli_fetch_assoc($applicantResult);
+        mysqli_stmt_close($stmt);
+        
+        if (!$applicant) {
+            echo json_encode(['success' => false, 'error' => 'Applicant not found']);
+            exit;
+        }
+        
+        $result = calculateAIMatchScore($job, $applicant);
+        echo json_encode($result);
+        exit;
+    }
+    
+    // =============================================
+    // GET AI JOB INSIGHTS (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'get_ai_insights') {
+        header('Content-Type: application/json');
+        $result = getAIJobInsights($job);
+        echo json_encode($result);
+        exit;
+    }
+}
 
 // Handle Status Update
 $message = '';
@@ -134,9 +310,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// Get applicants for this job with their details
+// Get applicants for this job with their details - FIXED (removed experience_years)
 $applicantsSql = "SELECT a.*, 
-                  ap.id as applicant_profile_id, ap.phone, ap.address, ap.resume_path,
+                  ap.id as applicant_profile_id, ap.phone, ap.address, ap.resume_path, ap.skills, ap.experience, ap.education,
                   u.id as user_id, u.first_name, u.last_name, u.email,
                   (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id AND status IN ('hired', 'shortlisted')) as other_applications
                   FROM applications a
@@ -197,6 +373,9 @@ if (isset($_SESSION['toast_message'])) {
     unset($_SESSION['toast_message']);
     unset($_SESSION['toast_type']);
 }
+
+// Pre-compute AI insights for first load (optional - can be loaded via AJAX)
+$aiInsights = getAIJobInsights($job);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -207,7 +386,9 @@ if (isset($_SESSION['toast_message'])) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* Base styles - Same as previous */
+        /* ==========================================================================
+           MATERIAL 3 DESIGN SYSTEM - JOB DETAILS
+           ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -221,6 +402,11 @@ if (isset($_SESSION['toast_message'])) {
             --primary-container: #eef0ff;
             --on-primary: #ffffff;
             --on-primary-fixed-variant: #4338ca;
+            --green-500: #059669;
+            --green-600: #047857;
+            --yellow-500: #d97706;
+            --red-500: #dc2626;
+            --blue-500: #2563eb;
             --slate-50: #f8fafc;
             --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
@@ -249,6 +435,182 @@ if (isset($_SESSION['toast_message'])) {
             --sidebar-collapsed: 72px;
         }
 
+        /* AI Badge */
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined {
+            font-size: 0.7rem;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined {
+            font-size: 1rem;
+        }
+        .btn-ai:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Match Score Badge */
+        .match-score {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 700;
+        }
+        .match-score.high { background: #d1fae5; color: #047857; }
+        .match-score.medium { background: #fef3c7; color: #b45309; }
+        .match-score.low { background: #fee2e2; color: #b91c1c; }
+        .match-score .material-symbols-outlined { font-size: 0.875rem; }
+
+        /* Match Details Tooltip/Modal */
+        .match-details {
+            display: none;
+            background: var(--bg-surface);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--slate-200);
+            padding: 0.75rem;
+            margin-top: 0.5rem;
+            box-shadow: var(--shadow-sm);
+        }
+        .match-details.show {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .match-details .strength { color: #047857; }
+        .match-details .gap { color: #b91c1c; }
+        .match-details .recommendation { 
+            background: var(--primary-container);
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.75rem;
+            color: var(--primary);
+        }
+
+        /* =============================================
+           AI INSIGHTS PANEL
+        ============================================= */
+        .ai-insights-panel {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-lg);
+            padding: 1rem 1.25rem;
+            margin-top: 1rem;
+        }
+        .ai-insights-panel .insight-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 700;
+            color: var(--primary);
+            font-size: 0.8125rem;
+            margin-bottom: 0.75rem;
+        }
+        .ai-insights-panel .insight-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+        }
+        @media (max-width: 480px) {
+            .ai-insights-panel .insight-grid { grid-template-columns: 1fr; }
+        }
+        .ai-insights-panel .insight-item {
+            background: rgba(255,255,255,0.6);
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius-sm);
+        }
+        .ai-insights-panel .insight-item .label {
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+        .ai-insights-panel .insight-item .value {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+        .ai-insights-panel .insight-item .tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+            margin-top: 0.25rem;
+        }
+        .ai-insights-panel .insight-item .tags .tag {
+            padding: 0.0625rem 0.5rem;
+            background: var(--primary-container);
+            color: var(--primary);
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 500;
+        }
+        .ai-insights-panel .insight-item .recommendations {
+            font-size: 0.75rem;
+            color: var(--text-on-surface);
+            list-style: disc;
+            padding-left: 1.25rem;
+            margin-top: 0.25rem;
+        }
+        .ai-insights-panel .insight-item .recommendations li {
+            margin-bottom: 0.125rem;
+        }
+
+        /* =============================================
+           AI LOADING DOTS (small)
+        ============================================= */
+        .ai-dots-loading-sm {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0;
+        }
+        .ai-dots-loading-sm .dot {
+            width: 0.375rem;
+            height: 0.375rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotPulseSm 1.4s infinite ease-in-out both;
+        }
+        .ai-dots-loading-sm .dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-dots-loading-sm .dot:nth-child(2) { animation-delay: -0.16s; }
+        .ai-dots-loading-sm .dot:nth-child(3) { animation-delay: 0s; }
+        @keyframes dotPulseSm {
+            0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        /* =============================================
+           REST OF STYLES (same as your existing)
+        ============================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -263,7 +625,6 @@ if (isset($_SESSION['toast_message'])) {
         }
         a { text-decoration: none; color: inherit; }
 
-        /* Sidebar - Same as before */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -574,7 +935,6 @@ if (isset($_SESSION['toast_message'])) {
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* Breadcrumb */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -635,7 +995,6 @@ if (isset($_SESSION['toast_message'])) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Toast */
         .toast {
             position: fixed;
             top: 1rem;
@@ -662,7 +1021,6 @@ if (isset($_SESSION['toast_message'])) {
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* Job Details Card */
         .job-detail-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -785,7 +1143,6 @@ if (isset($_SESSION['toast_message'])) {
         .badge-hired { background: #a7f3d0; color: #047857; }
         .badge-rejected { background: #fee2e2; color: #dc2626; }
 
-        /* Applicant List */
         .applicant-filters {
             display: flex;
             gap: 0.5rem;
@@ -869,6 +1226,7 @@ if (isset($_SESSION['toast_message'])) {
             display: flex;
             gap: 0.375rem;
             flex-wrap: wrap;
+            align-items: center;
             margin-top: 0.625rem;
         }
         .applicant-status-select {
@@ -900,13 +1258,6 @@ if (isset($_SESSION['toast_message'])) {
         .empty-state h3 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
-        .action-buttons {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-
-        /* Profile Picture Styles */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -978,52 +1329,52 @@ if (isset($_SESSION['toast_message'])) {
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
         <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
 
         <!-- =============================================
         SIDEBAR FOOTER
@@ -1060,6 +1411,10 @@ if (isset($_SESSION['toast_message'])) {
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Job Details</span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Enhanced
+                </span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -1148,6 +1503,10 @@ if (isset($_SESSION['toast_message'])) {
                                     <span class="material-symbols-outlined">people</span>
                                     <?php echo $job['positions_available'] ?? 1; ?> positions
                                 </span>
+                                <span>
+                                    <span class="material-symbols-outlined">trending_up</span>
+                                    <?php echo htmlspecialchars($job['experience_level'] ?? 'Not specified'); ?>
+                                </span>
                             </div>
                         </div>
                         <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
@@ -1163,6 +1522,53 @@ if (isset($_SESSION['toast_message'])) {
                                     <option value="closed" <?php echo $job['status'] === 'closed' ? 'selected' : ''; ?>>Closed</option>
                                 </select>
                             </form>
+                            <button class="btn btn-sm btn-ai" onclick="loadAIInsights()" id="aiInsightsBtn">
+                                <span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span>
+                                AI Insights
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- AI Insights Panel -->
+                    <div id="aiInsightsPanel" class="ai-insights-panel" style="display:none;">
+                        <div class="insight-header">
+                            <span class="material-symbols-outlined">auto_awesome</span>
+                            AI Job Insights
+                            <span style="font-size:0.55rem; font-weight:400; color:var(--text-on-surface-variant); margin-left:auto;" id="insightsProvider">Groq</span>
+                        </div>
+                        <div id="insightsLoading" class="ai-dots-loading-sm">
+                            <div class="dot"></div>
+                            <div class="dot"></div>
+                            <div class="dot"></div>
+                            <span style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">Analyzing market data...</span>
+                        </div>
+                        <div id="insightsContent" style="display:none;">
+                            <div class="insight-grid">
+                                <div class="insight-item">
+                                    <div class="label">Market Demand</div>
+                                    <div class="value" id="insightDemand">-</div>
+                                </div>
+                                <div class="insight-item">
+                                    <div class="label">Salary Range</div>
+                                    <div class="value" id="insightSalary">-</div>
+                                </div>
+                                <div class="insight-item">
+                                    <div class="label">Top Cities</div>
+                                    <div class="tags" id="insightCities"></div>
+                                </div>
+                                <div class="insight-item">
+                                    <div class="label">Trending Skills</div>
+                                    <div class="tags" id="insightSkills"></div>
+                                </div>
+                                <div class="insight-item" style="grid-column:1/-1;">
+                                    <div class="label">Recommendations</div>
+                                    <ul class="recommendations" id="insightRecommendations"></ul>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="insightsError" style="display:none; color:#dc2626; font-size:0.8125rem; padding:0.5rem;">
+                            <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">error</span>
+                            <span id="insightsErrorMessage">Could not load insights</span>
                         </div>
                     </div>
 
@@ -1172,10 +1578,41 @@ if (isset($_SESSION['toast_message'])) {
                                 <h4>Job Description</h4>
                                 <p><?php echo nl2br(htmlspecialchars($job['description'] ?? '')); ?></p>
                             </div>
-                            <div class="job-detail-section">
-                                <h4>Requirements</h4>
-                                <p><?php echo nl2br(htmlspecialchars($job['requirements'] ?? '')); ?></p>
-                            </div>
+                            <?php if (!empty($jobSkills) || !empty($jobQualifications) || !empty($jobExperience)): ?>
+                                <div class="job-detail-section">
+                                    <h4>Requirements</h4>
+                                    <?php if (!empty($jobSkills)): ?>
+                                        <div style="margin-bottom:0.5rem;">
+                                            <strong style="font-size:0.75rem; color:var(--text-on-surface-variant);">Skills:</strong>
+                                            <div style="display:flex; flex-wrap:wrap; gap:0.25rem; margin-top:0.25rem;">
+                                                <?php foreach ($jobSkills as $skill): ?>
+                                                    <span style="padding:0.0625rem 0.5rem; background:var(--primary-container); color:var(--primary); border-radius:var(--radius-full); font-size:0.6875rem; font-weight:500;"><?php echo htmlspecialchars($skill); ?></span>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if (!empty($jobQualifications)): ?>
+                                        <div style="margin-bottom:0.5rem;">
+                                            <strong style="font-size:0.75rem; color:var(--text-on-surface-variant);">Qualifications:</strong>
+                                            <ul>
+                                                <?php foreach ($jobQualifications as $qual): ?>
+                                                    <li><span class="material-symbols-outlined">check_circle</span> <?php echo htmlspecialchars($qual); ?></li>
+                                                <?php endforeach; ?>
+                                            </ul>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if (!empty($jobExperience)): ?>
+                                        <div>
+                                            <strong style="font-size:0.75rem; color:var(--text-on-surface-variant);">Experience:</strong>
+                                            <ul>
+                                                <?php foreach ($jobExperience as $exp): ?>
+                                                    <li><span class="material-symbols-outlined">work_history</span> <?php echo htmlspecialchars($exp); ?></li>
+                                                <?php endforeach; ?>
+                                            </ul>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
                         </div>
                         <div>
                             <div class="job-detail-section">
@@ -1257,12 +1694,18 @@ if (isset($_SESSION['toast_message'])) {
                     </div>
                 <?php else: ?>
                     <?php foreach ($filteredApplicants as $app): ?>
-                        <div class="applicant-card">
+                        <div class="applicant-card" id="applicant-<?php echo $app['id']; ?>">
                             <div class="applicant-card-header">
                                 <div>
                                     <div class="applicant-name">
                                         <span class="material-symbols-outlined">person</span>
                                         <?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?>
+                                        <!-- AI Match Score -->
+                                        <button class="btn btn-sm btn-ai" onclick="loadAIMatch(<?php echo $app['id']; ?>)" id="matchBtn-<?php echo $app['id']; ?>" style="padding:0.0625rem 0.5rem; font-size:0.625rem; margin-left:0.5rem;">
+                                            <span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span>
+                                            Match
+                                        </button>
+                                        <span id="matchScore-<?php echo $app['id']; ?>"></span>
                                     </div>
                                     <div class="applicant-email"><?php echo htmlspecialchars($app['email']); ?></div>
                                     <div class="applicant-details">
@@ -1288,6 +1731,23 @@ if (isset($_SESSION['toast_message'])) {
                                                 <?php echo $app['other_applications']; ?> other application<?php echo $app['other_applications'] > 1 ? 's' : ''; ?>
                                             </span>
                                         <?php endif; ?>
+                                        <?php if (!empty($app['skills'])): ?>
+                                            <span>
+                                                <span class="material-symbols-outlined">psychology</span>
+                                                <?php echo htmlspecialchars(substr($app['skills'], 0, 50)) . (strlen($app['skills']) > 50 ? '...' : ''); ?>
+                                            </span>
+                                        <?php endif; ?>
+                                    </div>
+                                    <!-- Match Details -->
+                                    <div class="match-details" id="matchDetails-<?php echo $app['id']; ?>">
+                                        <div id="matchContent-<?php echo $app['id']; ?>">
+                                            <div class="ai-dots-loading-sm">
+                                                <div class="dot"></div>
+                                                <div class="dot"></div>
+                                                <div class="dot"></div>
+                                                <span style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">Analyzing match...</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                                 <span class="badge badge-<?php echo $app['status']; ?>">
@@ -1390,6 +1850,206 @@ if (isset($_SESSION['toast_message'])) {
         });
 
         // =============================================
+        // AI MATCH SCORE
+        // =============================================
+        function loadAIMatch(applicantId) {
+            const btn = document.getElementById('matchBtn-' + applicantId);
+            const scoreSpan = document.getElementById('matchScore-' + applicantId);
+            const details = document.getElementById('matchDetails-' + applicantId);
+            const content = document.getElementById('matchContent-' + applicantId);
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="ai-dots-loading-sm" style="display:inline-flex; gap:0.125rem; padding:0;"><div class="dot"></div><div class="dot"></div><div class="dot"></div></span>';
+            
+            const formData = new FormData();
+            formData.append('action', 'get_ai_match');
+            formData.append('applicant_id', applicantId);
+
+            fetch('job-details.php?id=<?php echo $jobId; ?>', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span> Match';
+                
+                if (data.success) {
+                    const score = data.score;
+                    let scoreClass = 'low';
+                    if (score >= 70) scoreClass = 'high';
+                    else if (score >= 40) scoreClass = 'medium';
+                    
+                    scoreSpan.innerHTML = `<span class="match-score ${scoreClass}">
+                        <span class="material-symbols-outlined">${score >= 70 ? 'check_circle' : score >= 40 ? 'info' : 'warning'}</span>
+                        ${score}% Match
+                    </span>`;
+                    
+                    // Build match details
+                    let html = '';
+                    if (data.strengths && data.strengths.length > 0) {
+                        html += '<div style="margin-bottom:0.25rem;"><strong style="font-size:0.6875rem; color:#047857;">✅ Strengths:</strong><br>';
+                        data.strengths.forEach(s => {
+                            html += `<span style="font-size:0.6875rem; color:var(--text-on-surface);">• ${s}</span><br>`;
+                        });
+                        html += '</div>';
+                    }
+                    if (data.gaps && data.gaps.length > 0) {
+                        html += '<div style="margin-bottom:0.25rem;"><strong style="font-size:0.6875rem; color:#b91c1c;">⚠️ Gaps:</strong><br>';
+                        data.gaps.forEach(g => {
+                            html += `<span style="font-size:0.6875rem; color:var(--text-on-surface);">• ${g}</span><br>`;
+                        });
+                        html += '</div>';
+                    }
+                    if (data.recommendation) {
+                        html += `<div class="recommendation">💡 ${data.recommendation}</div>`;
+                    }
+                    if (data.provider) {
+                        html += `<div style="font-size:0.5rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">AI: ${data.provider}</div>`;
+                    }
+                    content.innerHTML = html;
+                    details.classList.add('show');
+                } else {
+                    scoreSpan.innerHTML = `<span style="font-size:0.6875rem; color:#dc2626;">Error</span>`;
+                    content.innerHTML = `<span style="color:#dc2626; font-size:0.75rem;">${data.error || 'Could not calculate match'}</span>`;
+                    details.classList.add('show');
+                }
+            })
+            .catch(error => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span> Match';
+                scoreSpan.innerHTML = `<span style="font-size:0.6875rem; color:#dc2626;">Error</span>`;
+                content.innerHTML = `<span style="color:#dc2626; font-size:0.75rem;">Network error. Please try again.</span>`;
+                details.classList.add('show');
+            });
+        }
+
+        // =============================================
+        // AI JOB INSIGHTS
+        // =============================================
+        let insightsLoaded = false;
+
+        function loadAIInsights() {
+            if (insightsLoaded) {
+                const panel = document.getElementById('aiInsightsPanel');
+                panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+                return;
+            }
+
+            const panel = document.getElementById('aiInsightsPanel');
+            const loading = document.getElementById('insightsLoading');
+            const content = document.getElementById('insightsContent');
+            const error = document.getElementById('insightsError');
+            const btn = document.getElementById('aiInsightsBtn');
+
+            panel.style.display = 'block';
+            loading.style.display = 'flex';
+            content.style.display = 'none';
+            error.style.display = 'none';
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Loading...';
+
+            const formData = new FormData();
+            formData.append('action', 'get_ai_insights');
+
+            fetch('job-details.php?id=<?php echo $jobId; ?>', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Insights';
+                loading.style.display = 'none';
+
+                if (data.success) {
+                    document.getElementById('insightDemand').textContent = data.market_demand || 'N/A';
+                    document.getElementById('insightSalary').textContent = data.salary_range || 'N/A';
+                    document.getElementById('insightsProvider').textContent = data.provider || 'Groq';
+                    
+                    // Cities
+                    const citiesContainer = document.getElementById('insightCities');
+                    citiesContainer.innerHTML = '';
+                    if (data.top_cities && data.top_cities.length > 0) {
+                        data.top_cities.forEach(city => {
+                            const tag = document.createElement('span');
+                            tag.className = 'tag';
+                            tag.textContent = city;
+                            citiesContainer.appendChild(tag);
+                        });
+                    } else {
+                        citiesContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No data</span>';
+                    }
+                    
+                    // Skills
+                    const skillsContainer = document.getElementById('insightSkills');
+                    skillsContainer.innerHTML = '';
+                    if (data.trending_skills && data.trending_skills.length > 0) {
+                        data.trending_skills.forEach(skill => {
+                            const tag = document.createElement('span');
+                            tag.className = 'tag';
+                            tag.textContent = skill;
+                            skillsContainer.appendChild(tag);
+                        });
+                    } else {
+                        skillsContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No data</span>';
+                    }
+                    
+                    // Recommendations
+                    const recContainer = document.getElementById('insightRecommendations');
+                    recContainer.innerHTML = '';
+                    if (data.recommendations && data.recommendations.length > 0) {
+                        data.recommendations.forEach(rec => {
+                            const li = document.createElement('li');
+                            li.textContent = rec;
+                            recContainer.appendChild(li);
+                        });
+                    } else {
+                        recContainer.innerHTML = '<li style="color:var(--text-on-surface-variant);">No recommendations available</li>';
+                    }
+                    
+                    content.style.display = 'block';
+                    insightsLoaded = true;
+                    showToast('✨ AI insights loaded!', 'success');
+                } else {
+                    error.style.display = 'block';
+                    document.getElementById('insightsErrorMessage').textContent = data.error || 'Could not load insights';
+                }
+            })
+            .catch(error => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Insights';
+                loading.style.display = 'none';
+                error.style.display = 'block';
+                document.getElementById('insightsErrorMessage').textContent = 'Network error. Please try again.';
+            });
+        }
+
+        // =============================================
+        // TOAST SYSTEM
+        // =============================================
+        function showToast(message, type) {
+            type = type || 'info';
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+            toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                toast.style.transition = 'all 0.4s ease';
+                setTimeout(() => toast.remove(), 400);
+            }, 3500);
+        }
+
+        // =============================================
         // KEYBOARD SHORTCUTS
         // =============================================
         document.addEventListener('keydown', function(e) {
@@ -1424,7 +2084,8 @@ if (isset($_SESSION['toast_message'])) {
             }, 250);
         });
 
-        console.log('📋 ISMERS Job Details loaded successfully!');
+        console.log('📋 AI-Powered ISMERS Job Details loaded successfully!');
+        console.log('🤖 AI Features: Match Scoring, Job Insights, Candidate Analysis');
     </script>
 
 </body>

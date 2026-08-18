@@ -5,3 +5,113 @@ Stack trace:
 #2 C:\xampp1\htdocs\CT1\portals\client\invoices.php(63): getRecords('\r\n    SELECT * ...', Array, 'i')
 #3 {main}
   thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[09-Aug-2026 21:28:11 Asia/Manila] permissions.php loaded successfully
+[09-Aug-2026 21:28:11 Asia/Manila] 🔍 Loading Gemini configuration...
+[09-Aug-2026 21:28:11 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[09-Aug-2026 21:28:11 Asia/Manila] ⚙️ USE_GEMINI: false
+[09-Aug-2026 21:28:11 Asia/Manila] 🔍 Loading Groq configuration...
+[09-Aug-2026 21:28:11 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[09-Aug-2026 21:28:11 Asia/Manila] ⚙️ USE_GROQ: true
+[09-Aug-2026 21:28:11 Asia/Manila] 📊 AI Configuration Summary:
+[09-Aug-2026 21:28:11 Asia/Manila]   - GROQ: ✅ ENABLED
+[09-Aug-2026 21:28:11 Asia/Manila]   - GEMINI: ❌ DISABLED
+[09-Aug-2026 21:28:11 Asia/Manila] ✅ Groq AI enabled
+[09-Aug-2026 21:28:11 Asia/Manila] 🚀 Using AI Provider: groq
+[09-Aug-2026 21:28:11 Asia/Manila] PHP Fatal error:  Uncaught Error: Call to undefined method AiService::generateExecutiveSummary() in C:\xampp1\htdocs\CT1\portals\client\reports.php:97
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\portals\client\reports.php(461): generateAIExecutiveSummary(Array, 'Tech Solutions ...')
+#1 {main}
+  thrown in C:\xampp1\htdocs\CT1\portals\client\reports.php on line 97
+[09-Aug-2026 21:30:59 Asia/Manila] permissions.php loaded successfully
+[09-Aug-2026 21:30:59 Asia/Manila] 🔍 Loading Gemini configuration...
+[09-Aug-2026 21:30:59 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[09-Aug-2026 21:30:59 Asia/Manila] ⚙️ USE_GEMINI: false
+[09-Aug-2026 21:30:59 Asia/Manila] 🔍 Loading Groq configuration...
+[09-Aug-2026 21:30:59 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[09-Aug-2026 21:30:59 Asia/Manila] ⚙️ USE_GROQ: true
+[09-Aug-2026 21:30:59 Asia/Manila] 📊 AI Configuration Summary:
+[09-Aug-2026 21:30:59 Asia/Manila]   - GROQ: ✅ ENABLED
+[09-Aug-2026 21:30:59 Asia/Manila]   - GEMINI: ❌ DISABLED
+[09-Aug-2026 21:30:59 Asia/Manila] ✅ Groq AI enabled
+[09-Aug-2026 21:30:59 Asia/Manila] 🚀 Using AI Provider: groq
+[09-Aug-2026 21:30:59 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[09-Aug-2026 21:30:59 Asia/Manila] 📡 Calling Groq API...
+[09-Aug-2026 21:30:59 Asia/Manila] 📡 Prompt length: 522
+[09-Aug-2026 21:31:01 Asia/Manila] 📡 Groq API Response: HTTP 200
+[09-Aug-2026 21:31:01 Asia/Manila] 📡 Content received, length: 1278
+[09-Aug-2026 21:31:01 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. is currently facing a challenging hiring landscape, with zero hires despite receiving seven job applications. The company's conversion rate of 0% indicates a need f
+[09-Aug-2026 21:31:01 Asia/Manila] ✅ JSON parsed successfully!
+[09-Aug-2026 21:31:01 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[11-Aug-2026 17:16:56 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 17:16:56 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 17:16:56 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 17:16:56 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 17:16:56 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 17:16:56 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 17:16:56 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 17:16:56 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 17:16:56 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 17:16:56 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 17:16:56 Asia/Manila] ✅ Groq AI enabled
+[11-Aug-2026 17:16:56 Asia/Manila] 🚀 Using AI Provider: groq
+[11-Aug-2026 17:16:56 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[11-Aug-2026 17:16:56 Asia/Manila] 📡 Calling Groq API...
+[11-Aug-2026 17:16:56 Asia/Manila] 📡 Prompt length: 523
+[11-Aug-2026 17:16:58 Asia/Manila] 📡 Groq API Response: HTTP 200
+[11-Aug-2026 17:16:58 Asia/Manila] 📡 Content received, length: 1310
+[11-Aug-2026 17:16:58 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. has a low hiring conversion rate of 14%, resulting in only one hire out of seven total applications. The company currently has no active employees, indicating a nee
+[11-Aug-2026 17:16:58 Asia/Manila] ✅ JSON parsed successfully!
+[11-Aug-2026 17:16:58 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[11-Aug-2026 23:31:09 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 23:31:09 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 23:31:09 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 23:31:09 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 23:31:09 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 23:31:09 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 23:31:09 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 23:31:09 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 23:31:09 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 23:31:09 Asia/Manila]   - GEMINI: ❌ DISABLED
+[15-Aug-2026 00:37:32 Asia/Manila] permissions.php loaded successfully
+[15-Aug-2026 00:37:32 Asia/Manila] 🔍 Loading Gemini configuration...
+[15-Aug-2026 00:37:32 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[15-Aug-2026 00:37:32 Asia/Manila] ⚙️ USE_GEMINI: false
+[15-Aug-2026 00:37:32 Asia/Manila] 🔍 Loading Groq configuration...
+[15-Aug-2026 00:37:32 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[15-Aug-2026 00:37:32 Asia/Manila] ⚙️ USE_GROQ: true
+[15-Aug-2026 00:37:32 Asia/Manila] 📊 AI Configuration Summary:
+[15-Aug-2026 00:37:32 Asia/Manila]   - GROQ: ✅ ENABLED
+[15-Aug-2026 00:37:32 Asia/Manila]   - GEMINI: ❌ DISABLED
+[15-Aug-2026 00:37:38 Asia/Manila] permissions.php loaded successfully
+[15-Aug-2026 00:37:38 Asia/Manila] 🔍 Loading Gemini configuration...
+[15-Aug-2026 00:37:38 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[15-Aug-2026 00:37:38 Asia/Manila] ⚙️ USE_GEMINI: false
+[15-Aug-2026 00:37:38 Asia/Manila] 🔍 Loading Groq configuration...
+[15-Aug-2026 00:37:38 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[15-Aug-2026 00:37:38 Asia/Manila] ⚙️ USE_GROQ: true
+[15-Aug-2026 00:37:38 Asia/Manila] 📊 AI Configuration Summary:
+[15-Aug-2026 00:37:38 Asia/Manila]   - GROQ: ✅ ENABLED
+[15-Aug-2026 00:37:38 Asia/Manila]   - GEMINI: ❌ DISABLED
+[15-Aug-2026 00:37:40 Asia/Manila] permissions.php loaded successfully
+[15-Aug-2026 00:37:40 Asia/Manila] 🔍 Loading Gemini configuration...
+[15-Aug-2026 00:37:40 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[15-Aug-2026 00:37:40 Asia/Manila] ⚙️ USE_GEMINI: false
+[15-Aug-2026 00:37:40 Asia/Manila] 🔍 Loading Groq configuration...
+[15-Aug-2026 00:37:40 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[15-Aug-2026 00:37:40 Asia/Manila] ⚙️ USE_GROQ: true
+[15-Aug-2026 00:37:40 Asia/Manila] 📊 AI Configuration Summary:
+[15-Aug-2026 00:37:40 Asia/Manila]   - GROQ: ✅ ENABLED
+[15-Aug-2026 00:37:40 Asia/Manila]   - GEMINI: ❌ DISABLED
+[15-Aug-2026 00:37:40 Asia/Manila] ✅ Groq AI enabled
+[15-Aug-2026 00:37:40 Asia/Manila] 🚀 Using AI Provider: groq
+[15-Aug-2026 00:37:40 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[15-Aug-2026 00:37:40 Asia/Manila] 📡 Calling Groq API...
+[15-Aug-2026 00:37:40 Asia/Manila] 📡 Prompt length: 523
+[15-Aug-2026 00:37:42 Asia/Manila] 📡 Groq API Response: HTTP 200
+[15-Aug-2026 00:37:42 Asia/Manila] 📡 Content received, length: 1448
+[15-Aug-2026 00:37:42 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. has a relatively low hiring conversion rate of 14%, indicating potential areas for improvement in the recruitment process. With only one active employee, the compan
+[15-Aug-2026 00:37:42 Asia/Manila] ✅ JSON parsed successfully!
+[15-Aug-2026 00:37:42 Asia/Manila] ✅ groqExecutiveSummary returned successfully

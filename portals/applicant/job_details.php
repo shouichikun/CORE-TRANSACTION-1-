@@ -1,8 +1,9 @@
 <?php
-// portals/applicant/job_details.php - View Job Details & Apply (Single Container)
+// portals/applicant/job_details.php - View Job Details & Apply with Face Scanner
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -21,6 +22,38 @@ $firstName = $_SESSION['first_name'] ?? 'Applicant';
 $lastName = $_SESSION['last_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $fullName = $_SESSION['full_name'] ?? 'Applicant User';
+
+// Get applicant data
+$applicant = getApplicantByUserId($userId);
+$applicantId = $applicant['id'] ?? 0;
+
+// =============================================
+// GET COUNTS FOR SIDEBAR BADGES
+// =============================================
+$totalApplications = 0;
+$interviewCount = 0;
+$pendingOffers = 0;
+
+if ($applicantId) {
+    $appResult = getRecord("
+        SELECT COUNT(*) as count FROM applications 
+        WHERE applicant_id = ?
+    ", [$applicantId], "i");
+    $totalApplications = $appResult['count'] ?? 0;
+    
+    $interviewResult = getRecord("
+        SELECT COUNT(*) as count FROM applications 
+        WHERE applicant_id = ? AND interview_date IS NOT NULL
+    ", [$applicantId], "i");
+    $interviewCount = $interviewResult['count'] ?? 0;
+    
+    $offersResult = getRecord("
+        SELECT COUNT(*) as count FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        WHERE a.applicant_id = ? AND o.status = 'sent'
+    ", [$applicantId], "i");
+    $pendingOffers = $offersResult['count'] ?? 0;
+}
 
 // Get job ID from URL
 $jobId = isset($_GET['id']) ? intval($_GET['id']) : 0;
@@ -47,7 +80,6 @@ $jobResult = mysqli_stmt_get_result($stmt);
 $job = mysqli_fetch_assoc($jobResult);
 mysqli_stmt_close($stmt);
 
-// If job doesn't exist or not open
 if (!$job) {
     header('Location: dashboard.php');
     exit;
@@ -59,6 +91,59 @@ $applicant = getRecord("
     FROM applicants
     WHERE user_id = ?
 ", [$userId], "i");
+
+// Check if face is already verified
+$faceVerified = false;
+if ($applicantId) {
+    $faceCheck = getRecord("
+        SELECT id FROM face_verification WHERE user_id = ?
+    ", [$userId], "i");
+    $faceVerified = $faceCheck !== null;
+}
+
+// =============================================
+// AI MATCH SCORE CALCULATION
+// =============================================
+$matchScore = null;
+$matchStrengths = [];
+$matchGaps = [];
+$matchRecommendation = '';
+$matchProvider = '';
+
+if ($applicant && !empty($applicant['skills'])) {
+    try {
+        $aiService = new AiService();
+        
+        $jobData = [
+            'title' => $job['title'] ?? '',
+            'skills_required' => $job['skills_required'] ?? '',
+            'description' => $job['description'] ?? '',
+            'experience_level' => $job['experience_level'] ?? '',
+        ];
+        
+        $applicantData = [
+            'skills' => $applicant['skills'] ?? '',
+            'experience' => $applicant['experience'] ?? '',
+            'education' => $applicant['education'] ?? '',
+        ];
+        
+        $result = $aiService->calculateMatchScore($jobData, $applicantData);
+        
+        if (isset($result['match_score']) && $result['match_score'] !== null) {
+            $matchScore = (int)$result['match_score'];
+            $matchStrengths = $result['strengths'] ?? [];
+            $matchGaps = $result['gaps'] ?? [];
+            $matchRecommendation = $result['recommendation'] ?? '';
+            $matchProvider = $result['provider'] ?? 'unknown';
+        }
+    } catch (Exception $e) {
+        error_log("Match score error for job {$job['id']}: " . $e->getMessage());
+    }
+}
+
+// Get AI provider status
+$aiService = new AiService();
+$isAIEnabled = !$aiService->isUsingMock();
 
 // Check if already applied
 $hasApplied = false;
@@ -122,7 +207,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     if (move_uploaded_file($_FILES['resume']['tmp_name'], $targetPath)) {
                         $resumePath = 'uploads/resumes/' . $newFileName;
                         
-                        // Update applicant resume path
                         $updateSql = "UPDATE applicants SET resume_path = ? WHERE user_id = ?";
                         $stmt = mysqli_prepare($conn, $updateSql);
                         mysqli_stmt_bind_param($stmt, 'si', $resumePath, $userId);
@@ -151,7 +235,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $hasApplied = true;
                     $applicationStatus = 'pending';
                     
-                    // Log activity
                     logActivity($userId, 'Job Application Submitted', 'applications', $applicationId, 
                                'Applied to job: ' . $job['title']);
                 } else {
@@ -188,7 +271,6 @@ while ($row = mysqli_fetch_assoc($similarJobsResult)) {
 }
 mysqli_stmt_close($stmt);
 
-// Status labels
 $statusLabels = [
     'pending' => 'Pending Review',
     'reviewed' => 'Reviewed',
@@ -255,6 +337,9 @@ $statusBadges = [
             --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
+            --success-color: #22c55e;
+            --error-color: #dc2626;
+            --warning-color: #f59e0b;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -611,6 +696,344 @@ $statusBadges = [
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
         /* =============================================
+           AI MATCH SCORE CARD
+        ============================================= */
+        .match-score-card {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-xl);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.25rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .match-score-card .score-circle {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            background: white;
+            box-shadow: 0 4px 16px rgba(79, 70, 229, 0.15);
+        }
+
+        .match-score-card .score-circle .score-number {
+            font-size: 1.75rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .match-score-card .score-circle .score-label {
+            font-size: 0.6rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+
+        .match-score-card .score-circle.high .score-number { color: #059669; }
+        .match-score-card .score-circle.medium .score-number { color: #d97706; }
+        .match-score-card .score-circle.low .score-number { color: #dc2626; }
+
+        .match-score-card .score-details {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .match-score-card .score-details .score-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+            margin-bottom: 0.25rem;
+        }
+
+        .match-score-card .score-details .score-recommendation {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+            line-height: 1.5;
+        }
+
+        .match-score-card .score-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .match-score-card .score-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 500;
+        }
+
+        .match-score-card .score-tag.strength {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .match-score-card .score-tag.gap {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .match-score-card .score-provider {
+            font-size: 0.6rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        /* =============================================
+           FACE SCANNER MODAL
+        ============================================= */
+        .face-scan-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(12px);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            padding: 1.5rem;
+            animation: fadeIn 0.3s ease;
+        }
+        .face-scan-modal.active {
+            display: flex;
+        }
+
+        .face-scan-modal-content {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 520px;
+            width: 100%;
+            padding: 2rem;
+            box-shadow: var(--shadow-xl);
+            animation: modalSlideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            max-height: 95vh;
+            overflow-y: auto;
+        }
+
+        .face-scan-header {
+            text-align: center;
+            margin-bottom: 1.25rem;
+        }
+
+        .face-scan-header h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .face-scan-header p {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        .face-scan-wrapper {
+            position: relative;
+            background: #1a1a2e;
+            border-radius: var(--radius-xl);
+            overflow: hidden;
+            aspect-ratio: 4/3;
+            margin-bottom: 1rem;
+        }
+
+        .face-scan-wrapper video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            transform: scaleX(-1); /* This fixes the mirror effect */
+
+        }
+
+        .face-scan-wrapper canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        .face-scan-guide {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .face-scan-circle {
+            width: 180px;
+            height: 180px;
+            border: 3px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .face-scan-circle .guide-text {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-align: center;
+            padding: 0.5rem;
+        }
+
+        .face-scan-circle::after {
+            content: '';
+            position: absolute;
+            inset: -10px;
+            border-radius: 50%;
+            border: 2px dashed rgba(255, 255, 255, 0.1);
+            animation: spin 20s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .face-scan-status {
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.75rem;
+            background: var(--bg-surface-low);
+            margin-bottom: 1rem;
+            font-size: 0.8125rem;
+        }
+
+        .face-scan-status .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            transition: all 0.3s ease;
+        }
+
+        .face-scan-status .status-dot.idle { background: #9ca3af; }
+        .face-scan-status .status-dot.scanning { background: var(--warning-color); animation: pulse 1s infinite; }
+        .face-scan-status .status-dot.success { background: var(--success-color); }
+        .face-scan-status .status-dot.error { background: var(--error-color); }
+
+        .face-scan-actions {
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .face-scan-actions .btn {
+            flex: 1;
+            justify-content: center;
+            padding: 0.625rem 1.25rem;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            font-size: 0.875rem;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .face-scan-actions .btn-outline {
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            border: 2px solid var(--slate-200);
+        }
+
+        .face-scan-actions .btn-outline:hover {
+            background: var(--bg-surface-low);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .face-scan-actions .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
+        }
+
+        .face-scan-actions .btn-primary:hover:not(:disabled) {
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35);
+        }
+
+        .face-scan-actions .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .face-scan-actions .btn .material-symbols-outlined {
+            font-size: 1.125rem;
+        }
+
+        .face-scan-actions .loading-spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        /* Face verified badge */
+        .face-verified-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #6ee7b7;
+        }
+
+        .face-verified-badge .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.3); opacity: 0.6; }
+        }
+
+        /* =============================================
            SINGLE CONTAINER - JOB DETAILS
         ============================================= */
         .job-card {
@@ -621,7 +1044,6 @@ $statusBadges = [
             overflow: hidden;
         }
 
-        /* Divider Lines */
         .section-divider {
             height: 2px;
             background: linear-gradient(to right, var(--primary), var(--primary-light), transparent);
@@ -630,7 +1052,6 @@ $statusBadges = [
             opacity: 0.6;
         }
 
-        /* Job Header */
         .job-header {
             padding: 1.5rem 2rem;
             background: var(--bg-surface-low);
@@ -668,7 +1089,6 @@ $statusBadges = [
             margin-top: 0.75rem;
         }
 
-        /* Section Styles */
         .job-section {
             padding: 1.25rem 2rem;
         }
@@ -721,7 +1141,6 @@ $statusBadges = [
         .badge-hired { background: #a7f3d0; color: #047857; }
         .badge-rejected { background: #fee2e2; color: #dc2626; }
 
-        /* Info Grid */
         .info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -748,7 +1167,6 @@ $statusBadges = [
             font-size: 0.875rem;
         }
 
-        /* Application Section */
         .apply-section {
             background: var(--bg-surface-low);
             border-radius: 0.75rem;
@@ -790,59 +1208,15 @@ $statusBadges = [
         .apply-btn {
             padding: 0.75rem 1.5rem;
             font-size: 1rem;
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35);
         }
 
-        /* Application Form */
-        .application-form {
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--slate-200);
-        }
-        .application-form .form-group {
-            margin-bottom: 1rem;
-        }
-        .application-form .form-group label {
-            display: block;
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-        .application-form .form-group .form-control {
-            width: 100%;
-            padding: 0.5rem 0.75rem;
-            border: 1.5px solid var(--slate-200);
-            border-radius: 0.5rem;
-            font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-        }
-        .application-form .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-        }
-        .application-form .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 100px;
-        }
-        .application-form .form-group .file-input-wrapper {
-            position: relative;
-            overflow: hidden;
-        }
-        .application-form .form-group .file-input-wrapper input[type="file"] {
-            position: absolute;
-            left: 0;
-            top: 0;
-            opacity: 0;
-            width: 100%;
-            height: 100%;
-            cursor: pointer;
-        }
-        .application-form .form-group .file-input-wrapper .btn {
-            pointer-events: none;
+        .apply-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.45);
+            background: linear-gradient(135deg, #4338ca, #6d28d9);
         }
 
         .applied-status {
@@ -866,7 +1240,6 @@ $statusBadges = [
             color: var(--text-on-surface-variant);
         }
 
-        /* Similar Jobs */
         .similar-job-card {
             padding: 0.75rem 1rem;
             border: 1px solid var(--slate-200);
@@ -916,6 +1289,7 @@ $statusBadges = [
         .toast .material-symbols-outlined { font-size: 1.25rem; }
         .toast.success { background: #059669; }
         .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
@@ -940,6 +1314,11 @@ $statusBadges = [
             .profile-dropdown-toggle .profile-role { display: none; }
             .job-header .job-title { font-size: 1.25rem; }
             .info-grid { grid-template-columns: 1fr; }
+            .match-score-card { flex-direction: column; align-items: stretch; text-align: center; }
+            .match-score-card .score-circle { margin: 0 auto; }
+            .match-score-card .score-tags { justify-content: center; }
+            .face-scan-modal-content { padding: 1.25rem; margin: 0.5rem; }
+            .face-scan-circle { width: 140px; height: 140px; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
@@ -948,6 +1327,10 @@ $statusBadges = [
             .job-section { padding: 0.75rem 1rem; }
             .job-section:last-child { padding-bottom: 0.75rem; }
             .job-header .job-title { font-size: 1.125rem; }
+            .match-score-card .score-circle { width: 64px; height: 64px; }
+            .match-score-card .score-circle .score-number { font-size: 1.25rem; }
+            .face-scan-circle { width: 120px; height: 120px; }
+            .face-scan-actions { flex-direction: column; }
         }
         .main-scroll::-webkit-scrollbar { width: 5px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -970,22 +1353,39 @@ $statusBadges = [
             <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
         <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
+            <div class="nav-label">Main Menu</div>
+
             <a href="dashboard.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link active">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">Jobs</span>
-            </a>
-            <a href="applications.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">assignment</span>
-                <span class="nav-text">My Applications</span>
-            </a>
+
             <a href="profile.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">person</span>
-                <span class="nav-text">Profile</span>
+                <span class="nav-text">My Profile</span>
+            </a>
+
+            <a href="applications.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">Applications</span>
+                <span class="nav-badge"><?php echo $totalApplications; ?></span>
+            </a>
+
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
+            </a>
+
+            <a href="interview.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
+
+            <a href="job_search.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">search</span>
+                <span class="nav-text">Job Search</span>
             </a>
 
         </nav>
@@ -997,10 +1397,6 @@ $statusBadges = [
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            <a href="../../logout.php" class="logout-btn">
-                <span class="material-symbols-outlined">logout</span>
-                <span class="logout-text">Logout</span>
-            </a>
         </div>
     </aside>
 
@@ -1012,10 +1408,10 @@ $statusBadges = [
                     <span class="material-symbols-outlined">menu</span>
                 </button>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
+                    <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <a href="jobs.php" style="font-weight:500; font-size:0.8125rem; color:var(--text-on-surface-variant); display:flex; align-items:center; gap:0.25rem;">
+                <a href="job_search.php" style="font-weight:500; font-size:0.8125rem; color:var(--text-on-surface-variant); display:flex; align-items:center; gap:0.25rem;">
                     <span class="material-symbols-outlined" style="font-size:1rem;">arrow_back</span>
                     Back to Jobs
                 </a>
@@ -1073,6 +1469,57 @@ $statusBadges = [
                     </div>
                     <span class="breadcrumb-meta">Posted <?php echo date('M d, Y', strtotime($job['created_at'])); ?></span>
                 </div>
+
+                <!-- AI Match Score Card -->
+                <?php if ($matchScore !== null && $matchScore > 0): ?>
+                <div class="match-score-card">
+                    <?php 
+                    $scoreClass = 'low';
+                    if ($matchScore >= 70) $scoreClass = 'high';
+                    elseif ($matchScore >= 40) $scoreClass = 'medium';
+                    ?>
+                    <div class="score-circle <?php echo $scoreClass; ?>">
+                        <span class="score-number"><?php echo $matchScore; ?>%</span>
+                        <span class="score-label">Match</span>
+                    </div>
+                    <div class="score-details">
+                        <div class="score-title">Your Match Score</div>
+                        <div class="score-recommendation"><?php echo htmlspecialchars($matchRecommendation); ?></div>
+                        
+                        <?php if (!empty($matchStrengths) || !empty($matchGaps)): ?>
+                        <div class="score-tags">
+                            <?php foreach (array_slice($matchStrengths, 0, 2) as $strength): ?>
+                                <span class="score-tag strength">
+                                    <span class="material-symbols-outlined" style="font-size:0.75rem;">check</span>
+                                    <?php echo htmlspecialchars($strength); ?>
+                                </span>
+                            <?php endforeach; ?>
+                            <?php foreach (array_slice($matchGaps, 0, 2) as $gap): ?>
+                                <span class="score-tag gap">
+                                    <span class="material-symbols-outlined" style="font-size:0.75rem;">warning</span>
+                                    <?php echo htmlspecialchars($gap); ?>
+                                </span>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($matchProvider && $matchProvider !== 'mock'): ?>
+                        <div class="score-provider">✨ Powered by <?php echo ucfirst($matchProvider); ?></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php elseif ($applicant && empty($applicant['skills'])): ?>
+                <div class="match-score-card" style="background: linear-gradient(135deg, #fef3c7, #fde68a); border-color: #fcd34d;">
+                    <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap; width:100%;">
+                        <span class="material-symbols-outlined" style="font-size:2rem; color:#92400e;">info</span>
+                        <div style="flex:1;">
+                            <div style="font-weight:600; color:#92400e;">Profile Incomplete</div>
+                            <div style="font-size:0.8125rem; color:#92400e;">Add your skills to see your match score for this job.</div>
+                            <a href="edit_profile.php" style="margin-top:0.25rem; display:inline-block; font-size:0.75rem; font-weight:600; color:#4f46e5;">Update Profile →</a>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
 
                 <!-- Single Job Card -->
                 <div class="job-card">
@@ -1216,12 +1663,27 @@ $statusBadges = [
                                 </div>
                             </div>
                         <?php else: ?>
-                            <button class="btn btn-primary btn-block apply-btn" onclick="toggleApplicationForm()">
-                                <span class="material-symbols-outlined">send</span>
-                                Apply Now
+                            <!-- Face Verification Status -->
+                            <?php if ($faceVerified): ?>
+                            <div style="margin-bottom:0.75rem; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem; background:#d1fae5; border-radius:0.5rem; border:1px solid #6ee7b7;">
+                                <span class="material-symbols-outlined" style="color:#059669;">verified</span>
+                                <span style="font-size:0.8125rem; color:#065f46; font-weight:500;">Face verified ✓</span>
+                            </div>
+                            <?php endif; ?>
+
+                            <button class="btn btn-primary btn-block apply-btn" onclick="openFaceScanner()">
+                                <span class="material-symbols-outlined">scan</span>
+                                <?php echo $faceVerified ? 'Apply Now' : 'Apply Now (Face Verification Required)'; ?>
                             </button>
 
-                            <!-- Application Form -->
+                            <!-- Hidden form that gets submitted after face capture -->
+                            <form id="applyForm" method="POST" enctype="multipart/form-data" style="display:none;">
+                                <input type="hidden" name="action" value="apply">
+                                <input type="hidden" name="cover_letter" id="applyCoverLetter">
+                                <input type="hidden" name="resume" id="applyResume">
+                            </form>
+
+                            <!-- Original application form (kept for manual apply) -->
                             <div class="application-form" id="applicationForm" style="display:none;">
                                 <form method="POST" enctype="multipart/form-data">
                                     <input type="hidden" name="action" value="apply">
@@ -1292,29 +1754,70 @@ $statusBadges = [
         </main>
     </div>
 
+    <!-- =============================================
+    FACE SCANNER MODAL
+    ============================================= -->
+    <div class="face-scan-modal" id="faceScanModal">
+        <div class="face-scan-modal-content">
+            <div class="face-scan-header">
+                <h3>
+                    <span class="material-symbols-outlined" style="color:var(--primary);">scan</span>
+                    Face Verification Required
+                </h3>
+                <p>Please position your face for biometric verification</p>
+            </div>
+
+            <div class="face-scan-wrapper">
+                <video id="faceScanVideo" autoplay muted playsinline></video>
+                <canvas id="faceScanCanvas"></canvas>
+                <div class="face-scan-guide">
+                    <div class="face-scan-circle">
+                        <span class="guide-text">Position your face here</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="face-scan-status">
+                <span class="status-dot idle" id="faceScanStatusDot"></span>
+                <span id="faceScanStatusText">Initializing camera...</span>
+            </div>
+
+            <div class="face-scan-actions">
+                <button type="button" class="btn btn-outline" onclick="closeFaceScanner()">
+                    <span class="material-symbols-outlined">close</span>
+                    Cancel
+                </button>
+                <button type="button" class="btn btn-primary" id="captureFaceBtn" onclick="captureFace()" disabled>
+                    <span class="material-symbols-outlined">scan</span>
+                    Capture Face
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
     <script>
         // =============================================
         // SIDEBAR TOGGLE
         // =============================================
         const sidebar = document.getElementById('appSidebar');
         const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+        const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
         const isMobile = window.innerWidth <= 768;
         const savedState = localStorage.getItem('sidebarCollapsed');
 
         if (savedState === 'true' && !isMobile) {
             sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+            sidebarToggleIcon.textContent = 'chevron_right';
         }
 
         sidebarToggleBtn.addEventListener('click', function() {
             if (window.innerWidth <= 768) return;
             sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            }
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            sidebarToggleIcon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
         });
 
         // =============================================
@@ -1370,6 +1873,295 @@ $statusBadges = [
             }
         }
 
+     // =============================================
+// FACE SCANNER - IMPROVED CAPTURE
+// =============================================
+let faceScanVideo = null;
+let faceScanCanvas = null;
+let faceScanStream = null;
+let faceScanDetection = null;
+let faceScanInitialized = false;
+let faceScanCaptured = false;
+let faceScanTimer = null;
+let faceApiLoaded = false;
+let captureAttempts = 0;
+
+function openFaceScanner() {
+    const modal = document.getElementById('faceScanModal');
+    modal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    captureAttempts = 0;
+    
+    // Reset state
+    faceScanCaptured = false;
+    faceScanDetection = null;
+    
+    if (typeof faceapi === 'undefined') {
+        updateFaceScanStatus('❌ Face API not loaded. Please refresh.', 'error');
+        document.getElementById('captureFaceBtn').disabled = true;
+        return;
+    }
+    
+    initFaceScanner();
+}
+
+function closeFaceScanner() {
+    const modal = document.getElementById('faceScanModal');
+    modal.classList.remove('active');
+    document.body.style.overflow = '';
+    stopFaceScanner();
+}
+
+async function initFaceScanner() {
+    try {
+        faceScanVideo = document.getElementById('faceScanVideo');
+        faceScanCanvas = document.getElementById('faceScanCanvas');
+        
+        // Load face-api.js models
+        const modelPath = '/CT1/public/js';
+        await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(modelPath);
+        await faceapi.nets.faceExpressionNet.loadFromUri(modelPath);
+        
+        faceApiLoaded = true;
+
+        // Start camera
+        faceScanStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 480, height: 360, facingMode: 'user' },
+            audio: false
+        });
+
+        faceScanVideo.srcObject = faceScanStream;
+        await faceScanVideo.play();
+
+        // Set canvas size
+        faceScanCanvas.width = 480;
+        faceScanCanvas.height = 360;
+
+        updateFaceScanStatus('Camera ready - Position your face', 'idle');
+        document.getElementById('captureFaceBtn').disabled = false;
+        faceScanInitialized = true;
+
+        // Start detection loop
+        detectFaceForScan();
+
+    } catch (error) {
+        console.error('Face scanner error:', error);
+        if (error.message && error.message.includes('Permission')) {
+            updateFaceScanStatus('❌ Camera access denied. Please allow camera permissions.', 'error');
+        } else {
+            updateFaceScanStatus('❌ Camera error: ' + error.message, 'error');
+        }
+        document.getElementById('captureFaceBtn').disabled = true;
+    }
+}
+
+function stopFaceScanner() {
+    if (faceScanStream) {
+        faceScanStream.getTracks().forEach(track => track.stop());
+        faceScanStream = null;
+    }
+    if (faceScanTimer) {
+        clearTimeout(faceScanTimer);
+        faceScanTimer = null;
+    }
+    faceScanInitialized = false;
+    
+    if (faceScanCanvas) {
+        const ctx = faceScanCanvas.getContext('2d');
+        ctx.clearRect(0, 0, faceScanCanvas.width, faceScanCanvas.height);
+    }
+}
+
+async function detectFaceForScan() {
+    if (!faceScanInitialized || !faceApiLoaded) return;
+
+    try {
+        const options = new faceapi.TinyFaceDetectorOptions({
+            inputSize: 224,
+            scoreThreshold: 0.6
+        });
+
+        const detection = await faceapi.detectSingleFace(faceScanVideo, options)
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+
+        const ctx = faceScanCanvas.getContext('2d');
+        ctx.clearRect(0, 0, faceScanCanvas.width, faceScanCanvas.height);
+
+        if (detection) {
+            // Draw detection on canvas - flip the coordinates to match the mirrored video
+            const box = detection.detection.box;
+            
+            // Flip the x coordinates to match the mirrored video
+            const flippedX = faceScanCanvas.width - box.x - box.width;
+            
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(flippedX, box.y, box.width, box.height);
+
+            // Draw landmarks flipped horizontally
+            const landmarks = detection.landmarks;
+            const positions = landmarks.positions;
+            
+            // Draw landmarks with flipped x coordinates
+            ctx.fillStyle = '#22c55e';
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 2;
+            
+            // Draw the facial landmarks (mirrored)
+            for (let i = 0; i < positions.length; i++) {
+                const flippedPosX = faceScanCanvas.width - positions[i].x;
+                ctx.beginPath();
+                ctx.arc(flippedPosX, positions[i].y, 2, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+            
+            // Draw connections between landmarks (jawline, eyebrows, etc.)
+            // This is a simplified version - you can use faceapi.draw for more accuracy
+            
+            updateFaceScanStatus('✅ Face detected - Ready to capture', 'success');
+            document.getElementById('captureFaceBtn').disabled = false;
+            faceScanDetection = detection;
+
+        } else {
+            updateFaceScanStatus('Looking for face...', 'scanning');
+            document.getElementById('captureFaceBtn').disabled = true;
+            faceScanDetection = null;
+        }
+
+    } catch (error) {
+        // Silent fail for loop
+    }
+
+    faceScanTimer = setTimeout(detectFaceForScan, 150);
+}
+function updateFaceScanStatus(text, type = 'idle') {
+    const dot = document.getElementById('faceScanStatusDot');
+    const textEl = document.getElementById('faceScanStatusText');
+
+    dot.className = 'status-dot ' + type;
+    textEl.textContent = text;
+}
+
+async function captureFace() {
+    if (!faceScanDetection || !faceScanInitialized) {
+        showToast('No face detected. Please position your face.', 'error');
+        return;
+    }
+
+    const captureBtn = document.getElementById('captureFaceBtn');
+    captureBtn.disabled = true;
+    captureBtn.innerHTML = '<span class="loading-spinner"></span> Processing...';
+    captureAttempts++;
+
+    updateFaceScanStatus('Processing face data... (Attempt ' + captureAttempts + ')', 'scanning');
+
+    try {
+        // Get face descriptor as array
+        const descriptor = Array.from(faceScanDetection.descriptor);
+        
+        // Validate descriptor
+        if (!descriptor || descriptor.length < 10) {
+            throw new Error('Invalid face descriptor data');
+        }
+
+        // Take snapshot
+        const snapshot = await takeFaceSnapshot();
+
+        // Prepare request data
+        const requestData = {
+            action: 'enroll',
+            user_id: <?php echo $userId; ?>,
+            descriptor: descriptor,
+            snapshot: snapshot
+        };
+
+        console.log('Sending face data:', {
+            user_id: requestData.user_id,
+            descriptor_length: requestData.descriptor.length,
+            snapshot_length: requestData.snapshot ? requestData.snapshot.length : 0
+        });
+
+        // Send to server for enrollment
+        const response = await fetch('/CT1/api/biometric_verify.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(requestData)
+        });
+
+        // Check if response is ok
+        if (!response.ok) {
+            const text = await response.text();
+            console.error('Server error response:', text);
+            throw new Error('Server returned ' + response.status + ': ' + text);
+        }
+
+        const data = await response.json();
+        console.log('Server response:', data);
+
+        if (data.success) {
+            faceScanCaptured = true;
+            updateFaceScanStatus('✅ Face captured successfully!', 'success');
+            showToast('Face verification complete!', 'success');
+
+            // Close modal and submit application
+            setTimeout(() => {
+                closeFaceScanner();
+                // Submit the application form
+                document.getElementById('applyForm').submit();
+            }, 1000);
+
+        } else {
+            updateFaceScanStatus('❌ Face capture failed: ' + (data.error || 'Unknown error'), 'error');
+            showToast('Face capture failed: ' + (data.error || 'Please try again.'), 'error');
+            captureBtn.disabled = false;
+            captureBtn.innerHTML = '<span class="material-symbols-outlined">scan</span> Capture Face';
+        }
+
+    } catch (error) {
+        console.error('Capture error:', error);
+        updateFaceScanStatus('❌ Error: ' + error.message, 'error');
+        showToast('Error capturing face: ' + error.message, 'error');
+        captureBtn.disabled = false;
+        captureBtn.innerHTML = '<span class="material-symbols-outlined">scan</span> Capture Face';
+    }
+}
+
+function takeFaceSnapshot() {
+    return new Promise((resolve) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = faceScanVideo.videoWidth || 480;
+        canvas.height = faceScanVideo.videoHeight || 360;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(faceScanVideo, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+    });
+}
+
+        function showToast(message, type) {
+            type = type || 'info';
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info', 'warning': 'warning' };
+            toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                toast.style.transition = 'all 0.4s ease';
+                setTimeout(() => toast.remove(), 400);
+            }, 3500);
+        }
+
         // =============================================
         // KEYBOARD SHORTCUTS
         // =============================================
@@ -1378,6 +2170,9 @@ $statusBadges = [
                 closeMobileSidebar();
                 profileToggle.classList.remove('open');
                 profileMenu.classList.remove('open');
+                if (document.getElementById('faceScanModal').classList.contains('active')) {
+                    closeFaceScanner();
+                }
             }
         });
 
@@ -1391,6 +2186,7 @@ $statusBadges = [
                 const width = window.innerWidth;
                 if (width <= 768) {
                     sidebar.classList.remove('collapsed');
+                    sidebarToggleIcon.textContent = 'chevron_left';
                 } else {
                     sidebar.classList.remove('mobile-open');
                     sidebarBackdrop.classList.remove('active');
@@ -1398,8 +2194,10 @@ $statusBadges = [
                     const saved = localStorage.getItem('sidebarCollapsed');
                     if (saved === 'true') {
                         sidebar.classList.add('collapsed');
+                        sidebarToggleIcon.textContent = 'chevron_right';
                     } else {
                         sidebar.classList.remove('collapsed');
+                        sidebarToggleIcon.textContent = 'chevron_left';
                     }
                 }
             }, 250);
@@ -1419,7 +2217,13 @@ $statusBadges = [
             }
         });
 
-        console.log('💼 ISMERS Job Details (Single Container) loaded successfully!');
+        console.log('💼 ISMERS Job Details loaded successfully!');
+        <?php if ($matchScore !== null): ?>
+        console.log('🤖 Match Score: <?php echo $matchScore; ?>%');
+        <?php endif; ?>
+        <?php if ($faceVerified): ?>
+        console.log('✅ Face Verified: Yes');
+        <?php endif; ?>
     </script>
 
 </body>

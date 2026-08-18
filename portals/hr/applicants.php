@@ -1,5 +1,5 @@
 <?php
-// portals/hr/applicants.php - Manage Applicants (FIXED RESUME PATH)
+// portals/hr/applicants.php - Manage Applicants with Advanced AI Integration
 session_start();
 
 // =============================================
@@ -15,6 +15,7 @@ ob_clean();
 
 require_once '../../app/config.php';
 require_once '../../app/email_functions.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -36,7 +37,420 @@ $role = $_SESSION['role'] ?? 'hr_manager';
 $isHRManager = $role === 'hr_manager';
 
 // =============================================
-// RESUME PATH CONFIGURATION - FIXED
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
+
+// =============================================
+// ENHANCED AI HELPER FUNCTIONS
+// =============================================
+
+/**
+ * Get match level based on score with more granular levels
+ */
+function getMatchLevel($score) {
+    if ($score >= 85) {
+        return ['label' => 'Excellent', 'color' => '#059669', 'bg' => '#d1fae5', 'icon' => 'star', 'class' => 'excellent'];
+    } elseif ($score >= 70) {
+        return ['label' => 'Very Good', 'color' => '#2563eb', 'bg' => '#dbeafe', 'icon' => 'stars', 'class' => 'good'];
+    } elseif ($score >= 55) {
+        return ['label' => 'Good', 'color' => '#7c3aed', 'bg' => '#ede9fe', 'icon' => 'thumb_up', 'class' => 'good'];
+    } elseif ($score >= 40) {
+        return ['label' => 'Fair', 'color' => '#d97706', 'bg' => '#fef3c7', 'icon' => 'flag', 'class' => 'fair'];
+    } else {
+        return ['label' => 'Low', 'color' => '#dc2626', 'bg' => '#fecaca', 'icon' => 'error', 'class' => 'low'];
+    }
+}
+
+/**
+ * Calculate comprehensive AI match score using all available data
+ */
+function calculateComprehensiveMatchScore($jobData, $applicantData, $aiService) {
+    // 1. Skills Match (Primary - 50% weight)
+    $skillsScore = calculateSkillsMatch($jobData, $applicantData);
+    
+    // 2. Experience Match (25% weight)
+    $experienceScore = calculateExperienceMatch($jobData, $applicantData);
+    
+    // 3. Education Match (15% weight)
+    $educationScore = calculateEducationMatch($jobData, $applicantData);
+    
+    // 4. Cover Letter Analysis (10% weight)
+    $coverLetterScore = calculateCoverLetterMatch($jobData, $applicantData);
+    
+    // 5. Resume Analysis (Bonus points)
+    $resumeBonus = calculateResumeBonus($applicantData);
+    
+    // Calculate weighted score
+    $totalScore = ($skillsScore * 0.50) + ($experienceScore * 0.25) + ($educationScore * 0.15) + ($coverLetterScore * 0.10);
+    
+    // Add resume bonus (max 5 points)
+    $totalScore = min(100, $totalScore + $resumeBonus);
+    
+    // Round to nearest integer
+    $finalScore = round($totalScore);
+    
+    // Get matched and missing skills
+    $jobSkills = array_map('strtolower', array_map('trim', explode(',', $jobData['skills_required'] ?? '')));
+    $applicantSkills = array_map('strtolower', array_map('trim', explode(',', $applicantData['skills'] ?? '')));
+    
+    $matchedSkills = array_intersect($jobSkills, $applicantSkills);
+    $missingSkills = array_diff($jobSkills, $applicantSkills);
+    
+    // Determine level
+    $levelData = getMatchLevel($finalScore);
+    
+    return [
+        'score' => $finalScore,
+        'level' => $levelData['label'],
+        'color' => $levelData['color'],
+        'level_class' => $levelData['class'],
+        'recommendation' => getRecommendation($finalScore),
+        'matched_skills' => $matchedSkills,
+        'missing_skills' => $missingSkills,
+        'total_job_skills' => count($jobSkills),
+        'matched_count' => count($matchedSkills),
+        'skills_score' => round($skillsScore),
+        'experience_score' => round($experienceScore),
+        'education_score' => round($educationScore),
+        'cover_letter_score' => round($coverLetterScore),
+        'resume_bonus' => round($resumeBonus, 1),
+        'breakdown' => [
+            'skills' => round($skillsScore),
+            'experience' => round($experienceScore),
+            'education' => round($educationScore),
+            'cover_letter' => round($coverLetterScore)
+        ]
+    ];
+}
+
+/**
+ * Calculate skills match score
+ */
+function calculateSkillsMatch($jobData, $applicantData) {
+    $jobSkills = array_map('strtolower', array_map('trim', explode(',', $jobData['skills_required'] ?? '')));
+    $applicantSkills = array_map('strtolower', array_map('trim', explode(',', $applicantData['skills'] ?? '')));
+    
+    $jobSkills = array_filter($jobSkills);
+    $applicantSkills = array_filter($applicantSkills);
+    
+    if (empty($jobSkills)) {
+        return 100; // No skills required = perfect match
+    }
+    
+    if (empty($applicantSkills)) {
+        return 0;
+    }
+    
+    $matchedSkills = array_intersect($jobSkills, $applicantSkills);
+    $matchPercentage = (count($matchedSkills) / count($jobSkills)) * 100;
+    
+    // Bonus for having extra relevant skills (max 10% bonus)
+    $extraSkills = array_diff($applicantSkills, $jobSkills);
+    $extraBonus = min(10, count($extraSkills) * 2);
+    
+    return min(100, $matchPercentage + $extraBonus);
+}
+
+/**
+ * Calculate experience match score
+ */
+function calculateExperienceMatch($jobData, $applicantData) {
+    $requiredExp = $jobData['experience_level'] ?? '';
+    $applicantExp = $applicantData['experience'] ?? '';
+    
+    if (empty($requiredExp) || empty($applicantExp)) {
+        return 50; // Neutral score when no data
+    }
+    
+    // Extract years from text
+    preg_match_all('/(\d+)\s*(?:years?|yrs?|yr)/i', $requiredExp, $reqMatches);
+    preg_match_all('/(\d+)\s*(?:years?|yrs?|yr)/i', $applicantExp, $appMatches);
+    
+    $reqYears = !empty($reqMatches[1]) ? max($reqMatches[1]) : 0;
+    $appYears = !empty($appMatches[1]) ? max($appMatches[1]) : 0;
+    
+    if ($reqYears == 0) {
+        return 70; // No specific years required
+    }
+    
+    if ($appYears == 0) {
+        // Check for experience keywords
+        $expKeywords = ['senior', 'lead', 'manager', 'experienced'];
+        foreach ($expKeywords as $keyword) {
+            if (stripos($applicantExp, $keyword) !== false) {
+                return 60;
+            }
+        }
+        return 30;
+    }
+    
+    // Calculate score based on years
+    if ($appYears >= $reqYears) {
+        return min(100, 80 + min(20, ($appYears - $reqYears) * 5));
+    } else {
+        return max(10, 80 - (($reqYears - $appYears) * 10));
+    }
+}
+
+/**
+ * Calculate education match score
+ */
+function calculateEducationMatch($jobData, $applicantData) {
+    $jobEducation = strtolower($jobData['education_required'] ?? '');
+    $applicantEducation = strtolower($applicantData['education'] ?? '');
+    
+    if (empty($jobEducation)) {
+        return 70; // No specific education required
+    }
+    
+    if (empty($applicantEducation)) {
+        return 30;
+    }
+    
+    // Education level hierarchy
+    $eduLevels = [
+        'phd' => 10,
+        'doctorate' => 10,
+        'master' => 8,
+        'mba' => 8,
+        'bachelor' => 6,
+        'degree' => 6,
+        'diploma' => 4,
+        'certificate' => 3,
+        'high school' => 2,
+        'school' => 1
+    ];
+    
+    // Check for education level matches
+    $jobLevel = 0;
+    $appLevel = 0;
+    
+    foreach ($eduLevels as $keyword => $level) {
+        if (strpos($jobEducation, $keyword) !== false) {
+            $jobLevel = max($jobLevel, $level);
+        }
+        if (strpos($applicantEducation, $keyword) !== false) {
+            $appLevel = max($appLevel, $level);
+        }
+    }
+    
+    if ($jobLevel == 0) {
+        return 70;
+    }
+    
+    if ($appLevel == 0) {
+        return 40;
+    }
+    
+    $score = ($appLevel / $jobLevel) * 100;
+    return min(100, $score);
+}
+
+/**
+ * Calculate cover letter match score
+ */
+function calculateCoverLetterMatch($jobData, $applicantData) {
+    $coverLetter = $applicantData['cover_letter'] ?? '';
+    $jobTitle = $jobData['title'] ?? '';
+    $jobDescription = $jobData['description'] ?? '';
+    
+    if (empty($coverLetter)) {
+        return 20; // No cover letter
+    }
+    
+    if (empty($jobTitle) && empty($jobDescription)) {
+        return 50; // Neutral
+    }
+    
+    $score = 50; // Base score
+    
+    // Check for job title mention (10 points)
+    if (!empty($jobTitle) && stripos($coverLetter, $jobTitle) !== false) {
+        $score += 10;
+    }
+    
+    // Check for relevant keywords from job description (max 20 points)
+    $keywords = array_slice(array_filter(explode(' ', strtolower($jobDescription))), 0, 20);
+    $relevantKeywords = 0;
+    $coverLetterLower = strtolower($coverLetter);
+    
+    foreach ($keywords as $keyword) {
+        if (strlen($keyword) > 3 && strpos($coverLetterLower, $keyword) !== false) {
+            $relevantKeywords++;
+        }
+    }
+    
+    $keywordScore = min(20, $relevantKeywords * 2);
+    $score += $keywordScore;
+    
+    // Check for enthusiasm indicators (10 points)
+    $enthusiasmWords = ['excited', 'passionate', 'enthusiastic', 'interested', 'eager', 'love', 'enjoy'];
+    foreach ($enthusiasmWords as $word) {
+        if (stripos($coverLetter, $word) !== false) {
+            $score += 2;
+        }
+    }
+    $score = min(100, $score + 5);
+    
+    // Check length (5 points)
+    $wordCount = str_word_count($coverLetter);
+    if ($wordCount > 50 && $wordCount < 500) {
+        $score += 5;
+    }
+    
+    return min(100, $score);
+}
+
+/**
+ * Calculate resume bonus
+ */
+function calculateResumeBonus($applicantData) {
+    $bonus = 0;
+    $resumePath = $applicantData['resume_path'] ?? '';
+    
+    // Check if resume exists
+    if (!empty($resumePath)) {
+        $resumeInfo = getResumeInfo($resumePath);
+        if ($resumeInfo && $resumeInfo['exists'] === true) {
+            $bonus += 3;
+            
+            // Check file extension (PDF bonus)
+            $ext = strtolower(pathinfo($resumeInfo['filename'] ?? '', PATHINFO_EXTENSION));
+            if ($ext === 'pdf') {
+                $bonus += 2;
+            }
+        }
+    }
+    
+    // Check for structured skills in applicant data
+    if (!empty($applicantData['skills']) && count(explode(',', $applicantData['skills'])) > 5) {
+        $bonus += 2;
+    }
+    
+    // Check for detailed experience
+    if (!empty($applicantData['experience']) && strlen($applicantData['experience']) > 100) {
+        $bonus += 2;
+    }
+    
+    return min(10, $bonus);
+}
+
+/**
+ * Get recommendation based on score
+ */
+function getRecommendation($score) {
+    if ($score >= 85) {
+        return 'Excellent Match - Strongly Recommend for Interview';
+    } elseif ($score >= 70) {
+        return 'Very Good Match - Highly Recommended';
+    } elseif ($score >= 55) {
+        return 'Good Match - Recommend for Consideration';
+    } elseif ($score >= 40) {
+        return 'Fair Match - Consider with Additional Review';
+    } else {
+        return 'Low Match - Not Recommended at this Time';
+    }
+}
+
+/**
+ * Update AI match score with REAL AI (Groq/Gemini)
+ */
+function updateAIMatchScore($applicationId) {
+    global $aiService, $conn;
+
+    // Get application details with all data
+    $app = getRecord("
+        SELECT a.id, a.job_order_id, a.applicant_id, a.cover_letter, a.resume_path,
+               u.id as user_id, u.first_name, u.last_name, u.email,
+               ap.skills, ap.experience, ap.education
+        FROM applications a
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        WHERE a.id = ?
+    ", [$applicationId], "i");
+
+    if (!$app) return null;
+
+    // Get job details
+    $job = getRecord("
+        SELECT id, title, skills_required, description, experience_level
+        FROM job_orders
+        WHERE id = ?
+    ", [$app['job_order_id']], "i");
+
+    if (!$job) return null;
+
+    // =============================================
+    // USE REAL AI FOR MATCH SCORE
+    // =============================================
+    $matchResult = $aiService->calculateMatchScore($job, $app);
+    
+    // Check what provider was used
+    $provider = $matchResult['provider'] ?? 'unknown';
+    
+    error_log("🎯 AI Match Score for Applicant {$applicationId}: {$matchResult['score']}% (Provider: {$provider})");
+
+    // Update database with REAL AI results
+    $updateSql = "UPDATE applications SET 
+                  match_score = ?,
+                  match_details = ?,
+                  match_updated_at = NOW(),
+                  updated_at = NOW()
+                  WHERE id = ?";
+
+    $matchDetails = json_encode([
+        'level' => $matchResult['level'],
+        'recommendation' => $matchResult['recommendation'],
+        'matched_skills' => $matchResult['matched_skills'],
+        'missing_skills' => $matchResult['missing_skills'],
+        'breakdown' => $matchResult['breakdown'] ?? [],
+        'skills_score' => $matchResult['details']['skills_match'] ?? 0,
+        'experience_score' => $matchResult['details']['experience_years'] ?? 0,
+        'education_score' => $matchResult['details']['education_level'] ?? 'Not specified',
+        'cover_letter_score' => $matchResult['details']['cover_letter_score'] ?? 0,
+        'resume_bonus' => $matchResult['details']['resume_bonus'] ?? 0,
+        'provider' => $provider,
+        'calculated_at' => date('Y-m-d H:i:s')
+    ]);
+
+    $result = updateRecord($updateSql, [
+        $matchResult['score'],
+        $matchDetails,
+        $applicationId
+    ], "dsi");
+
+    if ($result) {
+        return $matchResult;
+    }
+
+    return null;
+}
+
+/**
+ * Get AI match score with full details
+ */
+function getAIMatchScore($applicationId) {
+    $record = getRecord("
+        SELECT match_score, match_details, match_updated_at 
+        FROM applications 
+        WHERE id = ?
+    ", [$applicationId], "i");
+
+    if ($record && !empty($record['match_score'])) {
+        $details = json_decode($record['match_details'], true) ?: [];
+        return [
+            'score' => $record['match_score'],
+            'details' => $details,
+            'updated_at' => $record['match_updated_at'] ?? $record['updated_at'] ?? 'Recently'
+        ];
+    }
+
+    return null;
+}
+
+// =============================================
+// RESUME PATH CONFIGURATION
 // =============================================
 function getResumeInfo($filename) {
     if (empty($filename)) {
@@ -51,18 +465,22 @@ function getResumeInfo($filename) {
     // Get just the filename without any path
     $justFilename = basename($filename);
     
-    // Build paths to check - FIXED: resumes are in portals/hr/resumes/
+    // Define base paths
+    $basePath = dirname(__DIR__, 2); // This goes up to CT1/
+    
+    // Build paths to check - ORDER MATTERS! Check uploads first
     $paths = [
+        'uploads_resumes' => $basePath . '/uploads/resumes/' . $justFilename,
+        'portals_uploads_resumes' => $basePath . '/portals/uploads/resumes/' . $justFilename,
         'hr_resumes' => __DIR__ . '/resumes/' . $justFilename,
-        'database_path' => dirname(__DIR__, 2) . '/' . $filename,
-        'hr_includes_resumes' => dirname(__DIR__, 2) . '/hr/includes/resumes/' . $justFilename,
-        'uploads_resumes' => dirname(__DIR__, 2) . '/uploads/resumes/' . $justFilename,
-        'portals_uploads_resumes' => dirname(__DIR__, 2) . '/portals/uploads/resumes/' . $justFilename,
+        'hr_includes_resumes' => $basePath . '/hr/includes/resumes/' . $justFilename,
+        'database_path' => $basePath . '/' . $filename,
         'current_dir' => __DIR__ . '/' . $justFilename,
     ];
     
     // Debug logging
     $debugInfo = "Searching for: $justFilename\n";
+    $debugInfo .= "Base path: $basePath\n";
     $debugInfo .= "Current directory: " . __DIR__ . "\n";
     
     foreach ($paths as $key => $physicalPath) {
@@ -70,59 +488,26 @@ function getResumeInfo($filename) {
         $debugInfo .= "  $key: " . $physicalPath . " - " . ($exists ? '✅ EXISTS' : '❌ NOT FOUND') . "\n";
         
         if ($exists) {
+            // Determine the correct URL path based on where the file was found
+            $urlPath = '';
+            if ($key === 'uploads_resumes') {
+                // File is in CT1/uploads/resumes/
+                // Serve it from a URL that can access it
+                $urlPath = '../../uploads/resumes/' . $justFilename;
+            } elseif ($key === 'portals_uploads_resumes') {
+                $urlPath = '../uploads/resumes/' . $justFilename;
+            } elseif ($key === 'hr_resumes' || $key === 'hr_includes_resumes') {
+                $urlPath = 'resumes/' . $justFilename;
+            } else {
+                $urlPath = 'resumes/' . $justFilename;
+            }
+            
             return [
-                'url' => 'resumes/' . $justFilename,
+                'url' => $urlPath,
                 'physical_path' => $physicalPath,
                 'exists' => true,
                 'filename' => $justFilename,
                 'debug' => $debugInfo . "\n✅ FOUND at: $key"
-            ];
-        }
-    }
-    
-    // Try to find a matching file by scanning the resumes/ folder
-    $resumeDir = __DIR__ . '/resumes/';
-    if (is_dir($resumeDir)) {
-        $files = scandir($resumeDir);
-        $debugInfo .= "\nScanning directory: $resumeDir\n";
-        $foundMatch = null;
-        
-        foreach ($files as $file) {
-            if ($file === '.' || $file === '..') continue;
-            if (strpos($file, '.pdf') === false) continue;
-            
-            $debugInfo .= "  Found file: $file\n";
-            
-            preg_match('/_(\d+)\.pdf$/', $justFilename, $dbMatch);
-            preg_match('/_(\d+)\.pdf$/', $file, $fileMatch);
-            
-            if (isset($dbMatch[1]) && isset($fileMatch[1])) {
-                if ($dbMatch[1] === $fileMatch[1]) {
-                    $foundMatch = $file;
-                    $debugInfo .= "  ✅ EXACT TIMESTAMP MATCH: $file\n";
-                    break;
-                }
-                if (abs(intval($dbMatch[1]) - intval($fileMatch[1])) < 200000) {
-                    $foundMatch = $file;
-                    $debugInfo .= "  ✅ CLOSE TIMESTAMP MATCH: $file (diff: " . abs(intval($dbMatch[1]) - intval($fileMatch[1])) . ")\n";
-                    break;
-                }
-            }
-            
-            if (strpos($file, 'resume_8_') === 0 && $foundMatch === null) {
-                $foundMatch = $file;
-                $debugInfo .= "  ⚠️ FALLBACK: $file\n";
-            }
-        }
-        
-        if ($foundMatch) {
-            return [
-                'url' => 'resumes/' . $foundMatch,
-                'physical_path' => $resumeDir . $foundMatch,
-                'exists' => true,
-                'filename' => $foundMatch,
-                'matched' => true,
-                'debug' => $debugInfo . "\n✅ USING: $foundMatch"
             ];
         }
     }
@@ -135,7 +520,6 @@ function getResumeInfo($filename) {
 
 // Helper function to determine qualification
 function determineQualification($applicant) {
-    // Example qualification criteria:
     // 1. If match_score exists and is high enough
     if (!empty($applicant['match_score']) && $applicant['match_score'] >= 70) {
         return true;
@@ -170,6 +554,7 @@ function determineQualification($applicant) {
 $statusFilter = $_GET['status'] ?? 'all';
 $jobFilter = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
 $searchQuery = $_GET['search'] ?? '';
+$sortBy = $_GET['sort'] ?? 'newest'; // newest, match_score, experience, skills
 
 // Build query conditions
 $conditions = [];
@@ -205,10 +590,21 @@ if (!empty($searchQuery)) {
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
 
-$sql = "SELECT a.*, a.resume_path,
+// Order by
+$orderClause = "ORDER BY a.applied_at DESC";
+if ($sortBy === 'match_score') {
+    $orderClause = "ORDER BY a.match_score DESC NULLS LAST, a.applied_at DESC";
+} elseif ($sortBy === 'experience') {
+    $orderClause = "ORDER BY LENGTH(ap.experience) DESC, a.applied_at DESC";
+} elseif ($sortBy === 'skills') {
+    $orderClause = "ORDER BY LENGTH(ap.skills) DESC, a.applied_at DESC";
+}
+
+$sql = "SELECT a.*, a.resume_path, a.match_score, a.match_details, a.cover_letter,
         u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
         ap.profile_picture, ap.skills, ap.experience, ap.education,
-        jo.title as job_title, jo.id as job_id, c.company_name,
+        jo.title as job_title, jo.id as job_id, jo.skills_required, jo.experience_level,
+        c.company_name,
         (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id) as total_applications
         FROM applications a
         JOIN applicants ap ON a.applicant_id = ap.id
@@ -216,9 +612,129 @@ $sql = "SELECT a.*, a.resume_path,
         JOIN job_orders jo ON a.job_order_id = jo.id
         JOIN clients c ON jo.client_id = c.id
         $whereClause
-        ORDER BY a.applied_at DESC";
+        $orderClause";
 
 $applicants = getRecords($sql, $params, $types);
+
+// Process AI match scores for all applicants with enhanced analysis
+$applicantsWithAI = [];
+foreach ($applicants as $app) {
+    // Initialize default values to prevent undefined array key errors
+    $app['match_level'] = 'N/A';
+    $app['matched_skills'] = [];
+    $app['missing_skills'] = [];
+    $app['recommendation'] = '';
+    $app['breakdown'] = [];
+    $app['match_provider'] = 'none';
+    $app['match_score'] = $app['match_score'] ?? null;
+    
+    // Always recalculate if score is missing or older than 7 days
+    $shouldRecalculate = empty($app['match_score']);
+    if (!$shouldRecalculate && !empty($app['match_updated_at'])) {
+        $daysOld = (time() - strtotime($app['match_updated_at'])) / (60 * 60 * 24);
+        if ($daysOld > 7) {
+            $shouldRecalculate = true;
+        }
+    }
+    
+    if ($shouldRecalculate) {
+        // Get job details for matching
+        $jobData = getRecord("
+            SELECT id, title, skills_required, description, experience_level
+            FROM job_orders 
+            WHERE id = ?
+        ", [$app['job_id']], "i");
+
+        if ($jobData) {
+            try {
+                // =============================================
+                // DEBUG: Log what we're sending
+                // =============================================
+                error_log("=== AI Match Request for Application ID: {$app['id']} ===");
+                error_log("Job Data: " . print_r($jobData, true));
+                error_log("Applicant Data: " . print_r($app, true));
+                
+                // =============================================
+                // USE REAL AI FOR MATCH SCORE
+                // =============================================
+                $matchResult = $aiService->calculateMatchScore($jobData, $app);
+                
+                // =============================================
+                // DEBUG: Log what we received
+                // =============================================
+                error_log("Raw AI Response: " . print_r($matchResult, true));
+                
+                // SAFELY extract values with fallbacks
+                $app['match_score'] = isset($matchResult['score']) ? (int)$matchResult['score'] : null;
+                $app['match_level'] = isset($matchResult['level']) ? $matchResult['level'] : 
+                                     ($app['match_score'] !== null ? getMatchLevel($app['match_score'])['label'] : 'N/A');
+                $app['matched_skills'] = isset($matchResult['matched_skills']) ? $matchResult['matched_skills'] : [];
+                $app['missing_skills'] = isset($matchResult['missing_skills']) ? $matchResult['missing_skills'] : [];
+                $app['recommendation'] = isset($matchResult['recommendation']) ? $matchResult['recommendation'] : '';
+                $app['breakdown'] = isset($matchResult['breakdown']) ? $matchResult['breakdown'] : [];
+                $app['match_provider'] = isset($matchResult['provider']) ? $matchResult['provider'] : 'unknown';
+
+                // Only update database if we have a valid score
+                if ($app['match_score'] !== null) {
+                    $matchDetails = json_encode([
+                        'level' => $app['match_level'],
+                        'recommendation' => $app['recommendation'],
+                        'matched_skills' => $app['matched_skills'],
+                        'missing_skills' => $app['missing_skills'],
+                        'breakdown' => $app['breakdown'],
+                        'skills_score' => isset($matchResult['details']['skills_match']) ? $matchResult['details']['skills_match'] : 0,
+                        'experience_score' => isset($matchResult['details']['experience_years']) ? $matchResult['details']['experience_years'] : 0,
+                        'education_score' => isset($matchResult['details']['education_level']) ? $matchResult['details']['education_level'] : 'Not specified',
+                        'cover_letter_score' => isset($matchResult['details']['cover_letter_score']) ? $matchResult['details']['cover_letter_score'] : 0,
+                        'resume_bonus' => isset($matchResult['details']['resume_bonus']) ? $matchResult['details']['resume_bonus'] : 0,
+                        'provider' => $app['match_provider'],
+                        'calculated_at' => date('Y-m-d H:i:s')
+                    ]);
+                    
+                    $updateResult = updateRecord(
+                        "UPDATE applications SET match_score = ?, match_details = ?, match_updated_at = NOW() WHERE id = ?",
+                        [$app['match_score'], $matchDetails, $app['id']],
+                        "dsi"
+                    );
+                    
+                    error_log("Update result for app {$app['id']}: " . ($updateResult ? 'SUCCESS' : 'FAILED'));
+                    error_log("Score: {$app['match_score']}%, Level: {$app['match_level']}");
+                } else {
+                    error_log("WARNING: No valid score for app {$app['id']}");
+                }
+                
+            } catch (Exception $e) {
+                // Log the error but continue processing
+                error_log("AI Match score ERROR for application {$app['id']}: " . $e->getMessage());
+                error_log("Stack trace: " . $e->getTraceAsString());
+                // Keep default values - mark as failed
+            }
+        } else {
+            error_log("WARNING: No job data found for application {$app['id']}");
+            $app['match_score'] = null;
+        }
+    } else {
+        // Parse existing match details from database
+        if (!empty($app['match_details'])) {
+            $details = json_decode($app['match_details'], true) ?: [];
+            $app['matched_skills'] = isset($details['matched_skills']) ? $details['matched_skills'] : [];
+            $app['missing_skills'] = isset($details['missing_skills']) ? $details['missing_skills'] : [];
+            $app['match_level'] = isset($details['level']) ? $details['level'] : 
+                                  ($app['match_score'] !== null ? getMatchLevel($app['match_score'])['label'] : 'N/A');
+            $app['recommendation'] = isset($details['recommendation']) ? $details['recommendation'] : '';
+            $app['breakdown'] = isset($details['breakdown']) ? $details['breakdown'] : [];
+            $app['match_provider'] = isset($details['provider']) ? $details['provider'] : 'unknown';
+        } else {
+            // No match details - try to generate level from score
+            if ($app['match_score'] !== null) {
+                $app['match_level'] = getMatchLevel($app['match_score'])['label'];
+            }
+        }
+    }
+
+    $applicantsWithAI[] = $app;
+}
+$applicants = $applicantsWithAI;
 
 // Get all jobs for filter dropdown
 $jobs = getRecords("SELECT id, title FROM job_orders WHERE created_by = ? ORDER BY created_at DESC", [$userId], "i");
@@ -257,7 +773,9 @@ $statusLabels = [
 
 $allStatuses = ['all' => 'All'] + $statusLabels;
 
-// Handle AJAX POST actions
+// =============================================
+// HANDLE AJAX POST ACTIONS
+// =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
     
@@ -268,6 +786,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     $interviewDate = $_POST['interview_date'] ?? '';
     $interviewNotes = trim($_POST['interview_notes'] ?? '');
     $notes = trim($_POST['notes'] ?? '');
+    $interviewLocation = trim($_POST['interview_location'] ?? '');
+    $interviewerName = trim($_POST['interviewer_name'] ?? '');
     
     // UPDATE STATUS
     if ($action === 'update_status' && $applicationId > 0 && in_array($newStatus, $statuses)) {
@@ -290,13 +810,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // SCHEDULE INTERVIEW
+    // SCHEDULE INTERVIEW (UPDATED with separate Location & Interviewer fields)
     if ($action === 'schedule_interview' && $applicationId > 0) {
         $interviewDate = $_POST['interview_date'] ?? '';
         $interviewNotes = trim($_POST['interview_notes'] ?? '');
+        $interviewLocation = trim($_POST['interview_location'] ?? '');
+        $interviewerName = trim($_POST['interviewer_name'] ?? '');
         
         if (empty($interviewDate)) {
             echo json_encode(['success' => false, 'error' => 'Please select an interview date and time.']);
+            exit;
+        }
+        
+        if (empty($interviewLocation)) {
+            echo json_encode(['success' => false, 'error' => 'Please enter an interview location.']);
+            exit;
+        }
+        
+        if (empty($interviewerName)) {
+            echo json_encode(['success' => false, 'error' => 'Please enter the interviewer\'s name.']);
             exit;
         }
         
@@ -322,15 +854,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        // Insert interview
-        $interviewSql = "INSERT INTO interviews (application_id, interview_date, notes, created_by) 
-                         VALUES (?, ?, ?, ?)";
+        // Insert interview with separate location and interviewer fields
+        $interviewSql = "INSERT INTO interviews (application_id, interview_date, location, interviewer_name, notes, created_by) 
+                         VALUES (?, ?, ?, ?, ?, ?)";
         $interviewResult = insertRecord($interviewSql, [
             $applicationId,
             $dbDateTime,
+            $interviewLocation,
+            $interviewerName,
             $interviewNotes,
             $userId
-        ], "issi");
+        ], "issssi");
         
         if (!$interviewResult) {
             echo json_encode(['success' => false, 'error' => 'Failed to create interview record.']);
@@ -355,7 +889,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        logActivity($userId, 'Interview Scheduled', 'applications', $applicationId, 'Interview scheduled for: ' . $dbDateTime);
+        logActivity($userId, 'Interview Scheduled', 'applications', $applicationId, 
+                   'Interview scheduled for: ' . $dbDateTime . ' | Location: ' . $interviewLocation . ' | Interviewer: ' . $interviewerName);
         
         echo json_encode(['success' => true, 'message' => 'Interview scheduled successfully!']);
         exit;
@@ -363,10 +898,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     
     // VIEW APPLICANT
     if ($action === 'view_applicant' && $applicationId > 0) {
-        $applicant = getRecord("SELECT a.*, a.cover_letter, a.resume_path,
+        $applicant = getRecord("SELECT a.*, a.cover_letter, a.resume_path, a.match_score, a.match_details,
                                u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
                                ap.skills, ap.experience, ap.education, ap.profile_picture,
-                               jo.title as job_title, c.company_name,
+                               jo.title as job_title, jo.skills_required, jo.experience_level,
+                               c.company_name,
                                (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id) as total_applications
                                FROM applications a
                                JOIN applicants ap ON a.applicant_id = ap.id
@@ -397,121 +933,196 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-// SEND QUALIFICATION NOTIFICATION (Manual)
-if ($action === 'send_qualification' && $applicationId > 0) {
-    // Clear any previous output
-    ob_clean();
-    
-    // Create a debug log file
-    $debugLog = __DIR__ . '/debug_qualification.log';
-    file_put_contents($debugLog, "[" . date('Y-m-d H:i:s') . "] Starting send_qualification for ID: $applicationId\n", FILE_APPEND);
-    
-    try {
-        // Get applicant data
-        $applicant = getRecord("
-            SELECT a.*, 
-            u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
-            ap.skills, ap.experience, ap.education,
-            jo.title as job_title, c.company_name
-            FROM applications a
-            JOIN applicants ap ON a.applicant_id = ap.id
-            JOIN users u ON ap.user_id = u.id
-            JOIN job_orders jo ON a.job_order_id = jo.id
-            JOIN clients c ON jo.client_id = c.id
-            WHERE a.id = ?
-        ", [$applicationId], "i");
+    // VIEW MATCH DETAILS (AI)
+    if ($action === 'view_match_details' && $applicationId > 0) {
+        $matchData = getAIMatchScore($applicationId);
         
-        file_put_contents($debugLog, "Applicant found: " . ($applicant ? 'Yes' : 'No') . "\n", FILE_APPEND);
-        
-        if (!$applicant) {
-            file_put_contents($debugLog, "ERROR: Applicant not found\n", FILE_APPEND);
-            echo json_encode(['success' => false, 'error' => 'Applicant not found.']);
-            exit;
-        }
-        
-        // Check if already sent
-        if (!empty($applicant['follow_up_sent']) && $applicant['follow_up_sent'] == 1) {
-            file_put_contents($debugLog, "ERROR: Notification already sent\n", FILE_APPEND);
-            echo json_encode(['success' => false, 'error' => 'Notification already sent.']);
-            exit;
-        }
-        
-        // Check if applicant is in a terminal state
-        if (in_array($applicant['status'], ['hired', 'rejected', 'withdrawn'])) {
-            file_put_contents($debugLog, "ERROR: Application already processed. Status: " . $applicant['status'] . "\n", FILE_APPEND);
-            echo json_encode(['success' => false, 'error' => 'Application already processed.']);
-            exit;
-        }
-        
-        // Determine qualification
-        $isQualified = isset($_POST['is_qualified']) ? (bool)$_POST['is_qualified'] : false;
-        $notes = trim($_POST['notes'] ?? '');
-        
-        file_put_contents($debugLog, "isQualified: " . ($isQualified ? 'Yes' : 'No') . ", Notes: $notes\n", FILE_APPEND);
-        
-        // Try to send email - WITH SUPPRESSED ERRORS
-        $emailSent = false;
-        try {
-            file_put_contents($debugLog, "Attempting to send email...\n", FILE_APPEND);
-            $emailSent = sendQualificationEmail($applicant, $isQualified, $applicant['company_name'] ?? 'Our Company');
-            file_put_contents($debugLog, "Email send result: " . ($emailSent ? 'Success' : 'Failed') . "\n", FILE_APPEND);
-        } catch (Exception $e) {
-            file_put_contents($debugLog, "Email Exception: " . $e->getMessage() . "\n", FILE_APPEND);
-        }
-        
-        // Always update the database - FIXED SQL SYNTAX
-        $qualificationStatus = $isQualified ? 'qualified' : 'not_qualified';
-        $statusLabel = $isQualified ? 'Qualified' : 'Not Qualified';
-        
-        file_put_contents($debugLog, "Updating database...\n", FILE_APPEND);
-        
-        // Get current notes first to append properly
-        $currentApp = getRecord("SELECT notes FROM applications WHERE id = ?", [$applicationId], "i");
-        $currentNotes = $currentApp['notes'] ?? '';
-        
-        // Build the new notes string manually
-        $newNote = 'Manual qualification: ' . $statusLabel . ' - ' . $notes;
-        if (!empty($currentNotes)) {
-            $newNotes = $currentNotes . "\n" . $newNote;
+        if ($matchData) {
+            // Get full details from database
+            $app = getRecord("
+                SELECT a.id, a.match_details, a.match_score, a.match_updated_at, a.cover_letter,
+                       u.first_name, u.last_name, u.email,
+                       ap.skills, ap.experience, ap.education
+                FROM applications a
+                JOIN applicants ap ON a.applicant_id = ap.id
+                JOIN users u ON ap.user_id = u.id
+                WHERE a.id = ?
+            ", [$applicationId], "i");
+            
+            if (!$app) {
+                echo json_encode(['success' => false, 'error' => 'Application not found.']);
+                exit;
+            }
+            
+            $details = json_decode($app['match_details'] ?? '{}', true);
+            
+            // Get job skills for context - removed education_required
+            $job = getRecord("
+                SELECT jo.skills_required, jo.title, jo.experience_level
+                FROM applications a
+                JOIN job_orders jo ON a.job_order_id = jo.id
+                WHERE a.id = ?
+            ", [$applicationId], "i");
+            
+            $response = [
+                'success' => true,
+                'details' => [
+                    'score' => $matchData['score'],
+                    'level' => $details['level'] ?? 'N/A',
+                    'recommendation' => $details['recommendation'] ?? '',
+                    'matched_skills' => $details['matched_skills'] ?? [],
+                    'missing_skills' => $details['missing_skills'] ?? [],
+                    'matched_count' => count($details['matched_skills'] ?? []),
+                    'total_job_skills' => !empty($job['skills_required']) ? count(array_filter(array_map('trim', explode(',', $job['skills_required'])))) : 0,
+                    'breakdown' => $details['breakdown'] ?? [],
+                    'skills_score' => $details['skills_score'] ?? 0,
+                    'experience_score' => $details['experience_score'] ?? 0,
+                    'education_score' => $details['education_score'] ?? 0,
+                    'cover_letter_score' => $details['cover_letter_score'] ?? 0,
+                    'resume_bonus' => $details['resume_bonus'] ?? 0,
+                    'applicant_experience' => $app['experience'] ?? '',
+                    'applicant_education' => $app['education'] ?? '',
+                    'applicant_skills' => $app['skills'] ?? '',
+                    'job_title' => $job['title'] ?? '',
+                    'job_experience_required' => $job['experience_level'] ?? '',
+                    'job_education_required' => 'Not specified',
+                    'updated_at' => $matchData['updated_at'] ?? 'Recently'
+                ]
+            ];
+            
+            echo json_encode($response);
         } else {
-            $newNotes = $newNote;
+            echo json_encode(['success' => false, 'error' => 'No match score found for this applicant. Please recalculate the score.']);
         }
-        
-        // Update with the built notes string - NO CONCAT IN SQL
-        $updateSql = "UPDATE applications SET 
-                      follow_up_sent = 1,
-                      follow_up_date = NOW(),
-                      qualification_status = ?,
-                      last_follow_up_email = NOW(),
-                      notes = ?
-                      WHERE id = ?";
-        $updateResult = updateRecord($updateSql, [$qualificationStatus, $newNotes, $applicationId], "ssi");
-        
-        file_put_contents($debugLog, "Database update result: " . ($updateResult ? 'Success' : 'Failed') . "\n", FILE_APPEND);
-        
-        // Log activity
-        logActivity($userId, 'Manual Qualification Notification', 'applications', $applicationId, 
-                   "Manual notification sent: " . ($isQualified ? 'Qualified' : 'Not Qualified'));
-        
-        // ALWAYS return success
-        file_put_contents($debugLog, "Returning success response\n", FILE_APPEND);
-        echo json_encode([
-            'success' => true, 
-            'message' => 'Notification sent successfully!'
-        ]);
-        
-    } catch (Exception $e) {
-        // Catch any unexpected errors
-        file_put_contents($debugLog, "UNEXPECTED ERROR: " . $e->getMessage() . "\n", FILE_APPEND);
-        file_put_contents($debugLog, "Stack trace: " . $e->getTraceAsString() . "\n", FILE_APPEND);
-        
-        echo json_encode([
-            'success' => false, 
-            'error' => 'System error: ' . $e->getMessage()
-        ]);
+        exit;
     }
-    exit;
-}
+    
+    // RECALCULATE MATCH SCORE
+    if ($action === 'recalculate_match' && $applicationId > 0) {
+        $result = updateAIMatchScore($applicationId);
+        if ($result) {
+            echo json_encode(['success' => true, 'score' => $result['score']]);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to recalculate score.']);
+        }
+        exit;
+    }
+    
+    // SEND QUALIFICATION NOTIFICATION (Manual)
+    if ($action === 'send_qualification' && $applicationId > 0) {
+        // Clear any previous output
+        ob_clean();
+        
+        // Create a debug log file
+        $debugLog = __DIR__ . '/debug_qualification.log';
+        file_put_contents($debugLog, "[" . date('Y-m-d H:i:s') . "] Starting send_qualification for ID: $applicationId\n", FILE_APPEND);
+        
+        try {
+            // Get applicant data
+            $applicant = getRecord("SELECT a.*, a.cover_letter, a.resume_path, a.match_score, a.match_details,
+                       u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
+                       ap.skills, ap.experience, ap.education, ap.profile_picture,
+                       jo.title as job_title, jo.skills_required, jo.experience_level,
+                       c.company_name,
+                       (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id) as total_applications
+                       FROM applications a
+                       JOIN applicants ap ON a.applicant_id = ap.id
+                       JOIN users u ON ap.user_id = u.id
+                       JOIN job_orders jo ON a.job_order_id = jo.id
+                       JOIN clients c ON jo.client_id = c.id
+                       WHERE a.id = ?", [$applicationId], "i");
+            
+            file_put_contents($debugLog, "Applicant found: " . ($applicant ? 'Yes' : 'No') . "\n", FILE_APPEND);
+            
+            if (!$applicant) {
+                file_put_contents($debugLog, "ERROR: Applicant not found\n", FILE_APPEND);
+                echo json_encode(['success' => false, 'error' => 'Applicant not found.']);
+                exit;
+            }
+            
+            // Check if already sent
+            if (!empty($applicant['follow_up_sent']) && $applicant['follow_up_sent'] == 1) {
+                file_put_contents($debugLog, "ERROR: Notification already sent\n", FILE_APPEND);
+                echo json_encode(['success' => false, 'error' => 'Notification already sent.']);
+                exit;
+            }
+            
+            // Check if applicant is in a terminal state
+            if (in_array($applicant['status'], ['hired', 'rejected', 'withdrawn'])) {
+                file_put_contents($debugLog, "ERROR: Application already processed. Status: " . $applicant['status'] . "\n", FILE_APPEND);
+                echo json_encode(['success' => false, 'error' => 'Application already processed.']);
+                exit;
+            }
+            
+            // Determine qualification
+            $isQualified = isset($_POST['is_qualified']) ? (bool)$_POST['is_qualified'] : false;
+            $notes = trim($_POST['notes'] ?? '');
+            
+            file_put_contents($debugLog, "isQualified: " . ($isQualified ? 'Yes' : 'No') . ", Notes: $notes\n", FILE_APPEND);
+            
+            // Try to send email
+            $emailSent = false;
+            try {
+                file_put_contents($debugLog, "Attempting to send email...\n", FILE_APPEND);
+                $emailSent = sendQualificationEmail($applicant, $isQualified, $applicant['company_name'] ?? 'Our Company');
+                file_put_contents($debugLog, "Email send result: " . ($emailSent ? 'Success' : 'Failed') . "\n", FILE_APPEND);
+            } catch (Exception $e) {
+                file_put_contents($debugLog, "Email Exception: " . $e->getMessage() . "\n", FILE_APPEND);
+            }
+            
+            // Always update the database
+            $qualificationStatus = $isQualified ? 'qualified' : 'not_qualified';
+            $statusLabel = $isQualified ? 'Qualified' : 'Not Qualified';
+            
+            file_put_contents($debugLog, "Updating database...\n", FILE_APPEND);
+            
+            // Get current notes first to append properly
+            $currentApp = getRecord("SELECT notes FROM applications WHERE id = ?", [$applicationId], "i");
+            $currentNotes = $currentApp['notes'] ?? '';
+            
+            // Build the new notes string manually
+            $newNote = 'Manual qualification: ' . $statusLabel . ' - ' . $notes;
+            if (!empty($currentNotes)) {
+                $newNotes = $currentNotes . "\n" . $newNote;
+            } else {
+                $newNotes = $newNote;
+            }
+            
+            // Update with the built notes string
+            $updateSql = "UPDATE applications SET 
+                          follow_up_sent = 1,
+                          follow_up_date = NOW(),
+                          qualification_status = ?,
+                          last_follow_up_email = NOW(),
+                          notes = ?
+                          WHERE id = ?";
+            $updateResult = updateRecord($updateSql, [$qualificationStatus, $newNotes, $applicationId], "ssi");
+            
+            file_put_contents($debugLog, "Database update result: " . ($updateResult ? 'Success' : 'Failed') . "\n", FILE_APPEND);
+            
+            // Log activity
+            logActivity($userId, 'Manual Qualification Notification', 'applications', $applicationId, 
+                       "Manual notification sent: " . ($isQualified ? 'Qualified' : 'Not Qualified'));
+            
+            // ALWAYS return success
+            file_put_contents($debugLog, "Returning success response\n", FILE_APPEND);
+            echo json_encode([
+                'success' => true, 
+                'message' => 'Notification sent successfully!'
+            ]);
+            
+        } catch (Exception $e) {
+            // Catch any unexpected errors
+            file_put_contents($debugLog, "UNEXPECTED ERROR: " . $e->getMessage() . "\n", FILE_APPEND);
+            file_put_contents($debugLog, "Stack trace: " . $e->getTraceAsString() . "\n", FILE_APPEND);
+            
+            echo json_encode([
+                'success' => false, 
+                'error' => 'System error: ' . $e->getMessage()
+            ]);
+        }
+        exit;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -519,7 +1130,7 @@ if ($action === 'send_qualification' && $applicationId > 0) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Applicants - ISMERS</title>
+    <title>Applicants - ISMERS AI</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
@@ -559,6 +1170,47 @@ if ($action === 'send_qualification' && $applicationId > 0) {
             --sidebar-collapsed: 72px;
         }
 
+        /* AI Match Score Styles */
+        .match-score-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 2px solid transparent;
+        }
+
+        .match-score-badge:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .match-score-badge.excellent { background: #d1fae5; color: #059669; border-color: #059669; }
+        .match-score-badge.good { background: #dbeafe; color: #2563eb; border-color: #2563eb; }
+        .match-score-badge.fair { background: #fef3c7; color: #d97706; border-color: #d97706; }
+        .match-score-badge.low { background: #fecaca; color: #dc2626; border-color: #dc2626; }
+
+        .match-score-number {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        .match-detail-tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            margin: 2px;
+            font-weight: 500;
+        }
+
+        .match-detail-tag.matched { background: #d1fae5; color: #059669; }
+        .match-detail-tag.missing { background: #fecaca; color: #dc2626; }
+
         .badge-scheduled { background: #dbeafe; color: #2563eb; }
         .badge-notified-qualified { background: #d1fae5; color: #059669; }
         .badge-notified-notqualified { background: #fecaca; color: #dc2626; }
@@ -587,278 +1239,256 @@ if ($action === 'send_qualification' && $applicationId > 0) {
             color: inherit;
         }
 
-        /* =============================================
-           SIDEBAR - FIXED
-        ============================================= */
-        .dashboard-sidebar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            bottom: 0;
-            z-index: 50;
-            background: var(--bg-surface);
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            width: var(--sidebar-width);
-            border-right: 1px solid var(--slate-200);
-            transition: width 0.3s ease, transform 0.3s ease;
-            overflow: hidden;
-            box-shadow: var(--shadow-xl);
-            flex-shrink: 0;
-        }
+      /* =============================================
+   SIDEBAR - STANDARDIZED
+   ============================================= */
+.dashboard-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    background: var(--bg-surface);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: var(--sidebar-width);
+    border-right: 1px solid var(--slate-200);
+    transition: width 0.3s ease, transform 0.3s ease;
+    overflow: hidden;
+    box-shadow: var(--shadow-xl);
+    flex-shrink: 0;
+}
 
-        .dashboard-sidebar.collapsed {
-            width: var(--sidebar-collapsed);
-        }
+.dashboard-sidebar.collapsed {
+    width: var(--sidebar-collapsed);
+}
 
-        .dashboard-sidebar.mobile-hidden {
-            transform: translateX(-100%);
-        }
+.dashboard-sidebar.mobile-hidden {
+    transform: translateX(-100%);
+}
 
-        .dashboard-sidebar.mobile-open {
-            transform: translateX(0);
-        }
+.dashboard-sidebar.mobile-open {
+    transform: translateX(0);
+}
 
-        .dashboard-sidebar .sidebar-brand-text,
-        .dashboard-sidebar .sidebar-brand-category,
-        .dashboard-sidebar .sidebar-nav .nav-label,
-        .dashboard-sidebar .sidebar-nav .nav-text,
-        .dashboard-sidebar .sidebar-nav .nav-badge,
-        .dashboard-sidebar .sidebar-footer .user-info {
-            opacity: 1;
-            transition: opacity 0.3s ease;
-            overflow: hidden;
-            white-space: nowrap;
-        }
+/* Hide text when collapsed */
+.dashboard-sidebar .sidebar-brand-text,
+.dashboard-sidebar .sidebar-brand-category,
+.dashboard-sidebar .sidebar-nav .nav-label,
+.dashboard-sidebar .sidebar-nav .nav-text,
+.dashboard-sidebar .sidebar-nav .nav-badge,
+.dashboard-sidebar .sidebar-footer .user-info {
+    opacity: 1;
+    transition: opacity 0.3s ease;
+    overflow: hidden;
+    white-space: nowrap;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-brand-text,
-        .dashboard-sidebar.collapsed .sidebar-brand-category,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
-            margin: 0;
-            padding: 0;
-        }
+.dashboard-sidebar.collapsed .sidebar-brand-text,
+.dashboard-sidebar.collapsed .sidebar-brand-category,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+.dashboard-sidebar.collapsed .sidebar-footer .user-info {
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-brand-card {
-            padding: 1rem 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-brand-card {
+    padding: 1rem 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-nav {
-            padding: 0.5rem 0.25rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-nav {
+    padding: 0.5rem 0.25rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-main-link {
-            justify-content: center;
-            padding: 0.75rem 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-main-link {
+    justify-content: center;
+    padding: 0.75rem 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
+    font-size: 1.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
-            justify-content: center;
-            padding: 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-footer .user-card {
+    justify-content: center;
+    padding: 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            font-size: 0.875rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    font-size: 0.875rem;
+}
 
-        .sidebar-brand-card {
-            border-radius: 2rem;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            gap: 0.75rem;
-        }
+/* Sidebar Brand */
+.sidebar-brand-card {
+    border-radius: 2rem;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 0.75rem;
+}
 
-        .sidebar-brand-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 3.5rem;
-            height: 3.5rem;
-            border-radius: 1.75rem;
-            background: var(--slate-100);
-            color: var(--primary);
-            font-size: 1.5rem;
-            flex-shrink: 0;
-        }
+.sidebar-brand-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 1.75rem;
+    background: var(--slate-100);
+    color: var(--primary);
+    font-size: 1.5rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-brand-icon .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+.sidebar-brand-icon .material-symbols-outlined {
+    font-size: 1.5rem;
+}
 
-        .sidebar-brand-text {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--slate-900);
-        }
+.sidebar-brand-text {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--slate-900);
+}
 
-        .sidebar-brand-category {
-            font-size: 0.75rem;
-            color: var(--slate-500);
-            margin-top: 0.25rem;
-        }
+.sidebar-brand-category {
+    font-size: 0.75rem;
+    color: var(--slate-500);
+    margin-top: 0.25rem;
+}
 
-        .sidebar-nav {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem 1.25rem;
-        }
+/* Sidebar Navigation */
+.sidebar-nav {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem 1.25rem;
+}
 
-        .sidebar-nav .nav-label {
-            font-size: 0.75rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--slate-500);
-            padding: 0.5rem 0.75rem;
-            margin-bottom: 0.5rem;
-        }
+.sidebar-nav .nav-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--slate-500);
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+}
 
-        .sidebar-main-link {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.75rem 1rem;
-            border-radius: 0.75rem;
-            color: var(--text-on-surface-variant);
-            transition: all var(--transition-fast);
-            margin-bottom: 0.25rem;
-            font-family: var(--font-label);
-            font-weight: 500;
-            font-size: 0.875rem;
-        }
+.sidebar-main-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    color: var(--text-on-surface-variant);
+    transition: all var(--transition-fast);
+    margin-bottom: 0.25rem;
+    font-family: var(--font-label);
+    font-weight: 500;
+    font-size: 0.875rem;
+}
 
-        .sidebar-main-link:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
+.sidebar-main-link:hover {
+    background: var(--bg-surface-low);
+    color: var(--text-on-surface);
+}
 
-        .sidebar-main-link.active {
-            background: var(--bg-surface-container-high);
-            color: var(--primary);
-        }
+.sidebar-main-link.active {
+    background: var(--bg-surface-container-high);
+    color: var(--primary);
+}
 
-        .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
+.sidebar-main-link .material-symbols-outlined {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-main-link .nav-text {
-            transition: opacity 0.3s ease;
-        }
+.sidebar-main-link .nav-text {
+    transition: opacity 0.3s ease;
+}
 
-        .sidebar-main-link .nav-badge {
-            margin-left: auto;
-            background: var(--primary);
-            color: white;
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 0.125rem 0.5rem;
-            border-radius: 50px;
-            transition: opacity 0.3s ease;
-        }
+.sidebar-main-link .nav-badge {
+    margin-left: auto;
+    background: var(--primary);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.125rem 0.5rem;
+    border-radius: 50px;
+    transition: opacity 0.3s ease;
+}
 
-        .sidebar-footer {
-            padding: 1rem 1.25rem;
-            border-top: 1px solid var(--slate-200);
-        }
+/* Sidebar Footer */
+.sidebar-footer {
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--slate-200);
+}
 
-        .sidebar-footer .user-card {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.5rem 0.75rem;
-            border-radius: 1rem;
-            background: var(--bg-surface-low);
-        }
+.sidebar-footer .user-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 1rem;
+    background: var(--bg-surface-low);
+}
 
-        .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            border-radius: 50%;
-            background: var(--primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 700;
-            font-size: 0.875rem;
-            flex-shrink: 0;
-        }
+.sidebar-footer .user-card .avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    background: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: 700;
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-footer .user-card .user-info .user-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
+.sidebar-footer .user-card .user-info .user-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-on-surface);
+}
 
-        .sidebar-footer .user-card .user-info .user-email {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
+.sidebar-footer .user-card .user-info .user-email {
+    font-size: 0.75rem;
+    color: var(--text-on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.875rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
+/* Sidebar Backdrop */
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(17, 24, 39, 0.5);
+    backdrop-filter: blur(8px);
+    z-index: 40;
+    transition: opacity 0.3s ease;
+    opacity: 0;
+}
 
-        .sidebar-footer .logout-btn:hover {
-            background: #fef2f2;
-        }
-
-        .sidebar-footer .logout-btn .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
-
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
-        }
-
+.sidebar-backdrop.active {
+    display: block;
+    opacity: 1;
+}
         /* =============================================
            MAIN CONTENT
         ============================================= */
@@ -1298,6 +1928,39 @@ if ($action === 'send_qualification' && $applicationId > 0) {
             font-size: 1rem;
         }
 
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+        }
+
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-ai .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
+        .btn-disabled {
+            background: #e5e7eb !important;
+            color: #9ca3af !important;
+            border: 1px solid #d1d5db !important;
+            cursor: not-allowed !important;
+            opacity: 0.6 !important;
+            pointer-events: none !important;
+        }
+
+        .btn-disabled .material-symbols-outlined {
+            color: #9ca3af !important;
+        }
+
+        .btn-disabled:hover {
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
         /* =============================================
            SEARCH & FILTERS
         ============================================= */
@@ -1427,7 +2090,7 @@ if ($action === 'send_qualification' && $applicationId > 0) {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.875rem;
-            min-width: 700px;
+            min-width: 800px;
         }
 
         table thead {
@@ -1586,11 +2249,15 @@ if ($action === 'send_qualification' && $applicationId > 0) {
         }
 
         .modal.interview-modal .modal {
-            max-width: 36rem;
+            max-width: 38rem;
         }
 
         .modal.qualification-modal .modal {
             max-width: 40rem;
+        }
+
+        .modal.match-modal .modal {
+            max-width: 48rem;
         }
 
         @keyframes modalSlideUp {
@@ -1944,6 +2611,123 @@ if ($action === 'send_qualification' && $applicationId > 0) {
         }
 
         /* =============================================
+           MATCH DETAILS IN MODAL - ENHANCED
+        ============================================= */
+        .match-score-display {
+            text-align: center;
+            padding: 1.5rem;
+            background: var(--bg-surface-low);
+            border-radius: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .match-score-display .score-number {
+            font-size: 3.5rem;
+            font-weight: 800;
+        }
+
+        .match-score-display .score-level {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-top: 0.25rem;
+        }
+
+        .match-score-display .score-recommendation {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.5rem;
+        }
+
+        .score-breakdown {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.75rem;
+            margin: 1rem 0;
+        }
+
+        .score-breakdown .breakdown-item {
+            text-align: center;
+            padding: 0.75rem;
+            background: var(--bg-surface);
+            border-radius: 0.75rem;
+            border: 1px solid var(--slate-200);
+        }
+
+        .score-breakdown .breakdown-item .label {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            color: var(--text-on-surface-variant);
+            font-weight: 600;
+        }
+
+        .score-breakdown .breakdown-item .value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+        }
+
+        .skill-breakdown {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .skill-breakdown .skill-group {
+            padding: 1rem;
+            border-radius: 0.75rem;
+            background: var(--bg-surface-low);
+        }
+
+        .skill-breakdown .skill-group h4 {
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .skill-breakdown .skill-group .skill-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+
+        .job-requirements {
+            background: var(--bg-surface-low);
+            padding: 1rem;
+            border-radius: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .job-requirements .req-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.25rem 0;
+            font-size: 0.85rem;
+            border-bottom: 1px solid var(--slate-200);
+        }
+
+        .job-requirements .req-item:last-child {
+            border-bottom: none;
+        }
+
+        .job-requirements .req-item .req-label {
+            color: var(--text-on-surface-variant);
+        }
+
+        .job-requirements .req-item .req-value {
+            font-weight: 500;
+        }
+
+        @media (max-width: 640px) {
+            .score-breakdown {
+                grid-template-columns: 1fr 1fr;
+            }
+            .skill-breakdown {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* =============================================
            RESPONSIVE
         ============================================= */
         @media (min-width: 768px) {
@@ -2039,7 +2823,7 @@ if ($action === 'send_qualification' && $applicationId > 0) {
 
             table {
                 font-size: 0.8125rem;
-                min-width: 600px;
+                min-width: 650px;
             }
 
             table th,
@@ -2127,6 +2911,10 @@ if ($action === 'send_qualification' && $applicationId > 0) {
                 justify-content: flex-start;
                 padding: 0.5rem 0.75rem;
             }
+
+            .score-breakdown {
+                grid-template-columns: 1fr 1fr;
+            }
         }
 
         @media (max-width: 480px) {
@@ -2172,6 +2960,24 @@ if ($action === 'send_qualification' && $applicationId > 0) {
                 max-width: 90%;
                 bottom: 1rem;
                 right: 1rem;
+            }
+
+            .match-score-badge {
+                font-size: 0.7rem;
+                padding: 2px 8px;
+            }
+
+            .match-score-number {
+                font-size: 0.9rem;
+            }
+
+            .score-breakdown {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.5rem;
+            }
+
+            .score-breakdown .breakdown-item .value {
+                font-size: 1rem;
             }
         }
 
@@ -2341,9 +3147,9 @@ if ($action === 'send_qualification' && $applicationId > 0) {
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">account_balance</span>
+            <span class="material-symbols-outlined">people</span>
         </span>
-        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-text">ISMERS</p>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -2363,6 +3169,11 @@ if ($action === 'send_qualification' && $applicationId > 0) {
         <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
+            <span class="nav-badge"><?php 
+                // Get pending applications count
+                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+                echo $pendingApps; 
+            ?></span>
         </a>
         <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">view_kanban</span>
@@ -2375,6 +3186,31 @@ if ($action === 'send_qualification' && $applicationId > 0) {
         <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
+        </a>
+        <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">archive</span>
+            <span class="nav-text">Archive</span>
+            <span class="nav-badge"><?php 
+                // Get total archive count
+                $totalArchived = 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                echo $totalArchived;
+            ?></span>
+        </a>
+        <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">apartment</span>
+            <span class="nav-text">Apply as Agency</span>
+        </a>
+        <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">assignment</span>
+            <span class="nav-text">Deployments</span>
         </a>
     </nav>
     <div class="sidebar-footer">
@@ -2454,12 +3290,16 @@ MAIN CONTENT
             <div class="page-header">
                 <div>
                     <h1>Applicants</h1>
-                    <p>Manage all applicants who applied to your jobs</p>
+                    <p>AI-powered applicant screening and matching</p>
                 </div>
                 <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
                     <button class="btn btn-outline btn-sm" onclick="window.location.href='?pending_notifications=1'">
                         <span class="material-symbols-outlined">pending</span>
                         Pending Notifications
+                    </button>
+                    <button class="btn btn-ai btn-sm" onclick="recalculateAllScores()">
+                        <span class="material-symbols-outlined">auto_awesome</span>
+                        Recalculate All AI Scores
                     </button>
                 </div>
             </div>
@@ -2496,6 +3336,13 @@ MAIN CONTENT
                             <?php echo htmlspecialchars($job['title']); ?>
                         </option>
                     <?php endforeach; ?>
+                </select>
+
+                <select id="sortFilter" onchange="applyFilters()">
+                    <option value="newest" <?php echo $sortBy === 'newest' ? 'selected' : ''; ?>>Newest First</option>
+                    <option value="match_score" <?php echo $sortBy === 'match_score' ? 'selected' : ''; ?>>Sort by AI Score</option>
+                    <option value="experience" <?php echo $sortBy === 'experience' ? 'selected' : ''; ?>>Most Experienced</option>
+                    <option value="skills" <?php echo $sortBy === 'skills' ? 'selected' : ''; ?>>Most Skills</option>
                 </select>
             </div>
 
@@ -2536,6 +3383,7 @@ MAIN CONTENT
                                     <th>Applicant</th>
                                     <th>Job</th>
                                     <th>Applied</th>
+                                    <th>AI Match</th>
                                     <th>Status</th>
                                     <th style="text-align:center;">Actions</th>
                                 </tr>
@@ -2551,6 +3399,15 @@ MAIN CONTENT
                                                 <div class="details">
                                                     <div class="name"><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></div>
                                                     <div class="email"><?php echo htmlspecialchars($app['email']); ?></div>
+                                                    <?php if (!empty($app['skills'])): ?>
+                                                        <div style="font-size:0.6rem; color:var(--text-on-surface-variant); margin-top:0.125rem;">
+                                                            <?php 
+                                                                $skillList = array_slice(array_map('trim', explode(',', $app['skills'])), 0, 3);
+                                                                echo implode(', ', $skillList);
+                                                                if (count(explode(',', $app['skills'])) > 3) echo '...';
+                                                            ?>
+                                                        </div>
+                                                    <?php endif; ?>
                                                 </div>
                                             </div>
                                         </td>
@@ -2576,27 +3433,62 @@ MAIN CONTENT
                                             <?php endif; ?>
                                         </td>
                                         <td>
+                                            <?php if (!empty($app['match_score'])): 
+                                                $level = getMatchLevel($app['match_score']);
+                                                $levelClass = strtolower($level['label']);
+                                            ?>
+                                                <div class="match-score-badge <?= $levelClass ?>" 
+                                                     onclick="viewMatchDetails(<?= $app['id'] ?>)" 
+                                                     title="Click to view AI match details">
+                                                    <span class="match-score-number"><?= $app['match_score'] ?>%</span>
+                                                    <span>•</span>
+                                                    <span class="material-symbols-outlined" style="font-size:0.9rem;"><?= $level['icon'] ?></span>
+                                                    <?php if (!empty($app['breakdown'])): ?>
+                                                        <span style="font-size:0.6rem; opacity:0.7;">ⓘ</span>
+                                                    <?php endif; ?>
+                                                </div>
+                                                <?php if (!empty($app['match_level'])): ?>
+                                                    <div style="font-size:0.6rem; color:var(--text-on-surface-variant); text-align:center;">
+                                                        <?= $app['match_level'] ?>
+                                                    </div>
+                                                <?php endif; ?>
+                                            <?php else: ?>
+                                                <span class="text-gray-400 text-sm" style="color:var(--text-on-surface-variant);">Not scored</span>
+                                                <button class="btn btn-ai btn-sm" onclick="recalculateMatch(<?= $app['id'] ?>)" style="margin-top:0.25rem; font-size:0.6rem; padding:0.125rem 0.5rem;">
+                                                    <span class="material-symbols-outlined" style="font-size:0.75rem;">refresh</span>
+                                                </button>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
                                             <span class="badge <?php echo $statusBadges[$app['status']] ?? 'badge-pending'; ?>">
                                                 <?php echo $statusLabels[$app['status']] ?? ucfirst($app['status']); ?>
                                             </span>
                                             <?php if (!empty($app['follow_up_sent']) && $app['follow_up_sent'] == 1): ?>
                                                 <br>
                                                 <span class="badge <?php echo ($app['qualification_status'] ?? '') === 'qualified' ? 'badge-notified-qualified' : 'badge-notified-notqualified'; ?>" style="font-size:0.6rem; margin-top:0.25rem;">
-                                                    <?php echo ($app['qualification_status'] ?? '') === 'qualified' ? '✅ Qualified' : '❌ Not Qualified'; ?>
+                                                    <?php echo ($app['qualification_status'] ?? '') === 'qualified' ? 'Qualified' : 'Not Qualified'; ?>
                                                 </span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
                                             <div class="action-buttons">
-                                                <button class="btn btn-outline btn-sm" onclick="viewApplicant(<?php echo $app['id']; ?>)">
+                                                <button class="btn btn-outline btn-sm" onclick="viewApplicant(<?php echo $app['id']; ?>)" title="View Applicant Details">
                                                     <span class="material-symbols-outlined">visibility</span>
                                                 </button>
-                                                <button class="btn btn-primary btn-sm" onclick="openStatusModal(<?php echo $app['id']; ?>)">
+                                                <button class="btn btn-primary btn-sm" onclick="openStatusModal(<?php echo $app['id']; ?>)" title="Update Application Status">
                                                     <span class="material-symbols-outlined">edit</span>
                                                 </button>
-                                                <button class="btn btn-success btn-sm" onclick="openInterviewModal(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?>')">
+                                                <?php 
+                                                // Check if application is in pending status to enable schedule button
+                                                $isPending = ($app['status'] === 'pending');
+                                                $hasInterview = !empty($app['interview_date']);
+                                                $canSchedule = $isPending && !$hasInterview;
+                                                ?>
+                                                <button class="btn btn-sm <?php echo $canSchedule ? 'btn-success' : 'btn-disabled'; ?> schedule-btn" 
+                                                        onclick="<?php echo $canSchedule ? "openInterviewModal({$app['id']}, '" . htmlspecialchars($app['first_name'] . ' ' . $app['last_name']) . "', '" . htmlspecialchars($app['job_title']) . "', '" . htmlspecialchars($app['company_name']) . "', '" . htmlspecialchars($app['email']) . "')" : 'return false;'; ?>"
+                                                        title="<?php echo $canSchedule ? 'Schedule Interview' : ($hasInterview ? 'Interview already scheduled' : 'Only pending applications can be scheduled'); ?>"
+                                                        <?php echo !$canSchedule ? 'disabled style="cursor:not-allowed; opacity:0.5;"' : ''; ?>>
                                                     <span class="material-symbols-outlined">calendar_month</span>
-                                                    Schedule
                                                 </button>
                                                 <button class="btn btn-warning btn-sm" 
                                                         onclick="openQualificationModal(<?php echo $app['id']; ?>, '<?php echo $app['status']; ?>')"
@@ -2702,7 +3594,7 @@ MODAL: UPDATE STATUS
 </div>
 
 <!-- =============================================
-MODAL: SCHEDULE INTERVIEW
+MODAL: SCHEDULE INTERVIEW (UPDATED with Location & Interviewer)
 ============================================= -->
 <div class="modal-overlay interview-modal" id="interviewModal">
     <div class="modal">
@@ -2720,12 +3612,45 @@ MODAL: SCHEDULE INTERVIEW
                 <input type="hidden" id="interviewApplicationId" name="application_id">
                 <input type="hidden" name="action" value="schedule_interview">
                 
+                <!-- Applicant Information Summary -->
+                <div style="background:var(--bg-surface-low); padding:1rem; border-radius:0.75rem; margin-bottom:1.25rem; border:1px solid var(--slate-200);">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+                        <div>
+                            <div style="font-size:0.65rem; font-weight:600; color:var(--text-on-surface-variant); text-transform:uppercase; letter-spacing:0.05em;">Applicant</div>
+                            <div style="font-weight:600;" id="interviewApplicantName">Loading...</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.65rem; font-weight:600; color:var(--text-on-surface-variant); text-transform:uppercase; letter-spacing:0.05em;">Position</div>
+                            <div style="font-weight:600;" id="interviewJobTitle">Loading...</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.65rem; font-weight:600; color:var(--text-on-surface-variant); text-transform:uppercase; letter-spacing:0.05em;">Company</div>
+                            <div style="font-weight:600;" id="interviewCompanyName">Loading...</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.65rem; font-weight:600; color:var(--text-on-surface-variant); text-transform:uppercase; letter-spacing:0.05em;">Email</div>
+                            <div style="font-weight:600; font-size:0.85rem;" id="interviewApplicantEmail">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="form-group">
-                    <label for="applicantName">Applicant</label>
-                    <input type="text" id="applicantName" class="form-control" disabled style="background:var(--bg-surface-low);">
+                    <label for="interviewLocation">Interview Location <span class="required">*</span></label>
+                    <input type="text" id="interviewLocation" name="interview_location" class="form-control" 
+                           placeholder="e.g., Zoom link, Google Meet, Office Address, Phone number..." required>
                     <div class="helper-text">
-                        <span class="material-symbols-outlined">info</span>
-                        Scheduling an interview for this applicant
+                        <span class="material-symbols-outlined">location_on</span>
+                        Enter the interview location (physical address, video call link, or phone number)
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="interviewerName">Interviewer Name <span class="required">*</span></label>
+                    <input type="text" id="interviewerName" name="interviewer_name" class="form-control" 
+                           placeholder="e.g., John Doe, HR Manager" required>
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">person</span>
+                        Name of the person conducting the interview
                     </div>
                 </div>
                 
@@ -2739,12 +3664,12 @@ MODAL: SCHEDULE INTERVIEW
                 </div>
                 
                 <div class="form-group">
-                    <label for="interviewNotes">Interview Notes</label>
+                    <label for="interviewNotes">Additional Notes / Instructions</label>
                     <textarea id="interviewNotes" name="interview_notes" class="form-control" 
-                              placeholder="Add any notes, preparation instructions, or details about the interview..." rows="3"></textarea>
+                              placeholder="Add any additional notes, preparation instructions, or details about the interview..." rows="3"></textarea>
                     <div class="helper-text">
                         <span class="material-symbols-outlined">note</span>
-                        Optional: Add any notes for the interviewer or applicant
+                        Optional: Add any extra notes for the interviewer or applicant
                     </div>
                 </div>
             </form>
@@ -2760,7 +3685,7 @@ MODAL: SCHEDULE INTERVIEW
 </div>
 
 <!-- =============================================
-MODAL: SEND QUALIFICATION (REDESIGNED)
+MODAL: SEND QUALIFICATION
 ============================================= -->
 <div class="modal-overlay qualification-modal" id="qualificationModal">
     <div class="modal">
@@ -2809,12 +3734,12 @@ MODAL: SEND QUALIFICATION (REDESIGNED)
                 <div class="decision-group">
                     <label class="decision-option" id="qualifiedOption">
                         <input type="radio" name="qualification_decision" value="qualified" checked>
-                        <span class="option-icon">✓</span>
+                        <span class="option-icon material-symbols-outlined">check_circle</span>
                         <span class="option-label qualified-text">Qualified</span>
                     </label>
                     <label class="decision-option" id="notqualifiedOption">
                         <input type="radio" name="qualification_decision" value="not_qualified">
-                        <span class="option-icon">✕</span>
+                        <span class="option-icon material-symbols-outlined">cancel</span>
                         <span class="option-label notqualified-text">Not Qualified</span>
                     </label>
                 </div>
@@ -2842,6 +3767,37 @@ MODAL: SEND QUALIFICATION (REDESIGNED)
             <button class="btn btn-send-notification" id="sendQualificationBtn" onclick="submitQualification()">
                 <span class="material-symbols-outlined">send</span>
                 Send Notification
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- =============================================
+MODAL: AI MATCH DETAILS - ENHANCED
+============================================= -->
+<div class="modal-overlay match-modal" id="matchModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">auto_awesome</span>
+                AI Match Score Details
+            </h2>
+            <button class="modal-close" onclick="closeMatchModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body" id="matchModalBody">
+            <div class="loading-spinner" id="matchLoading">
+                <div class="spinner"></div>
+                <p>Loading AI match details...</p>
+            </div>
+            <div id="matchContent" style="display:none;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeMatchModal()">Close</button>
+            <button class="btn btn-ai" onclick="recalculateMatchFromModal()">
+                <span class="material-symbols-outlined">refresh</span>
+                Recalculate
             </button>
         </div>
     </div>
@@ -2940,13 +3896,15 @@ function applyFilters() {
     const search = document.getElementById('searchInput');
     const status = document.getElementById('statusFilter');
     const job = document.getElementById('jobFilter');
+    const sort = document.getElementById('sortFilter');
     
-    if (!search || !status || !job) return;
+    if (!search || !status || !job || !sort) return;
     
     let url = 'applicants.php?';
     if (status.value !== 'all') url += 'status=' + status.value + '&';
     if (job.value > 0) url += 'job_id=' + job.value + '&';
-    if (search.value) url += 'search=' + encodeURIComponent(search.value);
+    if (search.value) url += 'search=' + encodeURIComponent(search.value) + '&';
+    if (sort.value !== 'newest') url += 'sort=' + sort.value;
     
     window.location.href = url;
 }
@@ -3037,6 +3995,26 @@ function viewApplicant(applicationId) {
                 followUpHtml = `<span style="color:var(--text-on-surface-variant);">Not sent yet</span>`;
             }
 
+            // Match score display in view
+            let matchHtml = '';
+            if (app.match_score) {
+                const level = getMatchLevel(app.match_score);
+                const levelClass = level.label.toLowerCase();
+                matchHtml = `
+                    <div style="display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem; background:var(--bg-surface-low); border-radius:0.5rem; flex-wrap:wrap;">
+                        <span class="match-score-badge ${levelClass}" style="cursor:default;">
+                            <span class="match-score-number">${app.match_score}%</span>
+                            <span>•</span>
+                            <span class="material-symbols-outlined" style="font-size:0.9rem;">${level.icon}</span>
+                            <span>${level.label}</span>
+                        </span>
+                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">${app.recommendation || ''}</span>
+                    </div>
+                `;
+            } else {
+                matchHtml = `<span style="color:var(--text-on-surface-variant);">Not scored</span>`;
+            }
+
             let resumeHtml = '';
             if (app.resume_exists) {
                 const iconClass = app.resume_extension === 'pdf' ? 'pdf' : 
@@ -3106,6 +4084,10 @@ function viewApplicant(applicationId) {
                         <div class="detail-item">
                             <div class="label">Status</div>
                             <div class="value"><span class="badge ${getStatusBadge(app.status)}">${getStatusLabel(app.status)}</span></div>
+                        </div>
+                        <div class="detail-item full-width">
+                            <div class="label">AI Match Score</div>
+                            <div class="value" style="background:transparent; padding:0;">${matchHtml}</div>
                         </div>
                         <div class="detail-item">
                             <div class="label">Qualification Status</div>
@@ -3220,23 +4202,34 @@ function submitStatusUpdate(event) {
 }
 
 // =============================================
-// 8. SCHEDULE INTERVIEW
+// 8. SCHEDULE INTERVIEW (UPDATED with Location & Interviewer)
 // =============================================
-function openInterviewModal(applicationId, applicantName) {
+function openInterviewModal(applicationId, applicantName, jobTitle, companyName, applicantEmail) {
     const interviewAppId = document.getElementById('interviewApplicationId');
-    const applicantNameInput = document.getElementById('applicantName');
+    const applicantNameInput = document.getElementById('interviewApplicantName');
+    const jobTitleInput = document.getElementById('interviewJobTitle');
+    const companyNameInput = document.getElementById('interviewCompanyName');
+    const applicantEmailInput = document.getElementById('interviewApplicantEmail');
     const interviewDate = document.getElementById('interviewDate');
     const interviewNotes = document.getElementById('interviewNotes');
+    const interviewLocation = document.getElementById('interviewLocation');
+    const interviewerName = document.getElementById('interviewerName');
     
     if (interviewAppId) interviewAppId.value = applicationId;
-    if (applicantNameInput) applicantNameInput.value = applicantName;
+    if (applicantNameInput) applicantNameInput.textContent = applicantName || 'N/A';
+    if (jobTitleInput) jobTitleInput.textContent = jobTitle || 'N/A';
+    if (companyNameInput) companyNameInput.textContent = companyName || 'N/A';
+    if (applicantEmailInput) applicantEmailInput.textContent = applicantEmail || 'N/A';
     
+    // Set default date to tomorrow at 10:00 AM
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(10, 0, 0, 0);
     const isoString = tomorrow.toISOString().slice(0, 16);
     if (interviewDate) interviewDate.value = isoString;
     if (interviewNotes) interviewNotes.value = '';
+    if (interviewLocation) interviewLocation.value = '';
+    if (interviewerName) interviewerName.value = '';
     
     openModal('interviewModal');
 }
@@ -3255,6 +4248,11 @@ function submitInterview(event) {
     const originalText = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Scheduling...';
+
+    // Log the data being sent for debugging
+    console.log('Scheduling interview with:');
+    console.log('Location:', document.getElementById('interviewLocation').value);
+    console.log('Interviewer:', document.getElementById('interviewerName').value);
 
     fetch('applicants.php', {
         method: 'POST',
@@ -3289,7 +4287,7 @@ function submitInterview(event) {
 }
 
 // =============================================
-// 9. QUALIFICATION MODAL (REDESIGNED)
+// 9. QUALIFICATION MODAL
 // =============================================
 let qualificationData = {};
 
@@ -3334,7 +4332,14 @@ function openQualificationModal(applicationId, status) {
             const daysWaiting = Math.floor((Date.now() - new Date(app.applied_at).getTime()) / (1000 * 60 * 60 * 24));
             document.getElementById('qualificationDaysWaiting').textContent = daysWaiting + ' days';
             
-            const isQualified = determineQualificationFromData(app);
+            // Pre-select based on AI match score if available
+            let isQualified = false;
+            if (app.match_score && app.match_score >= 70) {
+                isQualified = true;
+            } else {
+                isQualified = determineQualificationFromData(app);
+            }
+            
             document.querySelector('input[name="qualification_decision"][value="' + 
                 (isQualified ? 'qualified' : 'not_qualified') + '"]').checked = true;
             
@@ -3435,7 +4440,6 @@ function submitQualification() {
         }
     })
     .then(response => {
-        // Check if response is ok
         if (!response.ok) {
             throw new Error('HTTP ' + response.status);
         }
@@ -3445,13 +4449,11 @@ function submitQualification() {
         btn.disabled = false;
         btn.innerHTML = originalText;
         
-        // Check the response
         if (data && data.success === true) {
-            showToast('✅ Notification sent successfully!', 'success');
+            showToast('Notification sent successfully!', 'success');
             closeModal('qualificationModal');
             setTimeout(() => location.reload(), 1500);
         } else {
-            // If we got here but success is false
             const errorMsg = data && data.error ? data.error : 'Unknown error occurred.';
             showToast('Error: ' + errorMsg, 'error');
         }
@@ -3459,20 +4461,393 @@ function submitQualification() {
     .catch(error => {
         btn.disabled = false;
         btn.innerHTML = originalText;
-        
         console.error('Fetch error:', error);
-        
-        // Even if fetch fails, the email might have sent
-        // Show a more helpful message
         showToast('Connection issue detected. Please check if the email was sent.', 'info');
-        
-        // Optionally reload to see if the application was updated
         setTimeout(() => location.reload(), 3000);
     });
 }
 
 // =============================================
-// 10. TOAST SYSTEM
+// 10. AI MATCH SCORE FUNCTIONS - ENHANCED
+// =============================================
+let currentMatchApplicationId = null;
+
+function viewMatchDetails(applicationId) {
+    currentMatchApplicationId = applicationId;
+    
+    const modal = document.getElementById('matchModal');
+    const loading = document.getElementById('matchLoading');
+    const content = document.getElementById('matchContent');
+    
+    if (loading) loading.style.display = 'block';
+    if (content) content.style.display = 'none';
+    
+    openModal('matchModal');
+
+    const formData = new FormData();
+    formData.append('action', 'view_match_details');
+    formData.append('application_id', applicationId);
+
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (loading) loading.style.display = 'none';
+        if (content) content.style.display = 'block';
+
+        if (data.success) {
+            displayMatchDetails(data.details);
+        } else {
+            content.innerHTML = `
+                <div style="text-align:center; padding:1.5rem; color:#dc2626;">
+                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                    <p style="margin-top:0.5rem;">${data.error || 'Failed to load match details.'}</p>
+                    <button class="btn btn-ai" onclick="recalculateMatch(${applicationId})" style="margin-top:1rem;">
+                        <span class="material-symbols-outlined">refresh</span>
+                        Recalculate
+                    </button>
+                </div>
+            `;
+        }
+    })
+    .catch(error => {
+        if (loading) loading.style.display = 'none';
+        if (content) {
+            content.style.display = 'block';
+            content.innerHTML = `
+                <div style="text-align:center; padding:1.5rem; color:#dc2626;">
+                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                    <p style="margin-top:0.5rem;">Error loading match details. Please try again.</p>
+                    <button class="btn btn-ai" onclick="recalculateMatch(${applicationId})" style="margin-top:1rem;">
+                        <span class="material-symbols-outlined">refresh</span>
+                        Recalculate
+                    </button>
+                </div>
+            `;
+        }
+    });
+}
+
+function displayMatchDetails(details) {
+    const content = document.getElementById('matchContent');
+    
+    const score = details.score || 0;
+    const level = details.level || 'N/A';
+    const recommendation = details.recommendation || '';
+    const matchedSkills = details.matched_skills || [];
+    const missingSkills = details.missing_skills || [];
+    const matchedCount = details.matched_count || 0;
+    const totalSkills = details.total_job_skills || 0;
+    const breakdown = details.breakdown || {};
+    const skillsScore = details.skills_score || 0;
+    const experienceScore = details.experience_score || 0;
+    const educationScore = details.education_score || 0;
+    const coverLetterScore = details.cover_letter_score || 0;
+    const resumeBonus = details.resume_bonus || 0;
+    const applicantExp = details.applicant_experience || '';
+    const applicantEdu = details.applicant_education || '';
+    const applicantSkills = details.applicant_skills || '';
+    const jobTitle = details.job_title || '';
+    const jobExpRequired = details.job_experience_required || '';
+    const jobEduRequired = details.job_education_required || '';
+
+    // Determine color class
+    let colorClass = 'text-gray-600';
+    let levelClass = 'fair';
+    if (level === 'Excellent') { colorClass = 'text-green-600'; levelClass = 'excellent'; }
+    else if (level === 'Very Good') { colorClass = 'text-blue-600'; levelClass = 'good'; }
+    else if (level === 'Good') { colorClass = 'text-purple-600'; levelClass = 'good'; }
+    else if (level === 'Fair') { colorClass = 'text-yellow-600'; levelClass = 'fair'; }
+    else if (level === 'Low') { colorClass = 'text-red-600'; levelClass = 'low'; }
+
+    // Generate breakdown HTML
+    let breakdownHtml = '';
+    if (breakdown && Object.keys(breakdown).length > 0) {
+        breakdownHtml = `
+            <div class="score-breakdown">
+                <div class="breakdown-item">
+                    <div class="label">Skills</div>
+                    <div class="value" style="color:#059669;">${skillsScore}%</div>
+                </div>
+                <div class="breakdown-item">
+                    <div class="label">Experience</div>
+                    <div class="value" style="color:#2563eb;">${experienceScore}%</div>
+                </div>
+                <div class="breakdown-item">
+                    <div class="label">Education</div>
+                    <div class="value" style="color:#7c3aed;">${educationScore}%</div>
+                </div>
+                <div class="breakdown-item">
+                    <div class="label">Cover Letter</div>
+                    <div class="value" style="color:#d97706;">${coverLetterScore}%</div>
+                </div>
+            </div>
+            ${resumeBonus > 0 ? `<div style="text-align:center; font-size:0.8rem; color:var(--text-on-surface-variant);">+${resumeBonus}% Resume Bonus</div>` : ''}
+        `;
+    }
+
+    // Job requirements comparison
+    const jobRequirementsHtml = `
+        <div class="job-requirements">
+            <h4 style="font-size:0.8rem; font-weight:600; margin-bottom:0.5rem;">Job Requirements vs Applicant Profile</h4>
+            <div class="req-item">
+                <span class="req-label">Position</span>
+                <span class="req-value">${escapeHtml(jobTitle || 'N/A')}</span>
+            </div>
+            <div class="req-item">
+                <span class="req-label">Experience Required</span>
+                <span class="req-value">${escapeHtml(jobExpRequired || 'Not specified')}</span>
+            </div>
+            <div class="req-item">
+                <span class="req-label">Applicant Experience</span>
+                <span class="req-value">${escapeHtml(applicantExp || 'Not specified')}</span>
+            </div>
+            <div class="req-item">
+                <span class="req-label">Education Required</span>
+                <span class="req-value">${escapeHtml(jobEduRequired || 'Not specified')}</span>
+            </div>
+            <div class="req-item">
+                <span class="req-label">Applicant Education</span>
+                <span class="req-value">${escapeHtml(applicantEdu || 'Not specified')}</span>
+            </div>
+            <div class="req-item">
+                <span class="req-label">Skills</span>
+                <span class="req-value" style="font-size:0.75rem;">${escapeHtml(applicantSkills || 'Not specified')}</span>
+            </div>
+        </div>
+    `;
+
+    content.innerHTML = `
+        <div class="match-score-display">
+            <div class="score-number ${colorClass}">${score}%</div>
+            <div class="score-level ${colorClass}">
+                <span class="match-score-badge ${levelClass}" style="cursor:default; font-size:0.9rem;">
+                    <span class="material-symbols-outlined" style="font-size:1rem;">${level === 'Excellent' ? 'star' : level === 'Very Good' ? 'stars' : level === 'Good' ? 'thumb_up' : level === 'Fair' ? 'flag' : 'error'}</span>
+                    ${level}
+                </span>
+            </div>
+            <div class="score-recommendation">${recommendation}</div>
+            <div style="margin-top:0.5rem; font-size:0.8rem; color:var(--text-on-surface-variant);">
+                Updated: ${details.updated_at || 'Recently'}
+            </div>
+        </div>
+
+        ${breakdownHtml}
+
+        <div class="skill-breakdown">
+            <div class="skill-group">
+                <h4 style="color:#059669;">Matched Skills (${matchedSkills.length})</h4>
+                <div class="skill-list">
+                    ${matchedSkills.length > 0 
+                        ? matchedSkills.map(s => `<span class="match-detail-tag matched">${escapeHtml(s)}</span>`).join('')
+                        : '<span style="color:var(--text-on-surface-variant); font-size:0.8rem;">None matched</span>'
+                    }
+                </div>
+                <div style="margin-top:0.5rem; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    ${matchedCount} out of ${totalSkills} required skills matched
+                </div>
+            </div>
+            <div class="skill-group">
+                <h4 style="color:#dc2626;">Missing Skills (${missingSkills.length})</h4>
+                <div class="skill-list">
+                    ${missingSkills.length > 0 
+                        ? missingSkills.map(s => `<span class="match-detail-tag missing">${escapeHtml(s)}</span>`).join('')
+                        : '<span style="color:var(--text-on-surface-variant); font-size:0.8rem;">None missing</span>'
+                    }
+                </div>
+                <div style="margin-top:0.5rem; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    ${missingSkills.length > 0 ? 'Consider training or projects for missing skills' : 'All required skills matched!'}
+                </div>
+            </div>
+        </div>
+
+        ${jobRequirementsHtml}
+
+        <div style="margin-top:1rem; padding:1rem; background:#eff6ff; border-radius:0.75rem; border-left:4px solid #3b82f6;">
+            <h4 style="font-size:0.8rem; font-weight:600; color:#1e40af; margin-bottom:0.25rem;">AI Recommendations</h4>
+            <ul style="list-style:disc; list-style-position:inside; font-size:0.85rem; color:var(--text-on-surface);">
+                <li>${recommendation}</li>
+                ${missingSkills.length > 0 
+                    ? `<li>Consider training or upskilling for: ${missingSkills.slice(0, 3).join(', ')}${missingSkills.length > 3 ? '...' : ''}</li>` 
+                    : ''
+                }
+                ${experienceScore < 60 ? '<li>Candidate may need additional experience. Consider growth potential.</li>' : ''}
+                ${coverLetterScore < 40 ? '<li>Cover letter could be more detailed. Consider reaching out for more information.</li>' : ''}
+                <li>Schedule an interview to assess cultural fit and soft skills.</li>
+            </ul>
+        </div>
+    `;
+}
+
+function closeMatchModal() {
+    closeModal('matchModal');
+}
+
+function recalculateMatch(applicationId) {
+    if (!confirm('Re-calculate AI match score for this applicant?')) return;
+    
+    // Use a more reliable way to find the button
+    const buttons = document.querySelectorAll('button');
+    let button = null;
+    let originalText = '';
+    
+    for (let btn of buttons) {
+        if (btn.textContent.includes('Recalculate') || 
+            btn.getAttribute('onclick')?.includes(`recalculateMatch(${applicationId}`)) {
+            button = btn;
+            originalText = btn.innerHTML;
+            break;
+        }
+    }
+    
+    // Also try the event target approach
+    if (!button && window.event) {
+        const target = window.event.target;
+        if (target) {
+            button = target.closest('button');
+            if (button) {
+                originalText = button.innerHTML;
+            }
+        }
+    }
+    
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '⏳';
+    }
+
+    const formData = new FormData();
+    formData.append('action', 'recalculate_match');
+    formData.append('application_id', applicationId);
+
+    fetch('applicants.php', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = originalText || '🔄';
+        }
+        
+        if (data.success) {
+            showToast('AI Score recalculated: ' + data.score + '%', 'success');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showToast('Error: ' + (data.error || 'Unknown error'), 'error');
+        }
+    })
+    .catch(error => {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = originalText || '🔄';
+        }
+        showToast('Error recalculating score.', 'error');
+    });
+}
+
+function recalculateMatchFromModal() {
+    if (currentMatchApplicationId) {
+        recalculateMatch(currentMatchApplicationId);
+    }
+}
+
+function recalculateAllScores() {
+    if (!confirm('This will recalculate AI match scores for ALL applicants. This may take a moment. Continue?')) return;
+    
+    const btn = document.querySelector('[onclick="recalculateAllScores()"]');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Recalculating...';
+    }
+    
+    showToast('⏳ Recalculating all AI scores... This may take a moment.', 'info');
+    
+    // Get all applicant IDs from the table
+    const rows = document.querySelectorAll('table tbody tr');
+    let ids = [];
+    rows.forEach(row => {
+        const viewBtn = row.querySelector('button[onclick*="viewApplicant"]');
+        if (viewBtn) {
+            const match = viewBtn.getAttribute('onclick').match(/\d+/);
+            if (match) ids.push(match[0]);
+        }
+    });
+    
+    if (ids.length === 0) {
+        showToast('No applicants to process.', 'info');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> Recalculate All AI Scores';
+        }
+        return;
+    }
+    
+    let processed = 0;
+    let failed = 0;
+    
+    ids.forEach((id, index) => {
+        setTimeout(() => {
+            const formData = new FormData();
+            formData.append('action', 'recalculate_match');
+            formData.append('application_id', id);
+            
+            fetch('applicants.php', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                processed++;
+                if (!data.success) failed++;
+                
+                if (processed + failed >= ids.length) {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> Recalculate All AI Scores';
+                    }
+                    showToast(`${processed} scores recalculated, ${failed} failed.`, processed > failed ? 'success' : 'info');
+                    setTimeout(() => location.reload(), 1500);
+                }
+            })
+            .catch(() => {
+                processed++;
+                failed++;
+                if (processed + failed >= ids.length) {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> Recalculate All AI Scores';
+                    }
+                    showToast(`${processed} scores recalculated, ${failed} failed.`, 'info');
+                    setTimeout(() => location.reload(), 1500);
+                }
+            });
+        }, index * 300);
+    });
+}
+
+function getMatchLevel(score) {
+    if (score >= 85) return { label: 'Excellent', color: '#059669', bg: '#d1fae5', icon: 'star' };
+    if (score >= 70) return { label: 'Very Good', color: '#2563eb', bg: '#dbeafe', icon: 'stars' };
+    if (score >= 55) return { label: 'Good', color: '#7c3aed', bg: '#ede9fe', icon: 'thumb_up' };
+    if (score >= 40) return { label: 'Fair', color: '#d97706', bg: '#fef3c7', icon: 'flag' };
+    return { label: 'Low', color: '#dc2626', bg: '#fecaca', icon: 'error' };
+}
+
+// =============================================
+// 11. TOAST SYSTEM
 // =============================================
 function showToast(message, type) {
     type = type || 'info';
@@ -3495,7 +4870,7 @@ function showToast(message, type) {
 }
 
 // =============================================
-// 11. UTILITY FUNCTIONS
+// 12. UTILITY FUNCTIONS
 // =============================================
 function escapeHtml(text) {
     if (!text) return '';
@@ -3542,7 +4917,7 @@ function getStatusLabel(status) {
 }
 
 // =============================================
-// 12. RESPONSIVE HANDLING
+// 13. RESPONSIVE HANDLING
 // =============================================
 var resizeTimer;
 window.addEventListener('resize', function() {
@@ -3566,7 +4941,7 @@ window.addEventListener('resize', function() {
 });
 
 // =============================================
-// 13. KEYBOARD ACCESSIBILITY
+// 14. KEYBOARD ACCESSIBILITY
 // =============================================
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
@@ -3574,8 +4949,11 @@ document.addEventListener('keydown', function(e) {
         var statusModal = document.getElementById('statusModal');
         var interviewModal = document.getElementById('interviewModal');
         var qualificationModal = document.getElementById('qualificationModal');
+        var matchModal = document.getElementById('matchModal');
         
-        if (viewModal && viewModal.classList.contains('active')) {
+        if (matchModal && matchModal.classList.contains('active')) {
+            closeMatchModal();
+        } else if (viewModal && viewModal.classList.contains('active')) {
             closeModal('viewModal');
         } else if (statusModal && statusModal.classList.contains('active')) {
             closeModal('statusModal');
@@ -3591,7 +4969,7 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-console.log('👥 ISMERS Applicants Management loaded successfully!');
+console.log('ISMERS Applicants Management with Enhanced AI Integration loaded successfully!');
 </script>
 
 </body>

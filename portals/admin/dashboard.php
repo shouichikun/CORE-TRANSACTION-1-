@@ -1,8 +1,9 @@
 <?php
-// portals/admin/dashboard.php - Admin Dashboard
+// portals/admin/dashboard.php - AI-Powered Enhanced Admin Dashboard
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in and is admin
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
@@ -15,11 +16,18 @@ $fullName = $_SESSION['full_name'] ?? 'Admin User';
 $firstName = $_SESSION['first_name'] ?? 'Admin';
 $email = $_SESSION['email'] ?? '';
 
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
+
 // Update current user's last activity
 $updateSql = "UPDATE users SET last_activity = NOW() WHERE id = ?";
 updateRecord($updateSql, [$userId], "i");
 
-// Get system stats
+// =============================================
+// GET SYSTEM STATS
+// =============================================
 $totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
 $totalApplicants = getRecord("SELECT COUNT(*) as count FROM users WHERE role = 'applicant'")['count'] ?? 0;
 $totalHR = getRecord("SELECT COUNT(*) as count FROM users WHERE role IN ('hr_manager', 'recruiter')")['count'] ?? 0;
@@ -29,14 +37,26 @@ $totalJobs = getRecord("SELECT COUNT(*) as count FROM job_orders")['count'] ?? 0
 $totalApplications = getRecord("SELECT COUNT(*) as count FROM applications")['count'] ?? 0;
 $totalAdmins = getRecord("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")['count'] ?? 0;
 
+// Get online users count (active in last 5 minutes)
+$onlineThreshold = date('Y-m-d H:i:s', strtotime('-5 minutes'));
+$onlineUsers = getRecord("SELECT COUNT(*) as count FROM users WHERE last_activity >= ?", [$onlineThreshold], "s")['count'] ?? 0;
+
 // Get recent users for activity
-$recentUsers = getRecords("SELECT id, first_name, last_name, email, role, is_active, last_activity, created_at 
-                           FROM users ORDER BY created_at DESC LIMIT 5");
+$recentUsers = getRecords("
+    SELECT id, first_name, last_name, email, role, is_active, last_activity, created_at 
+    FROM users 
+    ORDER BY created_at DESC 
+    LIMIT 5
+");
 
 // Get recent jobs
-$recentJobs = getRecords("SELECT jo.*, c.company_name FROM job_orders jo 
-                          JOIN clients c ON jo.client_id = c.id 
-                          ORDER BY jo.created_at DESC LIMIT 5");
+$recentJobs = getRecords("
+    SELECT jo.*, c.company_name 
+    FROM job_orders jo 
+    JOIN clients c ON jo.client_id = c.id 
+    ORDER BY jo.created_at DESC 
+    LIMIT 5
+");
 
 // Get role distribution
 $roleDistribution = [];
@@ -71,6 +91,233 @@ foreach ($roles as $role) {
         ];
     }
 }
+
+// Get user profile data for sidebar
+$userProfile = getUserProfileData($userId);
+
+// =============================================
+// AI HELPER FUNCTIONS
+// =============================================
+
+/**
+ * Generate AI dashboard insights
+ */
+function generateAIDashboardInsights($data) {
+    global $aiService;
+    
+    try {
+        $result = $aiService->generateDashboardInsights([
+            'total_users' => $data['total_users'] ?? 0,
+            'online_users' => $data['online_users'] ?? 0,
+            'total_jobs' => $data['total_jobs'] ?? 0,
+            'total_applications' => $data['total_applications'] ?? 0,
+            'total_clients' => $data['total_clients'] ?? 0,
+            'total_hr' => $data['total_hr'] ?? 0,
+            'total_employees' => $data['total_employees'] ?? 0,
+            'role_distribution' => $data['role_distribution'] ?? [],
+            'recent_users' => $data['recent_users'] ?? [],
+            'recent_jobs' => $data['recent_jobs'] ?? []
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            return [
+                'success' => true,
+                'health_score' => $result['health_score'] ?? 85,
+                'status' => $result['status'] ?? 'Good',
+                'insights' => $result['insights'] ?? [],
+                'recommendations' => $result['recommendations'] ?? [],
+                'anomalies' => $result['anomalies'] ?? [],
+                'trend' => $result['trend'] ?? 'Stable',
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Dashboard Insights Error: " . $e->getMessage());
+    }
+    
+    // Return fallback mock insights
+    return generateMockDashboardInsights($data);
+}
+
+/**
+ * Generate mock dashboard insights (fallback)
+ */
+function generateMockDashboardInsights($data) {
+    $totalUsers = $data['total_users'] ?? 0;
+    $onlineUsers = $data['online_users'] ?? 0;
+    $totalJobs = $data['total_jobs'] ?? 0;
+    $totalApplications = $data['total_applications'] ?? 0;
+    $totalClients = $data['total_clients'] ?? 0;
+    $totalEmployees = $data['total_employees'] ?? 0;
+    
+    $insights = [];
+    $recommendations = [];
+    $anomalies = [];
+    $healthScore = 85;
+    $status = 'Good';
+    $trend = 'Stable';
+    
+    // User engagement insights
+    if ($totalUsers > 0) {
+        $engagementRate = round(($onlineUsers / $totalUsers) * 100);
+        if ($engagementRate > 20) {
+            $insights[] = "{$engagementRate}% of users are currently active, showing strong engagement.";
+            $healthScore += 5;
+        } elseif ($engagementRate > 5) {
+            $insights[] = "{$engagementRate}% of users are active. Consider ways to boost engagement.";
+            $healthScore += 2;
+        } else {
+            $insights[] = "Low user engagement at {$engagementRate}%. Consider sending notifications or updates.";
+            $healthScore -= 5;
+            $recommendations[] = "Send a platform update newsletter to re-engage users.";
+        }
+    }
+    
+    // Job activity insights
+    if ($totalJobs > 10) {
+        $insights[] = "{$totalJobs} jobs posted, indicating healthy platform activity.";
+        $healthScore += 5;
+    } elseif ($totalJobs > 0) {
+        $insights[] = "{$totalJobs} jobs posted. Encourage more job postings.";
+        $recommendations[] = "Reach out to clients to post new job openings.";
+    } else {
+        $insights[] = "No jobs posted yet. Consider promoting the platform to attract clients.";
+        $healthScore -= 10;
+        $recommendations[] = "Launch a marketing campaign to attract clients and job postings.";
+    }
+    
+    // Application insights
+    if ($totalApplications > 20) {
+        $insights[] = "{$totalApplications} applications received, showing strong candidate interest.";
+        $healthScore += 5;
+    } elseif ($totalApplications > 0) {
+        $insights[] = "{$totalApplications} applications received. Consider promoting open jobs.";
+        $recommendations[] = "Run targeted ads for open positions to attract more applicants.";
+    } else {
+        $insights[] = "No applications received. Review your job postings and visibility.";
+        $healthScore -= 5;
+        $recommendations[] = "Review and optimize job descriptions to attract more applicants.";
+    }
+    
+    // Client and employee insights
+    if ($totalClients > 0) {
+        $insights[] = "{$totalClients} active clients on the platform.";
+    }
+    if ($totalEmployees > 0) {
+        $insights[] = "{$totalEmployees} employees deployed across clients.";
+    }
+    
+    // Anomaly detection
+    if ($totalUsers > 0 && $onlineUsers == 0) {
+        $anomalies[] = "No users are currently online despite having {$totalUsers} registered users.";
+        $healthScore -= 5;
+    }
+    if ($totalJobs > 0 && $totalApplications == 0) {
+        $anomalies[] = "There are {$totalJobs} jobs but no applications received yet.";
+        $healthScore -= 3;
+    }
+    
+    // Health score adjustments
+    if ($healthScore > 90) $healthScore = 92;
+    if ($healthScore < 40) $healthScore = 45;
+    
+    // Status based on health score
+    if ($healthScore >= 80) {
+        $status = 'Excellent';
+        $trend = 'Growing';
+    } elseif ($healthScore >= 60) {
+        $status = 'Good';
+        $trend = 'Stable';
+    } elseif ($healthScore >= 40) {
+        $status = 'Fair';
+        $trend = 'Needs Attention';
+    } else {
+        $status = 'At Risk';
+        $trend = 'Declining';
+    }
+    
+    // General recommendations
+    if (empty($recommendations)) {
+        $recommendations = [
+            "Monitor key metrics weekly to identify trends early.",
+            "Engage with clients to understand their hiring needs better.",
+            "Consider adding new features to improve user experience."
+        ];
+    }
+    
+    return [
+        'success' => true,
+        'health_score' => $healthScore,
+        'status' => $status,
+        'insights' => array_slice($insights, 0, 4),
+        'recommendations' => array_slice($recommendations, 0, 4),
+        'anomalies' => $anomalies,
+        'trend' => $trend,
+        'provider' => 'mock'
+    ];
+}
+
+// Handle AJAX requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    // =============================================
+    // GET AI DASHBOARD INSIGHTS (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'get_dashboard_insights') {
+        header('Content-Type: application/json');
+        
+        $data = [
+            'total_users' => $totalUsers,
+            'online_users' => $onlineUsers,
+            'total_jobs' => $totalJobs,
+            'total_applications' => $totalApplications,
+            'total_clients' => $totalClients,
+            'total_hr' => $totalHR,
+            'total_employees' => $totalEmployees,
+            'role_distribution' => $roleDistribution,
+            'recent_users' => $recentUsers,
+            'recent_jobs' => $recentJobs
+        ];
+        
+        $result = generateAIDashboardInsights($data);
+        echo json_encode($result);
+        exit;
+    }
+}
+
+// Pre-compute AI insights
+$systemData = [
+    'total_users' => $totalUsers,
+    'online_users' => $onlineUsers,
+    'total_jobs' => $totalJobs,
+    'total_applications' => $totalApplications,
+    'total_clients' => $totalClients,
+    'total_hr' => $totalHR,
+    'total_employees' => $totalEmployees,
+    'role_distribution' => $roleDistribution,
+    'recent_users' => $recentUsers,
+    'recent_jobs' => $recentJobs
+];
+$aiInsights = generateAIDashboardInsights($systemData);
+
+// Get greeting
+$currentHour = date('H');
+$greeting = 'Good Evening';
+if ($currentHour < 12) {
+    $greeting = 'Good Morning';
+} elseif ($currentHour < 18) {
+    $greeting = 'Good Afternoon';
+}
+
+// Get trend color
+function getTrendColor($trend) {
+    $colors = [
+        'Growing' => '#059669',
+        'Stable' => '#2563eb',
+        'Needs Attention' => '#d97706',
+        'Declining' => '#dc2626'
+    ];
+    return $colors[$trend] ?? '#6b7280';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -82,7 +329,7 @@ foreach ($roles as $role) {
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - ADMIN DASHBOARD
+           MATERIAL 3 DESIGN SYSTEM - ENHANCED ADMIN DASHBOARD
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -115,8 +362,183 @@ foreach ($roles as $role) {
             --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
+            --success-color: #22c55e;
+            --error-color: #dc2626;
+            --warning-color: #f59e0b;
+            --info-color: #2563eb;
         }
 
+        /* AI Badge */
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined {
+            font-size: 0.7rem;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined {
+            font-size: 1rem;
+        }
+        .btn-ai:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* AI Dots Loading (small) */
+        .ai-dots-loading-sm {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0;
+        }
+        .ai-dots-loading-sm .dot {
+            width: 0.375rem;
+            height: 0.375rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotPulseSm 1.4s infinite ease-in-out both;
+        }
+        .ai-dots-loading-sm .dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-dots-loading-sm .dot:nth-child(2) { animation-delay: -0.16s; }
+        .ai-dots-loading-sm .dot:nth-child(3) { animation-delay: 0s; }
+        @keyframes dotPulseSm {
+            0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        /* AI System Health Panel */
+        .ai-health-panel {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-2xl);
+            padding: 1.25rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-sm);
+        }
+        .ai-health-panel .health-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.75rem;
+        }
+        .ai-health-panel .health-header .title {
+            font-weight: 700;
+            font-size: 0.875rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .ai-health-panel .health-header .health-score {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: white;
+        }
+        .ai-health-panel .health-header .trend-badge {
+            font-size: 0.625rem;
+            font-weight: 600;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            text-transform: uppercase;
+            color: white;
+        }
+        .ai-health-panel .health-insights {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        @media (max-width: 480px) {
+            .ai-health-panel .health-insights { grid-template-columns: 1fr; }
+        }
+        .ai-health-panel .insight-item {
+            background: rgba(255,255,255,0.6);
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.8125rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .ai-health-panel .insight-item .icon {
+            color: var(--primary);
+            font-size: 1rem;
+            margin-top: 0.0625rem;
+        }
+        .ai-health-panel .insight-item .icon.anomaly { color: #dc2626; }
+        .ai-health-panel .insight-item .icon.recommendation { color: #7c3aed; }
+        .ai-health-panel .health-recommendations {
+            padding-top: 0.75rem;
+            border-top: 1px solid rgba(196, 181, 253, 0.3);
+        }
+        .ai-health-panel .health-recommendations .rec-item {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            padding: 0.125rem 0;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .ai-health-panel .health-recommendations .rec-item .icon {
+            color: #7c3aed;
+            font-size: 1rem;
+            margin-top: 0.0625rem;
+        }
+        .ai-health-panel .health-anomalies {
+            padding-top: 0.75rem;
+            border-top: 1px solid rgba(196, 181, 253, 0.3);
+        }
+        .ai-health-panel .health-anomalies .anomaly-item {
+            font-size: 0.8125rem;
+            color: #dc2626;
+            padding: 0.125rem 0;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .ai-health-panel .health-anomalies .anomaly-item .icon {
+            color: #dc2626;
+            font-size: 1rem;
+            margin-top: 0.0625rem;
+        }
+        .ai-health-panel .health-provider {
+            font-size: 0.5rem;
+            color: var(--text-on-surface-variant);
+            text-align: right;
+            margin-top: 0.5rem;
+        }
+
+        /* =============================================
+           REST OF STYLES (same as your existing)
+        ============================================= */
         * {
             margin: 0;
             padding: 0;
@@ -141,8 +563,8 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   SIDEBAR - FIXED
-                ============================================= */
+           SIDEBAR - FIXED
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -161,17 +583,9 @@ foreach ($roles as $role) {
             flex-shrink: 0;
         }
 
-        .dashboard-sidebar.collapsed {
-            width: var(--sidebar-collapsed);
-        }
-
-        .dashboard-sidebar.mobile-hidden {
-            transform: translateX(-100%);
-        }
-
-        .dashboard-sidebar.mobile-open {
-            transform: translateX(0);
-        }
+        .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
+        .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
 
         .dashboard-sidebar .sidebar-brand-text,
         .dashboard-sidebar .sidebar-brand-category,
@@ -198,33 +612,12 @@ foreach ($roles as $role) {
             padding: 0;
         }
 
-        .dashboard-sidebar.collapsed .sidebar-brand-card {
-            padding: 1rem 0.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-nav {
-            padding: 0.5rem 0.25rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-main-link {
-            justify-content: center;
-            padding: 0.75rem 0.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
-            justify-content: center;
-            padding: 0.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            font-size: 0.875rem;
-        }
+        .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-nav { padding: 0.5rem 0.25rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: center; padding: 0.75rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: center; padding: 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar { width: 2.5rem; height: 2.5rem; font-size: 0.875rem; }
 
         .sidebar-brand-card {
             border-radius: 2rem;
@@ -249,21 +642,9 @@ foreach ($roles as $role) {
             flex-shrink: 0;
         }
 
-        .sidebar-brand-icon .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
-
-        .sidebar-brand-text {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--slate-900);
-        }
-
-        .sidebar-brand-category {
-            font-size: 0.75rem;
-            color: var(--slate-500);
-            margin-top: 0.25rem;
-        }
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 0.875rem; font-weight: 600; color: var(--slate-900); }
+        .sidebar-brand-category { font-size: 0.75rem; color: var(--slate-500); margin-top: 0.25rem; }
 
         .sidebar-nav {
             flex: 1;
@@ -367,9 +748,136 @@ foreach ($roles as $role) {
             text-overflow: ellipsis;
         }
 
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
+
+        .sidebar-backdrop.active {
+            display: block;
+            opacity: 1;
+        }
+
         /* =============================================
-                   PROFILE DROPDOWN
-                ============================================= */
+           MAIN CONTENT
+        ============================================= */
+        .main-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            margin-left: var(--sidebar-width);
+            transition: margin-left 0.3s ease;
+        }
+
+        .dashboard-sidebar.collapsed ~ .main-wrapper {
+            margin-left: var(--sidebar-collapsed);
+        }
+
+        /* =============================================
+           TOP HEADER
+        ============================================= */
+        .top-header {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 4rem;
+            padding: 0 1.5rem;
+            flex-shrink: 0;
+            z-index: 30;
+            width: 100%;
+        }
+
+        .top-header-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .top-header-left .logo {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.5rem;
+            background: var(--slate-100);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.875rem;
+            color: var(--primary);
+            border: 1px solid rgba(199, 196, 216, 0.3);
+        }
+
+        .top-header-left .separator {
+            color: var(--outline-variant);
+            font-weight: 300;
+            user-select: none;
+        }
+
+        .sidebar-toggle-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .sidebar-toggle-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .sidebar-toggle-btn .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .mobile-menu-btn {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .mobile-menu-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .mobile-menu-btn .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        /* =============================================
+           PROFILE DROPDOWN
+        ============================================= */
         .profile-dropdown-wrapper {
             position: relative;
         }
@@ -511,136 +1019,9 @@ foreach ($roles as $role) {
             margin: 0.25rem 0.5rem;
         }
 
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
-        }
-
         /* =============================================
-                   MAIN CONTENT - PUSHED BY SIDEBAR
-                ============================================= */
-        .main-wrapper {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            overflow: hidden;
-            margin-left: var(--sidebar-width);
-            transition: margin-left 0.3s ease;
-        }
-
-        .dashboard-sidebar.collapsed ~ .main-wrapper {
-            margin-left: var(--sidebar-collapsed);
-        }
-
-        /* =============================================
-                   TOP HEADER
-                ============================================= */
-        .top-header {
-            background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            height: 4rem;
-            padding: 0 1.5rem;
-            flex-shrink: 0;
-            z-index: 30;
-            width: 100%;
-        }
-
-        .top-header-left {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .top-header-left .logo {
-            width: 2rem;
-            height: 2rem;
-            border-radius: 0.5rem;
-            background: var(--slate-100);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 0.875rem;
-            color: var(--primary);
-            border: 1px solid rgba(199, 196, 216, 0.3);
-        }
-
-        .top-header-left .separator {
-            color: var(--outline-variant);
-            font-weight: 300;
-            user-select: none;
-        }
-
-        .sidebar-toggle-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border-radius: 0.75rem;
-            border: 1px solid rgba(199, 196, 216, 0.3);
-            background: transparent;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            min-width: 2.5rem;
-            min-height: 2.5rem;
-        }
-
-        .sidebar-toggle-btn:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .sidebar-toggle-btn .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
-        .mobile-menu-btn {
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border-radius: 0.75rem;
-            border: 1px solid rgba(199, 196, 216, 0.3);
-            background: transparent;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            min-width: 2.5rem;
-            min-height: 2.5rem;
-        }
-
-        .mobile-menu-btn:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .mobile-menu-btn .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
-        /* =============================================
-                   MAIN SCROLLABLE AREA
-                ============================================= */
+           MAIN SCROLLABLE AREA
+        ============================================= */
         .main-scroll {
             flex: 1;
             overflow-y: auto;
@@ -653,8 +1034,8 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   BREADCRUMB
-                ============================================= */
+           BREADCRUMB
+        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface-container-lowest);
             border-radius: var(--radius-xl);
@@ -706,8 +1087,8 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   PAGE HEADER
-                ============================================= */
+           PAGE HEADER
+        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -734,36 +1115,96 @@ foreach ($roles as $role) {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
         }
 
-        .btn-primary {
+        .page-header .header-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        /* =============================================
+           BUTTONS
+        ============================================= */
+        .btn {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
             padding: 0.625rem 1.25rem;
             border-radius: 0.75rem;
-            background: var(--primary);
-            color: var(--on-primary);
             font-weight: 600;
             font-size: 0.875rem;
             border: none;
             cursor: pointer;
             transition: all var(--transition-fast);
-            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
+            font-family: var(--font-sans);
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
         }
 
         .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35);
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
         }
 
-        .btn-primary .material-symbols-outlined {
+        .btn-outline {
+            background: transparent;
+            color: var(--primary);
+            border: 1.5px solid var(--primary);
+        }
+
+        .btn-outline:hover {
+            background: var(--bg-surface-low);
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #16a34a;
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-danger {
+            background: var(--error-color);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-sm {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: 0.5rem;
+        }
+
+        .btn .material-symbols-outlined {
             font-size: 1.125rem;
         }
 
+        .btn-sm .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
         /* =============================================
-                   STATS GRID
-                ============================================= */
+           STATS GRID
+        ============================================= */
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -878,8 +1319,71 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   DASHBOARD GRID
-                ============================================= */
+           WELCOME CARD
+        ============================================= */
+        .welcome-card {
+            background: linear-gradient(135deg, var(--primary) 0%, #4338ca 100%);
+            border-radius: var(--radius-2xl);
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        @media (min-width: 640px) {
+            .welcome-card {
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+            }
+        }
+
+        .welcome-card .welcome-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .welcome-card .welcome-left .welcome-text h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .welcome-card .welcome-left .welcome-text p {
+            opacity: 0.9;
+            font-size: 0.875rem;
+        }
+
+        .welcome-card .welcome-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .welcome-card .welcome-actions .btn {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .welcome-card .welcome-actions .btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .welcome-card .welcome-actions .btn-primary {
+            background: #22c55e;
+            border-color: #22c55e;
+        }
+
+        .welcome-card .welcome-actions .btn-primary:hover {
+            background: #16a34a;
+        }
+
+        /* =============================================
+           DASHBOARD GRID
+        ============================================= */
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -893,8 +1397,8 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   CARDS
-                ============================================= */
+           CARDS
+        ============================================= */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -940,8 +1444,8 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   USER ITEMS
-                ============================================= */
+           USER ITEMS
+        ============================================= */
         .user-item {
             display: flex;
             justify-content: space-between;
@@ -1031,8 +1535,8 @@ foreach ($roles as $role) {
         .role-badge.supervisor { background: #ede9fe; color: #7c3aed; }
 
         /* =============================================
-                   JOB ITEMS
-                ============================================= */
+           JOB ITEMS
+        ============================================= */
         .job-item {
             padding: 0.75rem 0;
             border-bottom: 1px solid var(--slate-200);
@@ -1083,8 +1587,8 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   EMPTY STATE
-                ============================================= */
+           EMPTY STATE
+        ============================================= */
         .empty-state {
             text-align: center;
             padding: 2rem 1rem;
@@ -1123,8 +1627,49 @@ foreach ($roles as $role) {
         }
 
         /* =============================================
-                   RESPONSIVE
-                ============================================= */
+           TOAST
+        ============================================= */
+        .toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            padding: 0.875rem 1.5rem;
+            border-radius: 0.75rem;
+            color: white;
+            font-weight: 600;
+            font-size: 0.875rem;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+            z-index: 10000;
+            animation: slideUp 0.4s ease-out;
+            max-width: 400px;
+        }
+
+        .toast.success {
+            background: var(--success-color);
+        }
+
+        .toast.error {
+            background: var(--error-color);
+        }
+
+        .toast.info {
+            background: var(--primary);
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px) scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        /* =============================================
+           RESPONSIVE
+        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop {
                 display: none !important;
@@ -1151,12 +1696,6 @@ foreach ($roles as $role) {
 
             .dashboard-sidebar.collapsed ~ .main-wrapper {
                 margin-left: var(--sidebar-collapsed);
-            }
-
-            .page-header {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
             }
 
             .profile-dropdown-toggle .profile-name,
@@ -1208,6 +1747,19 @@ foreach ($roles as $role) {
 
             .stats-grid {
                 grid-template-columns: 1fr 1fr;
+            }
+
+            .welcome-card {
+                padding: 1.25rem;
+            }
+
+            .welcome-card .welcome-left {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .welcome-card .welcome-actions {
+                justify-content: center;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1312,14 +1864,12 @@ foreach ($roles as $role) {
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">admin_panel_settings</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Admin Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">admin_panel_settings</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Admin Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1328,6 +1878,7 @@ foreach ($roles as $role) {
             <a href="dashboard.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
+                <span class="ai-badge" style="margin-left:auto; font-size:0.45rem;">AI</span>
             </a>
 
             <a href="users.php" class="sidebar-main-link">
@@ -1341,20 +1892,26 @@ foreach ($roles as $role) {
                 <span class="nav-text">Roles</span>
             </a>
 
-            
+            <a href="reports.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+
             <a href="biometric_settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">fingerprint</span>
                 <span class="nav-text">Biometric</span>
             </a>
-
-
-
-            
         </nav>
 
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
@@ -1371,36 +1928,42 @@ foreach ($roles as $role) {
         <!-- Top Header -->
         <header class="top-header">
             <div class="top-header-left">
-                <div class="logo">I</div>
-                <span class="separator">|</span>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
-                    <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
-                </button>
-                <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" title="Open Menu">
+                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
                     <span class="material-symbols-outlined">menu</span>
                 </button>
-                <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
+                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+                    <span class="material-symbols-outlined">chevron_left</span>
+                </button>
+                <span class="separator">|</span>
+                <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+                    Dashboard
+                </span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
             </div>
 
             <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
-                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
-                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                    <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
+                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
                     <span class="profile-role">Administrator</span>
                     <span class="material-symbols-outlined">expand_more</span>
                 </button>
-
-                <!-- Dropdown Menu -->
-                <div class="profile-dropdown-menu" id="profileDropdownMenu">
+                <div class="profile-dropdown-menu" id="profileMenu">
                     <div class="dropdown-header">Account</div>
-                 
-                   
+                    <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                        <span class="material-symbols-outlined">person</span> Profile
+                    </button>
+                    <button class="dropdown-item" onclick="window.location.href='settings.php'">
+                        <span class="material-symbols-outlined">settings</span> Settings
+                    </button>
                     <div class="dropdown-divider"></div>
-                    <a href="../../logout.php" class="dropdown-item danger">
-                        <span class="material-symbols-outlined">logout</span>
-                        Log Out
-                    </a>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                        <span class="material-symbols-outlined">logout</span> Logout
+                    </button>
                 </div>
             </div>
         </header>
@@ -1415,19 +1978,96 @@ foreach ($roles as $role) {
                         <span class="material-symbols-outlined">dashboard</span>
                         <span>Dashboard</span>
                         <span class="status-dot"></span>
+                        <span class="ai-badge" style="margin-left:0.5rem; font-size:0.45rem;">
+                            <span class="material-symbols-outlined" style="font-size:0.6rem;">auto_awesome</span>
+                            AI
+                        </span>
+                    </div>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                        <?php echo date('l, F j, Y'); ?> • <?php echo $onlineUsers; ?> online
+                    </span>
+                </div>
+
+                <!-- Welcome Card -->
+                <div class="welcome-card">
+                    <div class="welcome-left">
+                        <div class="welcome-text">
+                            <h2><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?>!</h2>
+                            <p>Welcome to your admin dashboard. You're managing <strong><?php echo $totalUsers; ?></strong> users across the system.</p>
+                        </div>
+                    </div>
+                    <div class="welcome-actions">
+                        <button class="btn btn-ai" onclick="refreshAIInsights()" id="aiInsightsBtn">
+                            <span class="material-symbols-outlined">auto_awesome</span>
+                            AI Insights
+                        </button>
+                        <a href="add_user.php" class="btn btn-primary">
+                            <span class="material-symbols-outlined">person_add</span>
+                            Add User
+                        </a>
+                      
                     </div>
                 </div>
 
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Welcome back, <?php echo htmlspecialchars($firstName); ?></h1>
-                        <p>System overview and management dashboard</p>
+                <!-- AI System Health Panel -->
+                <div class="ai-health-panel" id="aiHealthPanel">
+                    <div class="health-header">
+                        <div class="title">
+                            <span class="material-symbols-outlined" style="font-size:1rem;">auto_awesome</span>
+                            System Health
+                            <span style="font-size:0.55rem; font-weight:400; color:var(--text-on-surface-variant);" id="aiProvider">
+                                <?php echo $aiInsights['provider'] ?? 'AI'; ?>
+                            </span>
+                        </div>
+                        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                            <span class="health-score" id="healthBadge" style="background:<?php echo ($aiInsights['health_score'] ?? 85) >= 70 ? '#059669' : (($aiInsights['health_score'] ?? 85) >= 40 ? '#d97706' : '#dc2626'); ?>;">
+                                <span class="material-symbols-outlined" style="font-size:0.875rem;">favorite</span>
+                                <span id="healthScore"><?php echo $aiInsights['health_score'] ?? 85; ?>%</span>
+                            </span>
+                            <span class="trend-badge" id="trendBadge" style="background:<?php echo getTrendColor($aiInsights['trend'] ?? 'Stable'); ?>;">
+                                <?php echo $aiInsights['trend'] ?? 'Stable'; ?>
+                            </span>
+                        </div>
                     </div>
-                    <a href="add_user.php" class="btn-primary">
-                        <span class="material-symbols-outlined">person_add</span>
-                        Add New User
-                    </a>
+                    
+                    <div id="aiHealthContent">
+                        <?php if (!empty($aiInsights['insights'])): ?>
+                        <div class="health-insights" id="insightsList">
+                            <?php foreach ($aiInsights['insights'] as $insight): ?>
+                                <div class="insight-item">
+                                    <span class="icon material-symbols-outlined">lightbulb</span>
+                                    <span class="text"><?php echo $insight; ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if (!empty($aiInsights['anomalies'])): ?>
+                        <div class="health-anomalies" id="anomaliesList">
+                            <?php foreach ($aiInsights['anomalies'] as $anomaly): ?>
+                                <div class="anomaly-item">
+                                    <span class="icon material-symbols-outlined">warning</span>
+                                    <span><?php echo $anomaly; ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if (!empty($aiInsights['recommendations'])): ?>
+                        <div class="health-recommendations" id="recommendationsList">
+                            <?php foreach ($aiInsights['recommendations'] as $rec): ?>
+                                <div class="rec-item">
+                                    <span class="icon material-symbols-outlined">trending_up</span>
+                                    <span><?php echo $rec; ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <div class="health-provider">
+                        AI insights powered by <?php echo $aiInsights['provider'] ?? 'ISMERS AI'; ?>
+                    </div>
                 </div>
 
                 <!-- Stats -->
@@ -1441,7 +2081,7 @@ foreach ($roles as $role) {
                         </div>
                         <div class="stat-number"><?php echo $totalUsers; ?></div>
                         <div class="stat-change">Across all roles</div>
-                        <span class="stat-badge" id="onlineCountBadge">● Loading...</span>
+                        <span class="stat-badge" id="onlineCountBadge">● <?php echo $onlineUsers; ?> online</span>
                     </div>
 
                     <div class="stat-card">
@@ -1526,7 +2166,7 @@ foreach ($roles as $role) {
                                         <div class="user-info">
                                             <span class="avatar">
                                                 <?php echo strtoupper(substr($user['first_name'] ?? 'U', 0, 1)); ?>
-                                                <span class="status-indicator offline"></span>
+                                                <span class="status-indicator <?php echo strtotime($user['last_activity']) > strtotime('-5 minutes') ? 'online' : 'offline'; ?>"></span>
                                             </span>
                                             <div class="details">
                                                 <div class="name">
@@ -1588,7 +2228,7 @@ foreach ($roles as $role) {
     </div>
 
     <!-- =============================================
-    JAVASCRIPT (Internal)
+    JAVASCRIPT
     ============================================= -->
     <script>
         (function() {
@@ -1599,7 +2239,6 @@ foreach ($roles as $role) {
             // =============================================
             const sidebar = document.getElementById('appSidebar');
             const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-            const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
             const sidebarBackdrop = document.getElementById('sidebarBackdrop');
             const mobileMenuBtn = document.getElementById('mobileMenuBtn');
 
@@ -1608,14 +2247,16 @@ foreach ($roles as $role) {
 
             if (savedState === 'true' && isDesktop) {
                 sidebar.classList.add('collapsed');
-                sidebarToggleIcon.textContent = 'menu';
             }
 
             sidebarToggleBtn.addEventListener('click', function() {
                 if (window.innerWidth < 768) return;
                 sidebar.classList.toggle('collapsed');
                 const isCollapsed = sidebar.classList.contains('collapsed');
-                sidebarToggleIcon.textContent = isCollapsed ? 'menu' : 'menu_open';
+                const icon = this.querySelector('.material-symbols-outlined');
+                if (icon) {
+                    icon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
+                }
                 localStorage.setItem('sidebarCollapsed', isCollapsed);
             });
 
@@ -1648,10 +2289,10 @@ foreach ($roles as $role) {
             });
 
             // =============================================
-            // 3. PROFILE DROPDOWN TOGGLE
+            // 3. PROFILE DROPDOWN
             // =============================================
-            const profileToggle = document.getElementById('profileDropdownToggle');
-            const profileMenu = document.getElementById('profileDropdownMenu');
+            const profileToggle = document.getElementById('profileToggle');
+            const profileMenu = document.getElementById('profileMenu');
 
             profileToggle.addEventListener('click', function(e) {
                 e.stopPropagation();
@@ -1659,7 +2300,6 @@ foreach ($roles as $role) {
                 profileMenu.classList.toggle('open');
             });
 
-            // Close dropdown when clicking outside
             document.addEventListener('click', function(e) {
                 if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
                     profileToggle.classList.remove('open');
@@ -1667,7 +2307,6 @@ foreach ($roles as $role) {
                 }
             });
 
-            // Close dropdown on Escape
             document.addEventListener('keydown', function(e) {
                 if (e.key === 'Escape') {
                     profileToggle.classList.remove('open');
@@ -1679,7 +2318,121 @@ foreach ($roles as $role) {
             });
 
             // =============================================
-            // 4. RESPONSIVE HANDLING
+            // 4. REFRESH AI INSIGHTS
+            // =============================================
+            function refreshAIInsights() {
+                const btn = document.getElementById('aiInsightsBtn');
+                const panel = document.getElementById('aiHealthPanel');
+                const content = document.getElementById('aiHealthContent');
+                
+                btn.disabled = true;
+                btn.innerHTML = '<span class="ai-dots-loading-sm"><div class="dot"></div><div class="dot"></div><div class="dot"></div></span> Loading...';
+                
+                // Show loading state
+                content.innerHTML = `
+                    <div style="text-align:center; padding:1rem 0;">
+                        <div class="ai-dots-loading-sm" style="justify-content:center; gap:0.5rem;">
+                            <div class="dot" style="width:0.75rem; height:0.75rem;"></div>
+                            <div class="dot" style="width:0.75rem; height:0.75rem;"></div>
+                            <div class="dot" style="width:0.75rem; height:0.75rem;"></div>
+                            <span style="font-size:0.875rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">Analyzing system data...</span>
+                        </div>
+                    </div>
+                `;
+
+                const formData = new FormData();
+                formData.append('action', 'get_dashboard_insights');
+
+                fetch('dashboard.php', {
+                    method: 'POST',
+                    body: formData,
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> AI Insights';
+                    
+                    if (data.success) {
+                        // Update provider
+                        document.getElementById('aiProvider').textContent = data.provider || 'AI';
+                        
+                        // Update health badge
+                        const healthBadge = document.getElementById('healthBadge');
+                        const healthScore = data.health_score || 85;
+                        healthBadge.innerHTML = `<span class="material-symbols-outlined" style="font-size:0.875rem;">favorite</span> ${healthScore}%`;
+                        healthBadge.style.background = healthScore >= 70 ? '#059669' : healthScore >= 40 ? '#d97706' : '#dc2626';
+                        
+                        // Update trend badge
+                        const trendBadge = document.getElementById('trendBadge');
+                        const trendColors = {
+                            'Growing': '#059669',
+                            'Stable': '#2563eb',
+                            'Needs Attention': '#d97706',
+                            'Declining': '#dc2626'
+                        };
+                        trendBadge.textContent = data.trend || 'Stable';
+                        trendBadge.style.background = trendColors[data.trend] || '#6b7280';
+                        
+                        // Build content
+                        let html = '';
+                        
+                        if (data.insights && data.insights.length > 0) {
+                            html += `<div class="health-insights">`;
+                            data.insights.forEach(insight => {
+                                html += `
+                                    <div class="insight-item">
+                                        <span class="icon material-symbols-outlined">lightbulb</span>
+                                        <span class="text">${insight}</span>
+                                    </div>
+                                `;
+                            });
+                            html += `</div>`;
+                        }
+                        
+                        if (data.anomalies && data.anomalies.length > 0) {
+                            html += `<div class="health-anomalies">`;
+                            data.anomalies.forEach(anomaly => {
+                                html += `
+                                    <div class="anomaly-item">
+                                        <span class="icon material-symbols-outlined">warning</span>
+                                        <span>${anomaly}</span>
+                                    </div>
+                                `;
+                            });
+                            html += `</div>`;
+                        }
+                        
+                        if (data.recommendations && data.recommendations.length > 0) {
+                            html += `<div class="health-recommendations">`;
+                            data.recommendations.forEach(rec => {
+                                html += `
+                                    <div class="rec-item">
+                                        <span class="icon material-symbols-outlined">trending_up</span>
+                                        <span>${rec}</span>
+                                    </div>
+                                `;
+                            });
+                            html += `</div>`;
+                        }
+                        
+                        content.innerHTML = html;
+                        showToast('✨ AI insights refreshed!', 'success');
+                    } else {
+                        content.innerHTML = `<div style="color:#dc2626; padding:0.5rem;">${data.error || 'Could not load insights'}</div>`;
+                        showToast(data.error || 'Could not load insights', 'error');
+                    }
+                })
+                .catch(error => {
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> AI Insights';
+                    content.innerHTML = `<div style="color:#dc2626; padding:0.5rem;">Network error. Please try again.</div>`;
+                    showToast('Network error. Please try again.', 'error');
+                });
+            }
+
+            // =============================================
+            // 5. RESPONSIVE HANDLING
             // =============================================
             let resizeTimer;
 
@@ -1694,27 +2447,47 @@ foreach ($roles as $role) {
                         const saved = localStorage.getItem('sidebarCollapsed');
                         if (saved === 'true') {
                             sidebar.classList.add('collapsed');
-                            sidebarToggleIcon.textContent = 'menu';
                         } else {
                             sidebar.classList.remove('collapsed');
-                            sidebarToggleIcon.textContent = 'menu_open';
                         }
                     } else {
                         sidebar.classList.add('mobile-hidden');
                         sidebar.classList.remove('collapsed');
-                        sidebarToggleIcon.textContent = 'menu_open';
                     }
                 }, 250);
             });
 
             // =============================================
-            // 5. INITIAL STATE
+            // 6. TOAST SYSTEM
+            // =============================================
+            function showToast(message, type) {
+                type = type || 'info';
+                const existingToast = document.querySelector('.toast');
+                if (existingToast) existingToast.remove();
+
+                const toast = document.createElement('div');
+                toast.className = 'toast ' + type;
+                const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+                toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+                document.body.appendChild(toast);
+
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateY(20px)';
+                    toast.style.transition = 'all 0.4s ease';
+                    setTimeout(() => toast.remove(), 400);
+                }, 3500);
+            }
+
+            // =============================================
+            // 7. INITIAL STATE
             // =============================================
             if (window.innerWidth < 768) {
                 sidebar.classList.add('mobile-hidden');
             }
 
-            console.log('ISMERS Admin Dashboard loaded successfully.');
+            console.log('📊 AI-Powered Admin Dashboard loaded successfully!');
+            console.log('🤖 AI Features: System Health, Insights, Anomaly Detection, Recommendations');
         })();
     </script>
 

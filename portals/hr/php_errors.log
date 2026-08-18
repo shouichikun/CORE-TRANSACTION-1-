@@ -1,0 +1,190 @@
+[09-Aug-2026 15:56:19 Asia/Manila] permissions.php loaded successfully
+[09-Aug-2026 15:56:19 Asia/Manila] 🔍 Loading Gemini configuration...
+[09-Aug-2026 15:56:19 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[09-Aug-2026 15:56:19 Asia/Manila] ⚙️ USE_GEMINI: false
+[09-Aug-2026 15:56:19 Asia/Manila] 🔍 Loading Groq configuration...
+[09-Aug-2026 15:56:19 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[09-Aug-2026 15:56:19 Asia/Manila] ⚙️ USE_GROQ: true
+[09-Aug-2026 15:56:19 Asia/Manila] 📊 AI Configuration Summary:
+[09-Aug-2026 15:56:19 Asia/Manila]   - GROQ: ✅ ENABLED
+[09-Aug-2026 15:56:19 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:50:04 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:50:04 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:50:04 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:50:04 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:50:04 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:50:04 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:50:04 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:50:04 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:50:04 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:50:04 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:50:31 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:50:31 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:50:31 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:50:31 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:50:31 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:50:31 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:50:31 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:50:31 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:50:31 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:50:31 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:50:38 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:50:38 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:50:38 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:50:38 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:50:38 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:50:38 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:50:38 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:50:38 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:50:38 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:50:38 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:51:38 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:51:38 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:51:38 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:51:38 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:51:38 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:51:38 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:51:38 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:51:38 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:51:38 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:51:38 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:51:56 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:51:56 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:51:56 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:51:56 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:51:56 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:51:56 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:51:56 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:51:56 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:51:56 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:51:56 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:09 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:09 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:09 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:09 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:09 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:09 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:09 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:09 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:09 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:09 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:14 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:14 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:14 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:14 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:14 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:14 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:14 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:14 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:14 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:14 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:26 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:26 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:26 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:26 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:26 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:26 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:26 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:26 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:26 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:26 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:30 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:30 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:30 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:30 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:30 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:30 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:30 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:30 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:30 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:30 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:35 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:35 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:35 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:35 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:35 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:35 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:35 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:35 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:35 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:35 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:43 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:43 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:43 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:43 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:43 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:43 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:43 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:43 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:43 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:43 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 14:04:53 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 14:04:53 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 14:04:53 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 14:04:53 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 14:04:53 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 14:04:53 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 14:04:53 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 14:04:53 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 14:04:53 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 14:04:53 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 14:09:33 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 14:09:33 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 14:09:33 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 14:09:33 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 14:09:33 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 14:09:33 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 14:09:33 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 14:09:33 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 14:09:33 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 14:09:33 Asia/Manila]   - GEMINI: ❌ DISABLED
+[13-Aug-2026 12:41:48 Asia/Manila] permissions.php loaded successfully
+[13-Aug-2026 12:41:48 Asia/Manila] 🔍 Loading Gemini configuration...
+[13-Aug-2026 12:41:48 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[13-Aug-2026 12:41:48 Asia/Manila] ⚙️ USE_GEMINI: false
+[13-Aug-2026 12:41:48 Asia/Manila] 🔍 Loading Groq configuration...
+[13-Aug-2026 12:41:48 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[13-Aug-2026 12:41:48 Asia/Manila] ⚙️ USE_GROQ: true
+[13-Aug-2026 12:41:48 Asia/Manila] 📊 AI Configuration Summary:
+[13-Aug-2026 12:41:48 Asia/Manila]   - GROQ: ✅ ENABLED
+[13-Aug-2026 12:41:48 Asia/Manila]   - GEMINI: ❌ DISABLED
+[15-Aug-2026 00:34:08 Asia/Manila] permissions.php loaded successfully
+[15-Aug-2026 00:34:08 Asia/Manila] 🔍 Loading Gemini configuration...
+[15-Aug-2026 00:34:08 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[15-Aug-2026 00:34:08 Asia/Manila] ⚙️ USE_GEMINI: false
+[15-Aug-2026 00:34:08 Asia/Manila] 🔍 Loading Groq configuration...
+[15-Aug-2026 00:34:08 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[15-Aug-2026 00:34:08 Asia/Manila] ⚙️ USE_GROQ: true
+[15-Aug-2026 00:34:08 Asia/Manila] 📊 AI Configuration Summary:
+[15-Aug-2026 00:34:08 Asia/Manila]   - GROQ: ✅ ENABLED
+[15-Aug-2026 00:34:08 Asia/Manila]   - GEMINI: ❌ DISABLED
+[18-Aug-2026 23:50:44 Asia/Manila] permissions.php loaded successfully
+[18-Aug-2026 23:50:44 Asia/Manila] 🔍 Loading Gemini configuration...
+[18-Aug-2026 23:50:44 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[18-Aug-2026 23:50:44 Asia/Manila] ⚙️ USE_GEMINI: false
+[18-Aug-2026 23:50:44 Asia/Manila] 🔍 Loading Groq configuration...
+[18-Aug-2026 23:50:44 Asia/Manila] 🔑 Groq key loaded: gsk_JX5V1036BNNN448I...
+[18-Aug-2026 23:50:44 Asia/Manila] ⚙️ USE_GROQ: true
+[18-Aug-2026 23:50:44 Asia/Manila] 📊 AI Configuration Summary:
+[18-Aug-2026 23:50:44 Asia/Manila]   - GROQ: ✅ ENABLED
+[18-Aug-2026 23:50:44 Asia/Manila]   - GEMINI: ❌ DISABLED
+[18-Aug-2026 23:56:39 Asia/Manila] permissions.php loaded successfully
+[18-Aug-2026 23:56:39 Asia/Manila] 🔍 Loading Gemini configuration...
+[18-Aug-2026 23:56:39 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[18-Aug-2026 23:56:39 Asia/Manila] ⚙️ USE_GEMINI: false
+[18-Aug-2026 23:56:39 Asia/Manila] 🔍 Loading Groq configuration...
+[18-Aug-2026 23:56:39 Asia/Manila] 🔑 Groq key loaded: gsk_JX5V1036BNNN448I...
+[18-Aug-2026 23:56:39 Asia/Manila] ⚙️ USE_GROQ: true
+[18-Aug-2026 23:56:39 Asia/Manila] 📊 AI Configuration Summary:
+[18-Aug-2026 23:56:39 Asia/Manila]   - GROQ: ✅ ENABLED
+[18-Aug-2026 23:56:39 Asia/Manila]   - GEMINI: ❌ DISABLED
+[18-Aug-2026 23:58:50 Asia/Manila] permissions.php loaded successfully
+[18-Aug-2026 23:58:50 Asia/Manila] 🔍 Loading Gemini configuration...
+[18-Aug-2026 23:58:50 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[18-Aug-2026 23:58:50 Asia/Manila] ⚙️ USE_GEMINI: false
+[18-Aug-2026 23:58:50 Asia/Manila] 🔍 Loading Groq configuration...
+[18-Aug-2026 23:58:50 Asia/Manila] 🔑 Groq key loaded: gsk_JX5V1036BNNN448I...
+[18-Aug-2026 23:58:50 Asia/Manila] ⚙️ USE_GROQ: true
+[18-Aug-2026 23:58:50 Asia/Manila] 📊 AI Configuration Summary:
+[18-Aug-2026 23:58:50 Asia/Manila]   - GROQ: ✅ ENABLED
+[18-Aug-2026 23:58:50 Asia/Manila]   - GEMINI: ❌ DISABLED

@@ -117,6 +117,12 @@ $formData = [
     'role' => $_POST['role'] ?? 'applicant',
     'is_active' => isset($_POST['is_active']) ? 1 : 1
 ];
+
+// Get total users for badge
+$totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
+
+// Get user profile data for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -190,8 +196,8 @@ $formData = [
         }
 
         /* =============================================
-                   SIDEBAR - FIXED
-                ============================================= */
+           SIDEBAR - FIXED
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -416,9 +422,28 @@ $formData = [
             text-overflow: ellipsis;
         }
 
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
+
+        .sidebar-backdrop.active {
+            display: block;
+            opacity: 1;
+        }
+
         /* =============================================
-                   PROFILE DROPDOWN
-                ============================================= */
+           PROFILE DROPDOWN
+        ============================================= */
         .profile-dropdown-wrapper {
             position: relative;
         }
@@ -560,28 +585,9 @@ $formData = [
             margin: 0.25rem 0.5rem;
         }
 
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
-        }
-
         /* =============================================
-                   MAIN CONTENT - PUSHED BY SIDEBAR
-                ============================================= */
+           MAIN CONTENT - PUSHED BY SIDEBAR
+        ============================================= */
         .main-wrapper {
             flex: 1;
             display: flex;
@@ -597,8 +603,8 @@ $formData = [
         }
 
         /* =============================================
-                   TOP HEADER
-                ============================================= */
+           TOP HEADER
+        ============================================= */
         .top-header {
             background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(12px);
@@ -688,8 +694,8 @@ $formData = [
         }
 
         /* =============================================
-                   MAIN SCROLLABLE AREA
-                ============================================= */
+           MAIN SCROLLABLE AREA
+        ============================================= */
         .main-scroll {
             flex: 1;
             overflow-y: auto;
@@ -702,8 +708,8 @@ $formData = [
         }
 
         /* =============================================
-                   BREADCRUMB
-                ============================================= */
+           BREADCRUMB
+        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface-container-lowest);
             border-radius: var(--radius-xl);
@@ -755,8 +761,8 @@ $formData = [
         }
 
         /* =============================================
-                   PAGE HEADER
-                ============================================= */
+           PAGE HEADER
+        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -835,8 +841,8 @@ $formData = [
         }
 
         /* =============================================
-                   FORM CARD
-                ============================================= */
+           FORM CARD
+        ============================================= */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -875,8 +881,8 @@ $formData = [
         }
 
         /* =============================================
-                   FORM STYLES
-                ============================================= */
+           FORM STYLES
+        ============================================= */
         .form-group {
             margin-bottom: 1.25rem;
         }
@@ -948,8 +954,8 @@ $formData = [
         }
 
         /* =============================================
-                   CHECKBOX SWITCH
-                ============================================= */
+           CHECKBOX SWITCH
+        ============================================= */
         .switch-group {
             display: flex;
             align-items: center;
@@ -1015,8 +1021,8 @@ $formData = [
         }
 
         /* =============================================
-                   ALERTS
-                ============================================= */
+           ALERTS
+        ============================================= */
         .alert {
             padding: 0.875rem 1.125rem;
             border-radius: 0.75rem;
@@ -1051,8 +1057,8 @@ $formData = [
         }
 
         /* =============================================
-                   PASSWORD STRENGTH
-                ============================================= */
+           PASSWORD STRENGTH
+        ============================================= */
         .password-strength {
             margin-top: 0.5rem;
             display: flex;
@@ -1086,8 +1092,8 @@ $formData = [
         }
 
         /* =============================================
-                   FORM ACTIONS
-                ============================================= */
+           FORM ACTIONS
+        ============================================= */
         .form-actions {
             display: flex;
             gap: 0.75rem;
@@ -1102,8 +1108,8 @@ $formData = [
         }
 
         /* =============================================
-                   TOAST
-                ============================================= */
+           TOAST
+        ============================================= */
         .toast {
             position: fixed;
             bottom: 1.5rem;
@@ -1143,8 +1149,8 @@ $formData = [
         }
 
         /* =============================================
-                   RESPONSIVE
-                ============================================= */
+           RESPONSIVE
+        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop {
                 display: none !important;
@@ -1356,14 +1362,12 @@ $formData = [
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">admin_panel_settings</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Admin Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">admin_panel_settings</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Admin Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1377,6 +1381,7 @@ $formData = [
             <a href="users.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Users</span>
+                <span class="nav-badge"><?php echo $totalUsers; ?></span>
             </a>
 
             <a href="roles.php" class="sidebar-main-link">
@@ -1384,17 +1389,28 @@ $formData = [
                 <span class="nav-text">Roles</span>
             </a>
 
-            
+            <a href="reports.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+
             <a href="biometric_settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">fingerprint</span>
                 <span class="nav-text">Biometric</span>
             </a>
 
+          
         </nav>
 
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
@@ -1425,7 +1441,7 @@ $formData = [
             <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
-                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
+                    <div class="avatar-small"><?php echo $userProfile['initials']; ?></div>
                     <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
                     <span class="profile-role">Administrator</span>
                     <span class="material-symbols-outlined">expand_more</span>
@@ -1435,7 +1451,14 @@ $formData = [
                 <div class="profile-dropdown-menu" id="profileDropdownMenu">
                     <div class="dropdown-header">Account</div>
                     
-                  
+                    <a href="profile.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">person</span>
+                        My Profile
+                    </a>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
                     <div class="dropdown-divider"></div>
                     <a href="../../logout.php" class="dropdown-item danger">
                         <span class="material-symbols-outlined">logout</span>

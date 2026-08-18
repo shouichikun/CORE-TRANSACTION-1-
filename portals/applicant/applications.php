@@ -1,5 +1,5 @@
 <?php
-// portals/applicant/applications.php - Applicant Applications
+// portals/applicant/applications.php - Applicant Applications with Offer Management
 session_start();
 
 // Include configuration file
@@ -27,11 +27,55 @@ $email = $_SESSION['email'] ?? '';
 $applicant = getApplicantByUserId($userId);
 $applicantId = $applicant['id'] ?? 0;
 
-// Get applications count for the badge
+// =============================================
+// GET PENDING OFFERS COUNT FOR SIDEBAR BADGE
+// =============================================
+$pendingOffers = 0;
+if ($applicantId) {
+    $offersResult = getRecord("
+        SELECT COUNT(*) as count FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        WHERE a.applicant_id = ? AND o.status = 'sent'
+    ", [$applicantId], "i");
+    $pendingOffers = $offersResult['count'] ?? 0;
+}
+
+// Get applications with offer data
 $allApplications = [];
 if ($applicantId) {
-    $allApplications = getApplicationsByApplicant($applicantId);
+    $allApplications = getRecords("
+        SELECT 
+            a.id as application_id,
+            a.cover_letter,
+            a.status as application_status,
+            a.applied_at,
+            a.updated_at,
+            a.resume_path,
+            jo.id as job_id,
+            jo.title as job_title,
+            jo.description as job_description, 
+            jo.location,
+            jo.job_type,
+            jo.salary_range,
+            c.company_name,
+            o.id as offer_id,
+            o.offer_date,
+            o.start_date,
+            o.salary_offered,
+            o.benefits,
+            o.status as offer_status,
+            o.sent_at,
+            o.accepted_at,
+            o.created_at as offer_created_at
+        FROM applications a
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        JOIN clients c ON jo.client_id = c.id
+        LEFT JOIN offers o ON o.application_id = a.id
+        WHERE a.applicant_id = ?
+        ORDER BY a.applied_at DESC
+    ", [$applicantId], "i");
 }
+
 $totalApplications = count($allApplications);
 
 // =============================================
@@ -52,7 +96,7 @@ $filteredApplications = $allApplications;
 
 if ($statusFilter !== 'all') {
     $filteredApplications = array_filter($allApplications, function($app) use ($statusFilter) {
-        return $app['status'] === $statusFilter;
+        return $app['application_status'] === $statusFilter;
     });
 }
 
@@ -62,15 +106,28 @@ $statusCounts = [
     'pending' => 0,
     'shortlisted' => 0,
     'interviewed' => 0,
+    'offered' => 0,
     'hired' => 0,
     'rejected' => 0,
     'withdrawn' => 0
 ];
 
+// Count offers
+$offersReceived = 0;
+$offersAccepted = 0;
+
 foreach ($allApplications as $app) {
-    $status = $app['status'] ?? 'pending';
+    $status = $app['application_status'] ?? 'pending';
     if (isset($statusCounts[$status])) {
         $statusCounts[$status]++;
+    }
+    // Count offers
+    if (!empty($app['offer_id'])) {
+        if ($app['offer_status'] === 'sent') {
+            $offersReceived++;
+        } elseif ($app['offer_status'] === 'accepted') {
+            $offersAccepted++;
+        }
     }
 }
 
@@ -79,6 +136,7 @@ $statusBadges = [
     'pending' => 'badge-pending',
     'shortlisted' => 'badge-shortlisted',
     'interviewed' => 'badge-interviewed',
+    'offered' => 'badge-offered',
     'hired' => 'badge-hired',
     'rejected' => 'badge-rejected',
     'withdrawn' => 'badge-withdrawn'
@@ -88,27 +146,44 @@ $statusLabels = [
     'pending' => 'Pending Review',
     'shortlisted' => 'Shortlisted',
     'interviewed' => 'Interviewed',
-    'hired' => 'Hired',
+    'offered' => 'Offer Extended',
+    'hired' => 'Hired 🎉',
     'rejected' => 'Rejected',
     'withdrawn' => 'Withdrawn'
+];
+
+$offerStatusBadges = [
+    'draft' => 'badge-secondary',
+    'sent' => 'badge-offer-sent',
+    'accepted' => 'badge-hired',
+    'rejected' => 'badge-rejected',
+    'expired' => 'badge-expired'
+];
+
+$offerStatusLabels = [
+    'draft' => 'Draft',
+    'sent' => 'Pending Your Response',
+    'accepted' => 'Accepted ✅',
+    'rejected' => 'Declined',
+    'expired' => 'Expired'
 ];
 
 // Get application details for modal
 $applicationDetails = null;
 if (isset($_GET['view']) && is_numeric($_GET['view'])) {
     $appId = (int)$_GET['view'];
-   $applicationDetails = getRecord("
-    SELECT a.id, a.cover_letter, a.status, a.applied_at, a.updated_at, a.resume_path,
-           jo.title as job_title, jo.description as job_description, 
-           jo.location, jo.job_type, jo.salary_range, c.company_name,
-           u.first_name, u.last_name, u.email
-    FROM applications a
-    JOIN job_orders jo ON a.job_order_id = jo.id
-    JOIN clients c ON jo.client_id = c.id
-    JOIN applicants ap ON a.applicant_id = ap.id
-    JOIN users u ON ap.user_id = u.id
-    WHERE a.id = ? AND a.applicant_id = ?
-", [$appId, $applicantId], "ii");
+    $applicationDetails = getRecord("
+        SELECT a.id, a.cover_letter, a.status, a.applied_at, a.updated_at, a.resume_path,
+               jo.title as job_title, jo.description as job_description, 
+               jo.location, jo.job_type, jo.salary_range, c.company_name,
+               u.first_name, u.last_name, u.email
+        FROM applications a
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        JOIN clients c ON jo.client_id = c.id
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        WHERE a.id = ? AND a.applicant_id = ?
+    ", [$appId, $applicantId], "ii");
 }
 ?>
 <!DOCTYPE html>
@@ -160,6 +235,12 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
             --pending-bg: #fef3c7;
             --pending-border: #fcd34d;
             --pending-text: #92400e;
+            --offer-sent-bg: #dbeafe;
+            --offer-sent-border: #93c5fd;
+            --offer-sent-text: #1e40af;
+            --expired-bg: #fef3c7;
+            --expired-border: #fcd34d;
+            --expired-text: #92400e;
         }
 
         * {
@@ -832,6 +913,7 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
             align-items: flex-start;
             gap: 0.75rem;
             margin-bottom: 0.375rem;
+            flex-wrap: wrap;
         }
 
         .app-card .app-title {
@@ -863,6 +945,7 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
         .app-card .app-actions {
             display: flex;
             gap: 0.5rem;
+            flex-wrap: wrap;
         }
 
         /* ===== BADGES ===== */
@@ -881,9 +964,155 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
         .badge-pending { background: #fef3c7; color: #d97706; }
         .badge-shortlisted { background: #dbeafe; color: #2563eb; }
         .badge-interviewed { background: #e0e7ff; color: #4f46e5; }
+        .badge-offered { background: #dbeafe; color: #1e40af; }
         .badge-hired { background: #d1fae5; color: #059669; }
         .badge-rejected { background: #fecaca; color: #dc2626; }
         .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
+        .badge-secondary { background: #f3f4f6; color: #6b7280; }
+        .badge-offer-sent { background: #dbeafe; color: #1e40af; }
+        .badge-expired { background: #fef3c7; color: #92400e; }
+
+        /* =============================================
+                   OFFER HIGHLIGHT CARD
+                ============================================= */
+        .offer-highlight {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-md);
+            padding: 0.75rem 1rem;
+            margin-top: 0.75rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .offer-highlight .offer-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .offer-highlight .offer-info .offer-label {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #5b21b6;
+        }
+
+        .offer-highlight .offer-info .offer-salary {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: #059669;
+        }
+
+        .offer-highlight .offer-info .offer-expiry {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .offer-highlight .offer-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .offer-highlight .offer-actions .btn {
+            font-size: 0.75rem;
+            padding: 0.375rem 0.875rem;
+        }
+
+        /* Offer Accepted */
+        .offer-accepted {
+            background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+            border-color: #6ee7b7;
+        }
+
+        .offer-accepted .offer-label {
+            color: #065f46 !important;
+        }
+
+        /* Offer Declined */
+        .offer-declined {
+            background: linear-gradient(135deg, #fef2f2, #fecaca);
+            border-color: #f87171;
+        }
+
+        .offer-declined .offer-label {
+            color: #991b1b !important;
+        }
+
+        /* Offer Expired */
+        .offer-expired {
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+            border-color: #f59e0b;
+        }
+
+        .offer-expired .offer-label {
+            color: #92400e !important;
+        }
+
+        .btn-success {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.375rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.8125rem;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+            background: #059669;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #047857;
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-success .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
+        .btn-outline {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.375rem 0.875rem;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            border: 1px solid var(--slate-200);
+            background: transparent;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+        }
+
+        .btn-outline:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: rgba(79, 70, 229, 0.04);
+        }
+
+        .btn-outline .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
+        .btn-sm {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+        }
 
         /* =============================================
                    EMPTY STATE
@@ -914,35 +1143,6 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
 
         .empty-state .btn {
             margin-top: 1rem;
-        }
-
-        /* =============================================
-                   BTN OUTLINE (for view details)
-                ============================================= */
-        .btn-outline {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.375rem;
-            padding: 0.375rem 0.875rem;
-            border-radius: 0.5rem;
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-on-surface-variant);
-            border: 1px solid var(--slate-200);
-            background: transparent;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-        }
-
-        .btn-outline:hover {
-            border-color: var(--primary);
-            color: var(--primary);
-            background: rgba(79, 70, 229, 0.04);
-        }
-
-        .btn-sm {
-            padding: 0.25rem 0.75rem;
-            font-size: 0.75rem;
         }
 
         /* =============================================
@@ -1187,6 +1387,181 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
         }
 
         /* =============================================
+                   PROFILE DROPDOWN
+                ============================================= */
+        .profile-dropdown-wrapper {
+            position: relative;
+        }
+
+        .profile-dropdown-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.375rem 0.75rem 0.375rem 0.375rem;
+            border-radius: var(--radius-full);
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .profile-dropdown-toggle:hover {
+            background: var(--bg-surface-low);
+            border-color: rgba(199, 196, 216, 0.3);
+        }
+
+        .profile-dropdown-toggle .avatar-small {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
+
+        .profile-dropdown-toggle .profile-name {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+
+        .profile-dropdown-toggle .profile-role {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            font-weight: 400;
+        }
+
+        .profile-dropdown-toggle .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--text-on-surface-variant);
+            transition: transform var(--transition-fast);
+        }
+
+        .profile-dropdown-toggle.open .material-symbols-outlined:last-child {
+            transform: rotate(180deg);
+        }
+
+        /* Profile Dropdown Menu */
+        .profile-dropdown-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            width: 14rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--slate-200);
+            padding: 0.5rem;
+            z-index: 50;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-0.5rem) scale(0.95);
+            transition: all var(--transition-smooth);
+            transform-origin: top right;
+        }
+
+        .profile-dropdown-menu.open {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0) scale(1);
+        }
+
+        .profile-dropdown-menu .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.625rem 0.875rem;
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-on-surface);
+            transition: all var(--transition-fast);
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            font-family: var(--font-sans);
+        }
+
+        .profile-dropdown-menu .dropdown-item:hover {
+            background: var(--bg-surface-low);
+            color: var(--primary);
+        }
+
+        .profile-dropdown-menu .dropdown-item .material-symbols-outlined {
+            font-size: 1.125rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
+            color: var(--primary);
+        }
+
+        .profile-dropdown-menu .dropdown-item.danger {
+            color: #dc2626;
+        }
+
+        .profile-dropdown-menu .dropdown-item.danger:hover {
+            background: #fef2f2;
+            color: #dc2626;
+        }
+
+        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
+            color: #dc2626;
+        }
+
+        .profile-dropdown-menu .dropdown-divider {
+            height: 1px;
+            background: var(--slate-200);
+            margin: 0.25rem 0.5rem;
+        }
+
+        .profile-dropdown-menu .dropdown-header {
+            padding: 0.5rem 0.875rem 0.25rem;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+
+        /* =============================================
+                   TOAST NOTIFICATION
+                ============================================= */
+        .toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.75rem;
+            color: white;
+            font-weight: 600;
+            font-size: 0.875rem;
+            box-shadow: var(--shadow-lg);
+            z-index: 10000;
+            animation: slideUp 0.35s ease-out;
+            max-width: 400px;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .toast .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+        
+        .toast.success { background: #059669; }
+        .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
+        .toast.warning { background: #d97706; }
+
+        /* =============================================
                    RESPONSIVE
                 ============================================= */
         @media (min-width: 768px) {
@@ -1375,6 +1750,20 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                 justify-content: flex-start;
                 padding: 0.5rem 0.75rem;
             }
+
+            .offer-highlight {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .offer-highlight .offer-actions {
+                justify-content: stretch;
+            }
+            
+            .offer-highlight .offer-actions .btn {
+                flex: 1;
+                justify-content: center;
+            }
         }
 
         @media (max-width: 480px) {
@@ -1409,11 +1798,6 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
 
             .empty-state {
                 padding: 2rem 1rem;
-            }
-
-            .empty-state .empty-icon svg {
-                width: 48px;
-                height: 48px;
             }
 
             .empty-state h4 {
@@ -1472,158 +1856,6 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
             from { transform: rotate(0deg); }
             to { transform: rotate(360deg); }
         }
-
-        /* =============================================
-                   PROFILE DROPDOWN
-                ============================================= */
-.profile-dropdown-wrapper {
-    position: relative;
-}
-
-.profile-dropdown-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.375rem 0.75rem 0.375rem 0.375rem;
-    border-radius: var(--radius-full);
-    border: 1px solid transparent;
-    background: transparent;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-}
-
-.profile-dropdown-toggle:hover {
-    background: var(--bg-surface-low);
-    border-color: rgba(199, 196, 216, 0.3);
-}
-
-.profile-dropdown-toggle .avatar-small {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-}
-
-.profile-dropdown-toggle .profile-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
-
-.profile-dropdown-toggle .profile-role {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    font-weight: 400;
-}
-
-.profile-dropdown-toggle .material-symbols-outlined {
-    font-size: 1rem;
-    color: var(--text-on-surface-variant);
-    transition: transform var(--transition-fast);
-}
-
-.profile-dropdown-toggle.open .material-symbols-outlined:last-child {
-    transform: rotate(180deg);
-}
-
-/* Profile Dropdown Menu */
-.profile-dropdown-menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 0.5rem);
-    width: 14rem;
-    background: var(--bg-surface);
-    border-radius: var(--radius-2xl);
-    box-shadow: var(--shadow-xl);
-    border: 1px solid var(--slate-200);
-    padding: 0.5rem;
-    z-index: 50;
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-0.5rem) scale(0.95);
-    transition: all var(--transition-smooth);
-    transform-origin: top right;
-}
-
-.profile-dropdown-menu.open {
-    opacity: 1;
-    visibility: visible;
-    transform: translateY(0) scale(1);
-}
-
-.profile-dropdown-menu .dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.625rem 0.875rem;
-    border-radius: 0.75rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text-on-surface);
-    transition: all var(--transition-fast);
-    cursor: pointer;
-    border: none;
-    background: transparent;
-    width: 100%;
-    text-align: left;
-    font-family: var(--font-sans);
-}
-
-.profile-dropdown-menu .dropdown-item:hover {
-    background: var(--bg-surface-low);
-    color: var(--primary);
-}
-
-.profile-dropdown-menu .dropdown-item .material-symbols-outlined {
-    font-size: 1.125rem;
-    color: var(--text-on-surface-variant);
-}
-
-.profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
-    color: var(--primary);
-}
-
-.profile-dropdown-menu .dropdown-item.danger {
-    color: #dc2626;
-}
-
-.profile-dropdown-menu .dropdown-item.danger:hover {
-    background: #fef2f2;
-    color: #dc2626;
-}
-
-.profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
-    color: #dc2626;
-}
-
-.profile-dropdown-menu .dropdown-divider {
-    height: 1px;
-    background: var(--slate-200);
-    margin: 0.25rem 0.5rem;
-}
-
-.profile-dropdown-menu .dropdown-header {
-    padding: 0.5rem 0.875rem 0.25rem;
-    font-size: 0.65rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-on-surface-variant);
-}
-
-@media (max-width: 767px) {
-    .profile-dropdown-toggle .profile-name,
-    .profile-dropdown-toggle .profile-role {
-        display: none;
-    }
-}
     </style>
 </head>
 <body>
@@ -1635,14 +1867,12 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">account_balance</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Applicant Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1662,6 +1892,12 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                 <span class="material-symbols-outlined">description</span>
                 <span class="nav-text">Applications</span>
                 <span class="nav-badge"><?php echo $totalApplications; ?></span>
+            </a>
+
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
             </a>
 
             <a href="interview.php" class="sidebar-main-link">
@@ -1707,29 +1943,29 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                 <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
             </div>
 
-           <!-- Profile Dropdown -->
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
-        <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
-        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-        <span class="profile-role">Applicant</span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
+            <!-- Profile Dropdown -->
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
+                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
+                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                    <span class="profile-role">Applicant</span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
 
-    <!-- Dropdown Menu -->
-    <div class="profile-dropdown-menu" id="profileDropdownMenu">
-        <div class="dropdown-header">Account</div>
-        <a href="settings.php" class="dropdown-item">
-            <span class="material-symbols-outlined">settings</span>
-            Settings
-        </a>
-        <div class="dropdown-divider"></div>
-        <a href="../../logout.php" class="dropdown-item danger">
-            <span class="material-symbols-outlined">logout</span>
-            Log Out
-        </a>
-    </div>
-</div>
+                <!-- Dropdown Menu -->
+                <div class="profile-dropdown-menu" id="profileDropdownMenu">
+                    <div class="dropdown-header">Account</div>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <a href="../../logout.php" class="dropdown-item danger">
+                        <span class="material-symbols-outlined">logout</span>
+                        Log Out
+                    </a>
+                </div>
+            </div>
         </header>
 
         <!-- Main Scrollable Area -->
@@ -1743,13 +1979,20 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                         <span>My Applications</span>
                         <span class="status-dot"></span>
                     </div>
+                    <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                        <?php if ($offersReceived > 0): ?>
+                            <span style="font-size:0.75rem; color:#1e40af; background:#dbeafe; padding:0.25rem 0.75rem; border-radius:var(--radius-full);">
+                                📄 <?php echo $offersReceived; ?> offer<?php echo $offersReceived > 1 ? 's' : ''; ?> pending
+                            </span>
+                        <?php endif; ?>
+                    </div>
                 </div>
 
                 <!-- Page Header -->
                 <div class="page-header">
                     <div>
                         <h1>My Applications</h1>
-                        <p>Track the status of all your job applications</p>
+                        <p>Track the status of all your job applications and manage offers</p>
                     </div>
                     <a href="job_search.php" class="btn-primary">
                         <span class="material-symbols-outlined">search</span>
@@ -1770,6 +2013,9 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                     </a>
                     <a href="?status=interviewed" class="status-filter <?php echo $statusFilter === 'interviewed' ? 'active' : ''; ?>">
                         Interviewed <span class="filter-count"><?php echo $statusCounts['interviewed']; ?></span>
+                    </a>
+                    <a href="?status=offered" class="status-filter <?php echo $statusFilter === 'offered' ? 'active' : ''; ?>">
+                        Offered <span class="filter-count"><?php echo $statusCounts['offered']; ?></span>
                     </a>
                     <a href="?status=hired" class="status-filter <?php echo $statusFilter === 'hired' ? 'active' : ''; ?>">
                         Hired <span class="filter-count"><?php echo $statusCounts['hired']; ?></span>
@@ -1812,12 +2058,28 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                             </div>
                         <?php else: ?>
                             <?php foreach ($filteredApplications as $app): ?>
+                                <?php
+                                $hasOffer = !empty($app['offer_id']);
+                                $offerPending = $hasOffer && $app['offer_status'] === 'sent';
+                                $offerAccepted = $hasOffer && $app['offer_status'] === 'accepted';
+                                $offerRejected = $hasOffer && $app['offer_status'] === 'rejected';
+                                $offerExpired = $hasOffer && $app['offer_status'] === 'expired';
+                                
+                                // Check if offer is expired (7 days)
+                                $isExpired = false;
+                                if ($offerPending && !empty($app['sent_at'])) {
+                                    $sentDate = new DateTime($app['sent_at']);
+                                    $currentDate = new DateTime();
+                                    $daysDiff = $sentDate->diff($currentDate)->days;
+                                    $isExpired = $daysDiff > 7;
+                                }
+                                ?>
                                 <div class="app-card">
                                     <!-- Top: Title + Badge -->
                                     <div class="app-top">
-                                        <span class="app-title"><?php echo htmlspecialchars($app['title'] ?? 'Position'); ?></span>
-                                        <span class="badge <?php echo $statusBadges[$app['status']] ?? 'badge-pending'; ?>">
-                                            <?php echo $statusLabels[$app['status']] ?? ucfirst($app['status']); ?>
+                                        <span class="app-title"><?php echo htmlspecialchars($app['job_title'] ?? 'Position'); ?></span>
+                                        <span class="badge <?php echo $statusBadges[$app['application_status']] ?? 'badge-pending'; ?>">
+                                            <?php echo $statusLabels[$app['application_status']] ?? ucfirst($app['application_status']); ?>
                                         </span>
                                     </div>
 
@@ -1828,11 +2090,61 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                                     <div class="app-bottom">
                                         <span class="app-date">Applied <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?></span>
                                         <div class="app-actions">
-                                            <a href="?view=<?php echo $app['id']; ?>" class="btn-outline btn-sm view-details-btn" data-id="<?php echo $app['id']; ?>">
+                                            <a href="?view=<?php echo $app['application_id']; ?>" class="btn-outline btn-sm view-details-btn" data-id="<?php echo $app['application_id']; ?>">
                                                 View Details
                                             </a>
                                         </div>
                                     </div>
+
+                                    <!-- Offer Highlight -->
+                                    <?php if ($offerPending && !$isExpired): ?>
+                                        <div class="offer-highlight">
+                                            <div class="offer-info">
+                                                <span class="offer-label">📄 You have an offer!</span>
+                                                <span class="offer-salary">₱<?php echo number_format($app['salary_offered'] ?? 0, 2); ?></span>
+                                                <span class="offer-expiry">
+                                                    Expires: <?php echo date('M d, Y', strtotime($app['sent_at'] . ' +7 days')); ?>
+                                                </span>
+                                            </div>
+                                            <div class="offer-actions">
+                                                <a href="accept_offer.php?id=<?php echo $app['offer_id']; ?>" class="btn-success btn-sm">
+                                                    <span class="material-symbols-outlined">check_circle</span>
+                                                    View & Respond
+                                                </a>
+                                            </div>
+                                        </div>
+                                    <?php elseif ($offerPending && $isExpired): ?>
+                                        <div class="offer-highlight offer-expired">
+                                            <div class="offer-info">
+                                                <span class="offer-label">⏰ Offer Expired</span>
+                                                <span class="offer-expiry">Expired on <?php echo date('M d, Y', strtotime($app['sent_at'] . ' +7 days')); ?></span>
+                                            </div>
+                                        </div>
+                                    <?php elseif ($offerAccepted): ?>
+                                        <div class="offer-highlight offer-accepted">
+                                            <div class="offer-info">
+                                                <span class="offer-label">🎉 Offer Accepted!</span>
+                                                <span style="font-size:0.875rem; color:#065f46;">
+                                                    You are now an employee of <?php echo htmlspecialchars($app['company_name']); ?>
+                                                </span>
+                                            </div>
+                                            <div class="offer-actions">
+                                                <span class="btn-success btn-sm" style="background:#065f46; cursor:default;">
+                                                    <span class="material-symbols-outlined">celebration</span>
+                                                    Welcome Aboard!
+                                                </span>
+                                            </div>
+                                        </div>
+                                    <?php elseif ($offerRejected): ?>
+                                        <div class="offer-highlight offer-declined">
+                                            <div class="offer-info">
+                                                <span class="offer-label">Offer Declined</span>
+                                                <span style="font-size:0.875rem; color:#991b1b;">
+                                                    You declined this offer
+                                                </span>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
                                 </div>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -1971,6 +2283,7 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                 'pending': 'badge-pending',
                 'shortlisted': 'badge-shortlisted',
                 'interviewed': 'badge-interviewed',
+                'offered': 'badge-offered',
                 'hired': 'badge-hired',
                 'rejected': 'badge-rejected',
                 'withdrawn': 'badge-withdrawn'
@@ -1980,7 +2293,8 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                 'pending': 'Pending Review',
                 'shortlisted': 'Shortlisted',
                 'interviewed': 'Interviewed',
-                'hired': 'Hired',
+                'offered': 'Offer Extended',
+                'hired': 'Hired 🎉',
                 'rejected': 'Rejected',
                 'withdrawn': 'Withdrawn'
             };
@@ -2190,7 +2504,6 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
                             <div style="text-align:center; padding:1.875rem 0; color:#dc2626;">
                                 <span class="material-symbols-outlined" style="font-size:3rem;">error</span>
                                 <p style="margin-top:0.5rem;">Error loading application details. Please try again.</p>
-                                <p style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">${escapeHtml(error.message)}</p>
                             </div>
                         `;
                         modalContent.style.display = 'block';
@@ -2259,32 +2572,34 @@ if (isset($_GET['view']) && is_numeric($_GET['view'])) {
         })();
 
         // =============================================
-// PROFILE DROPDOWN TOGGLE
-// =============================================
-const profileToggle = document.getElementById('profileDropdownToggle');
-const profileMenu = document.getElementById('profileDropdownMenu');
+        // PROFILE DROPDOWN TOGGLE
+        // =============================================
+        const profileToggle = document.getElementById('profileDropdownToggle');
+        const profileMenu = document.getElementById('profileDropdownMenu');
 
-profileToggle.addEventListener('click', function(e) {
-    e.stopPropagation();
-    this.classList.toggle('open');
-    profileMenu.classList.toggle('open');
-});
+        if (profileToggle && profileMenu) {
+            profileToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                this.classList.toggle('open');
+                profileMenu.classList.toggle('open');
+            });
 
-// Close dropdown when clicking outside
-document.addEventListener('click', function(e) {
-    if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-        profileToggle.classList.remove('open');
-        profileMenu.classList.remove('open');
-    }
-});
+            // Close dropdown when clicking outside
+            document.addEventListener('click', function(e) {
+                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
 
-// Close dropdown on Escape
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-        profileToggle.classList.remove('open');
-        profileMenu.classList.remove('open');
-    }
-});
+            // Close dropdown on Escape
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
+        }
     </script>
 
 </body>

@@ -31,6 +31,19 @@ $user = getUserById($userId);
 $applicant = getApplicantByUserId($userId);
 $applicantId = $applicant['id'] ?? 0;
 
+// =============================================
+// GET PENDING OFFERS COUNT FOR SIDEBAR BADGE
+// =============================================
+$pendingOffers = 0;
+if ($applicantId) {
+    $offersResult = getRecord("
+        SELECT COUNT(*) as count FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        WHERE a.applicant_id = ? AND o.status = 'sent'
+    ", [$applicantId], "i");
+    $pendingOffers = $offersResult['count'] ?? 0;
+}
+
 $applications = [];
 if ($applicantId) {
     $applications = getApplicationsByApplicant($applicantId);
@@ -1159,154 +1172,154 @@ if ($applicantId) {
         /* =============================================
                    PROFILE DROPDOWN
                 ============================================= */
-.profile-dropdown-wrapper {
-    position: relative;
-}
+        .profile-dropdown-wrapper {
+            position: relative;
+        }
 
-.profile-dropdown-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.375rem 0.75rem 0.375rem 0.375rem;
-    border-radius: var(--radius-full);
-    border: 1px solid transparent;
-    background: transparent;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-}
+        .profile-dropdown-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.375rem 0.75rem 0.375rem 0.375rem;
+            border-radius: var(--radius-full);
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
 
-.profile-dropdown-toggle:hover {
-    background: var(--bg-surface-low);
-    border-color: rgba(199, 196, 216, 0.3);
-}
+        .profile-dropdown-toggle:hover {
+            background: var(--bg-surface-low);
+            border-color: rgba(199, 196, 216, 0.3);
+        }
 
-.profile-dropdown-toggle .avatar-small {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-}
+        .profile-dropdown-toggle .avatar-small {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
 
-.profile-dropdown-toggle .profile-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
+        .profile-dropdown-toggle .profile-name {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
 
-.profile-dropdown-toggle .profile-role {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    font-weight: 400;
-}
+        .profile-dropdown-toggle .profile-role {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            font-weight: 400;
+        }
 
-.profile-dropdown-toggle .material-symbols-outlined {
-    font-size: 1rem;
-    color: var(--text-on-surface-variant);
-    transition: transform var(--transition-fast);
-}
+        .profile-dropdown-toggle .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--text-on-surface-variant);
+            transition: transform var(--transition-fast);
+        }
 
-.profile-dropdown-toggle.open .material-symbols-outlined:last-child {
-    transform: rotate(180deg);
-}
+        .profile-dropdown-toggle.open .material-symbols-outlined:last-child {
+            transform: rotate(180deg);
+        }
 
-/* Profile Dropdown Menu */
-.profile-dropdown-menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 0.5rem);
-    width: 14rem;
-    background: var(--bg-surface);
-    border-radius: var(--radius-2xl);
-    box-shadow: var(--shadow-xl);
-    border: 1px solid var(--slate-200);
-    padding: 0.5rem;
-    z-index: 50;
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-0.5rem) scale(0.95);
-    transition: all var(--transition-smooth);
-    transform-origin: top right;
-}
+        /* Profile Dropdown Menu */
+        .profile-dropdown-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            width: 14rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--slate-200);
+            padding: 0.5rem;
+            z-index: 50;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-0.5rem) scale(0.95);
+            transition: all var(--transition-smooth);
+            transform-origin: top right;
+        }
 
-.profile-dropdown-menu.open {
-    opacity: 1;
-    visibility: visible;
-    transform: translateY(0) scale(1);
-}
+        .profile-dropdown-menu.open {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0) scale(1);
+        }
 
-.profile-dropdown-menu .dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.625rem 0.875rem;
-    border-radius: 0.75rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text-on-surface);
-    transition: all var(--transition-fast);
-    cursor: pointer;
-    border: none;
-    background: transparent;
-    width: 100%;
-    text-align: left;
-    font-family: var(--font-sans);
-}
+        .profile-dropdown-menu .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.625rem 0.875rem;
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-on-surface);
+            transition: all var(--transition-fast);
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            font-family: var(--font-sans);
+        }
 
-.profile-dropdown-menu .dropdown-item:hover {
-    background: var(--bg-surface-low);
-    color: var(--primary);
-}
+        .profile-dropdown-menu .dropdown-item:hover {
+            background: var(--bg-surface-low);
+            color: var(--primary);
+        }
 
-.profile-dropdown-menu .dropdown-item .material-symbols-outlined {
-    font-size: 1.125rem;
-    color: var(--text-on-surface-variant);
-}
+        .profile-dropdown-menu .dropdown-item .material-symbols-outlined {
+            font-size: 1.125rem;
+            color: var(--text-on-surface-variant);
+        }
 
-.profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
-    color: var(--primary);
-}
+        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
+            color: var(--primary);
+        }
 
-.profile-dropdown-menu .dropdown-item.danger {
-    color: #dc2626;
-}
+        .profile-dropdown-menu .dropdown-item.danger {
+            color: #dc2626;
+        }
 
-.profile-dropdown-menu .dropdown-item.danger:hover {
-    background: #fef2f2;
-    color: #dc2626;
-}
+        .profile-dropdown-menu .dropdown-item.danger:hover {
+            background: #fef2f2;
+            color: #dc2626;
+        }
 
-.profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
-    color: #dc2626;
-}
+        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
+            color: #dc2626;
+        }
 
-.profile-dropdown-menu .dropdown-divider {
-    height: 1px;
-    background: var(--slate-200);
-    margin: 0.25rem 0.5rem;
-}
+        .profile-dropdown-menu .dropdown-divider {
+            height: 1px;
+            background: var(--slate-200);
+            margin: 0.25rem 0.5rem;
+        }
 
-.profile-dropdown-menu .dropdown-header {
-    padding: 0.5rem 0.875rem 0.25rem;
-    font-size: 0.65rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-on-surface-variant);
-}
+        .profile-dropdown-menu .dropdown-header {
+            padding: 0.5rem 0.875rem 0.25rem;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
 
-@media (max-width: 767px) {
-    .profile-dropdown-toggle .profile-name,
-    .profile-dropdown-toggle .profile-role {
-        display: none;
-    }
-}
+        @media (max-width: 767px) {
+            .profile-dropdown-toggle .profile-name,
+            .profile-dropdown-toggle .profile-role {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1318,14 +1331,12 @@ if ($applicantId) {
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">account_balance</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Applicant Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1347,17 +1358,22 @@ if ($applicantId) {
                 <span class="nav-badge"><?php echo $totalApplications; ?></span>
             </a>
 
-            <a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
-    <span class="material-symbols-outlined">calendar_month</span>
-    <span class="nav-text">Interviews</span>
-    <span class="nav-badge"><?php echo $interviewCount; ?></span>
-</a>
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
+            </a>
+
+            <a href="interview.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
 
             <a href="job_search.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">search</span>
                 <span class="nav-text">Job Search</span>
             </a>
-
 
         </nav>
 
@@ -1391,29 +1407,29 @@ if ($applicantId) {
                 <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
             </div>
 
-           <!-- Profile Dropdown -->
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
-        <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
-        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-        <span class="profile-role">Applicant</span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
+            <!-- Profile Dropdown -->
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
+                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
+                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                    <span class="profile-role">Applicant</span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
 
-    <!-- Dropdown Menu -->
-    <div class="profile-dropdown-menu" id="profileDropdownMenu">
-        <div class="dropdown-header">Account</div>
-        <a href="settings.php" class="dropdown-item">
-            <span class="material-symbols-outlined">settings</span>
-            Settings
-        </a>
-        <div class="dropdown-divider"></div>
-        <a href="../../logout.php" class="dropdown-item danger">
-            <span class="material-symbols-outlined">logout</span>
-            Log Out
-        </a>
-    </div>
-</div>
+                <!-- Dropdown Menu -->
+                <div class="profile-dropdown-menu" id="profileDropdownMenu">
+                    <div class="dropdown-header">Account</div>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <a href="../../logout.php" class="dropdown-item danger">
+                        <span class="material-symbols-outlined">logout</span>
+                        Log Out
+                    </a>
+                </div>
+            </div>
         </header>
 
         <!-- Main Scrollable Area -->
@@ -1698,32 +1714,32 @@ if ($applicantId) {
         })();
 
         // =============================================
-// PROFILE DROPDOWN TOGGLE
-// =============================================
-const profileToggle = document.getElementById('profileDropdownToggle');
-const profileMenu = document.getElementById('profileDropdownMenu');
+        // PROFILE DROPDOWN TOGGLE
+        // =============================================
+        const profileToggle = document.getElementById('profileDropdownToggle');
+        const profileMenu = document.getElementById('profileDropdownMenu');
 
-profileToggle.addEventListener('click', function(e) {
-    e.stopPropagation();
-    this.classList.toggle('open');
-    profileMenu.classList.toggle('open');
-});
+        profileToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.classList.toggle('open');
+            profileMenu.classList.toggle('open');
+        });
 
-// Close dropdown when clicking outside
-document.addEventListener('click', function(e) {
-    if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-        profileToggle.classList.remove('open');
-        profileMenu.classList.remove('open');
-    }
-});
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
+            }
+        });
 
-// Close dropdown on Escape
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-        profileToggle.classList.remove('open');
-        profileMenu.classList.remove('open');
-    }
-});
+        // Close dropdown on Escape
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
+            }
+        });
     </script>
 
 </body>

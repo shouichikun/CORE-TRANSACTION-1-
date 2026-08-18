@@ -1,8 +1,9 @@
 <?php
-// portals/client/jobs.php - Client Job Management with Recruitment Agency Selection
+// portals/client/jobs.php - AI-Powered Client Job Management
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -20,6 +21,11 @@ $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
+
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
 
 // Get client profile
 $client = getRecord("
@@ -62,11 +68,156 @@ $agencies = getRecords("
     ORDER BY ra.agency_name ASC
 ", [$clientId], "i");
 
+// =============================================
+// AI HELPER FUNCTIONS - ENHANCED
+// =============================================
+
+/**
+ * Generate complete AI job data (description, skills, qualifications, experience, salary)
+ */
+function generateAIJobData($jobTitle, $experience = 'Mid') {
+    global $aiService;
+    
+    try {
+        $result = $aiService->optimizeJobDescription([
+            'title' => $jobTitle,
+            'skills_required' => '',
+            'experience_level' => $experience
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            // Parse skills from AI response
+            $skills = $result['suggested_skills'] ?? [];
+            
+            // Generate qualifications from skills
+            $qualifications = [];
+            $experienceList = [];
+            
+            // Smart mapping based on experience level
+            switch ($experience) {
+                case 'Entry':
+                    $qualifications = ["Bachelor's Degree in related field", "Fresh Graduate / Entry Level", "0-1 year experience"];
+                    $experienceList = ['0-1 year experience', 'Fresh Graduate / Entry Level', 'Internship / OJT'];
+                    break;
+                case 'Junior':
+                    $qualifications = ["Bachelor's Degree in related field", "Junior Level", "1-3 years experience"];
+                    $experienceList = ['1-3 years experience', 'Junior Level'];
+                    break;
+                case 'Mid':
+                    $qualifications = ["Bachelor's Degree in related field", "Mid Level", "3-5 years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['3-5 years experience', 'Mid Level'];
+                    break;
+                case 'Senior':
+                    $qualifications = ["Bachelor's Degree in related field", "Master's Degree in related field", "Senior Level", "5-8 years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['5-8 years experience', 'Senior Level'];
+                    break;
+                case 'Lead':
+                    $qualifications = ["Bachelor's Degree in related field", "Master's Degree in related field", "Lead / Manager Level", "8+ years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['8+ years experience', 'Lead / Manager Level'];
+                    break;
+                default:
+                    $qualifications = ["Bachelor's Degree in related field", "Mid Level", "3-5 years experience"];
+                    $experienceList = ['3-5 years experience', 'Mid Level'];
+            }
+            
+            // Extract salary - handle different possible formats
+            $salaryMin = 0;
+            $salaryMax = 0;
+            
+            // Try to get salary from the result
+            if (isset($result['salary_min']) && isset($result['salary_max'])) {
+                $salaryMin = intval($result['salary_min']);
+                $salaryMax = intval($result['salary_max']);
+            } elseif (isset($result['salary_range'])) {
+                // Parse salary range string like "₱50,000 - ₱80,000" or "50,000 - 80,000"
+                $salaryRange = $result['salary_range'];
+                preg_match('/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/', $salaryRange, $matches);
+                if (count($matches) >= 3) {
+                    $salaryMin = intval(str_replace(',', '', $matches[1]));
+                    $salaryMax = intval(str_replace(',', '', $matches[2]));
+                }
+            }
+            
+            // If still no salary, set defaults based on experience level
+            if ($salaryMin === 0 && $salaryMax === 0) {
+                switch ($experience) {
+                    case 'Entry':
+                        $salaryMin = 25000;
+                        $salaryMax = 35000;
+                        break;
+                    case 'Junior':
+                        $salaryMin = 30000;
+                        $salaryMax = 45000;
+                        break;
+                    case 'Mid':
+                        $salaryMin = 45000;
+                        $salaryMax = 70000;
+                        break;
+                    case 'Senior':
+                        $salaryMin = 65000;
+                        $salaryMax = 100000;
+                        break;
+                    case 'Lead':
+                        $salaryMin = 85000;
+                        $salaryMax = 130000;
+                        break;
+                    default:
+                        $salaryMin = 35000;
+                        $salaryMax = 55000;
+                }
+            }
+            
+            // Format salary range for display
+            $salaryRangeDisplay = '₱' . number_format($salaryMin) . ' - ₱' . number_format($salaryMax);
+            
+            return [
+                'success' => true,
+                'description' => $result['improved_description'] ?? '',
+                'skills' => $skills,
+                'qualifications' => $qualifications,
+                'experience' => $experienceList,
+                'salary_min' => $salaryMin,
+                'salary_max' => $salaryMax,
+                'salary_range' => $salaryRangeDisplay,
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Generation Error: " . $e->getMessage());
+    }
+    
+    return [
+        'success' => false,
+        'error' => 'Could not generate AI job data'
+    ];
+}
+
 // Handle Job Posting
 $message = '';
 $messageType = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    // =============================================
+    // GENERATE AI JOB DATA (AJAX) - ENHANCED
+    // =============================================
+    if ($_POST['action'] === 'generate_ai_job') {
+        header('Content-Type: application/json');
+        $jobTitle = trim($_POST['job_title'] ?? '');
+        $experience = trim($_POST['experience'] ?? 'Mid');
+        
+        if (empty($jobTitle)) {
+            echo json_encode(['success' => false, 'error' => 'Job title is required']);
+            exit;
+        }
+        
+        $result = generateAIJobData($jobTitle, $experience);
+        echo json_encode($result);
+        exit;
+    }
+    
+    // =============================================
+    // POST JOB
+    // =============================================
     if ($_POST['action'] === 'post_job') {
         // Validate inputs
         $title = trim($_POST['title'] ?? '');
@@ -293,6 +444,7 @@ sort($suggestedSkills);
 sort($suggestedQualifications);
 sort($suggestedExperience);
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -332,6 +484,7 @@ sort($suggestedExperience);
             --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
             --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
             --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -346,6 +499,236 @@ sort($suggestedExperience);
             --sidebar-collapsed: 72px;
         }
 
+        /* AI Badge Styles */
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined {
+            font-size: 0.7rem;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined {
+            font-size: 1rem;
+        }
+        .btn-ai:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* =============================================
+           AI OPTIMISTIC MODAL - ENHANCED
+        ============================================= */
+        .ai-optimistic-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(12px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            animation: fadeIn 0.3s ease;
+        }
+        .ai-optimistic-modal.active {
+            display: flex;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .ai-optimistic-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 720px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 2rem 2rem 1.5rem;
+            box-shadow: var(--shadow-xl);
+            animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative;
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.97); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .ai-optimistic-card .ai-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--slate-200);
+        }
+        .ai-optimistic-card .ai-header .ai-icon {
+            width: 2.75rem;
+            height: 2.75rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+        .ai-optimistic-card .ai-header .ai-title {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+        }
+        .ai-optimistic-card .ai-header .ai-subtitle {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+        .ai-optimistic-card .ai-header .ai-provider {
+            margin-left: auto;
+            font-size: 0.6rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+        }
+
+        /* Dots Loading */
+        .ai-dots-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 2rem 0;
+            min-height: 120px;
+        }
+        .ai-dots-loading .dot {
+            width: 0.75rem;
+            height: 0.75rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotPulse 1.4s infinite ease-in-out both;
+        }
+        .ai-dots-loading .dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-dots-loading .dot:nth-child(2) { animation-delay: -0.16s; }
+        .ai-dots-loading .dot:nth-child(3) { animation-delay: 0s; }
+        @keyframes dotPulse {
+            0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        .ai-dots-loading .loading-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-left: 0.75rem;
+            font-weight: 500;
+        }
+
+        /* AI Generated Content */
+        .ai-generated-content {
+            display: none;
+            animation: fadeIn 0.5s ease;
+        }
+        .ai-generated-content.active {
+            display: block;
+        }
+
+        .ai-gen-section {
+            margin-bottom: 1.25rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-md);
+            border-left: 3px solid var(--primary);
+        }
+        .ai-gen-section .section-label {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            margin-bottom: 0.25rem;
+        }
+        .ai-gen-section .section-label .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+        .ai-gen-section .section-value {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .ai-gen-section .section-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        .ai-gen-section .section-tags .tag {
+            padding: 0.0625rem 0.5rem;
+            background: var(--primary-container);
+            color: var(--primary);
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 500;
+        }
+        .ai-gen-section .section-salary {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .ai-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
+
+        .ai-error {
+            display: none;
+            text-align: center;
+            padding: 1.5rem;
+            color: #dc2626;
+            background: #fef2f2;
+            border-radius: var(--radius-md);
+            margin: 1rem 0;
+        }
+        .ai-error.active {
+            display: block;
+        }
+
+        /* =============================================
+           REST OF STYLES (same as your existing)
+        ============================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -360,9 +743,7 @@ sort($suggestedExperience);
         }
         a { text-decoration: none; color: inherit; }
 
-        /* =============================================
-           SIDEBAR
-        ============================================= */
+        /* ===== SIDEBAR ===== */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -673,7 +1054,6 @@ sort($suggestedExperience);
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* Breadcrumb */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -744,7 +1124,7 @@ sort($suggestedExperience);
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Toast Message */
+        /* Toast */
         .toast {
             position: fixed;
             top: 1rem;
@@ -765,6 +1145,7 @@ sort($suggestedExperience);
         .toast .material-symbols-outlined { font-size: 1.25rem; }
         .toast.success { background: #059669; }
         .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
@@ -871,9 +1252,6 @@ sort($suggestedExperience);
         }
         @media (max-width: 480px) { .form-row { grid-template-columns: 1fr; } }
 
-        /* =============================================
-           RECRUITMENT AGENCY SELECTION
-        ============================================= */
         .agency-selection {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -946,9 +1324,6 @@ sort($suggestedExperience);
             border-radius: 0.375rem;
         }
 
-        /* =============================================
-           CUSTOM CHECKLIST - Skills, Qualifications, Experience
-           ============================================= */
         .checklist-section {
             border: 1.5px solid var(--slate-200);
             border-radius: 0.5rem;
@@ -957,19 +1332,16 @@ sort($suggestedExperience);
             transition: all var(--transition-fast);
             background: var(--bg-surface);
         }
-
         .checklist-section:focus-within {
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
         }
-
         .checklist-section .section-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 0.5rem;
         }
-
         .checklist-section .section-header .section-title {
             font-weight: 600;
             font-size: 0.8125rem;
@@ -978,12 +1350,10 @@ sort($suggestedExperience);
             align-items: center;
             gap: 0.375rem;
         }
-
         .checklist-section .section-header .section-title .material-symbols-outlined {
             font-size: 1rem;
             color: var(--primary);
         }
-
         .checklist-section .section-header .count-badge {
             font-size: 0.6875rem;
             color: var(--text-on-surface-variant);
@@ -991,7 +1361,6 @@ sort($suggestedExperience);
             padding: 0.0625rem 0.5rem;
             border-radius: var(--radius-full);
         }
-
         .checklist-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -1000,11 +1369,9 @@ sort($suggestedExperience);
             overflow-y: auto;
             padding: 0.125rem;
         }
-
         .checklist-grid::-webkit-scrollbar { width: 4px; }
         .checklist-grid::-webkit-scrollbar-track { background: transparent; }
         .checklist-grid::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
-
         .checklist-item {
             display: flex;
             align-items: center;
@@ -1016,11 +1383,7 @@ sort($suggestedExperience);
             font-size: 0.75rem;
             color: var(--text-on-surface);
         }
-
-        .checklist-item:hover {
-            background: var(--bg-surface-low);
-        }
-
+        .checklist-item:hover { background: var(--bg-surface-low); }
         .checklist-item input[type="checkbox"] {
             width: 0.8125rem;
             height: 0.8125rem;
@@ -1028,34 +1391,21 @@ sort($suggestedExperience);
             cursor: pointer;
             flex-shrink: 0;
         }
-
-        .checklist-item .item-label {
-            user-select: none;
-            cursor: pointer;
-        }
-
-        .checklist-item.checked {
-            background: var(--primary-container);
-        }
-
-        .checklist-item.checked .item-label {
-            color: var(--primary);
-            font-weight: 500;
-        }
+        .checklist-item .item-label { user-select: none; cursor: pointer; }
+        .checklist-item.checked { background: var(--primary-container); }
+        .checklist-item.checked .item-label { color: var(--primary); font-weight: 500; }
 
         .custom-input-row {
             display: flex;
             gap: 0.5rem;
             margin-top: 0.5rem;
         }
-
         .custom-input-row .form-control {
             flex: 1;
             padding: 0.375rem 0.625rem;
             font-size: 0.75rem;
             border-radius: 0.375rem;
         }
-
         .custom-input-row .btn-add {
             padding: 0.375rem 0.75rem;
             font-size: 0.75rem;
@@ -1067,7 +1417,6 @@ sort($suggestedExperience);
             transition: all var(--transition-fast);
             white-space: nowrap;
         }
-
         .custom-input-row .btn-add:hover {
             background: var(--on-primary-fixed-variant);
             transform: translateY(-1px);
@@ -1085,7 +1434,6 @@ sort($suggestedExperience);
             border: 1px dashed var(--slate-200);
             align-items: center;
         }
-
         .selected-items-display .item-tag {
             display: inline-flex;
             align-items: center;
@@ -1098,7 +1446,6 @@ sort($suggestedExperience);
             font-weight: 500;
             animation: tagAppear 0.2s ease-out;
         }
-
         .selected-items-display .item-tag .remove-item {
             background: none;
             border: none;
@@ -1109,42 +1456,25 @@ sort($suggestedExperience);
             transition: all var(--transition-fast);
             line-height: 1;
         }
-
         .selected-items-display .item-tag .remove-item:hover {
             color: white;
             transform: scale(1.2);
         }
-
         @keyframes tagAppear {
             from { opacity: 0; transform: scale(0.8); }
             to { opacity: 1; transform: scale(1); }
         }
 
-        /* Responsive checklist */
         @media (max-width: 768px) {
-            .checklist-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .agency-selection {
-                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            }
+            .checklist-grid { grid-template-columns: repeat(2, 1fr); }
+            .agency-selection { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
         }
-
         @media (max-width: 480px) {
-            .checklist-grid {
-                grid-template-columns: 1fr;
-            }
-            .custom-input-row {
-                flex-direction: column;
-            }
-            .agency-selection {
-                grid-template-columns: 1fr;
-            }
+            .checklist-grid { grid-template-columns: 1fr; }
+            .custom-input-row { flex-direction: column; }
+            .agency-selection { grid-template-columns: 1fr; }
         }
 
-        /* =============================================
-           JOB CARDS
-        ============================================= */
         .job-filters {
             display: flex;
             gap: 0.5rem;
@@ -1296,7 +1626,6 @@ sort($suggestedExperience);
         .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
-        /* Profile Picture Styles */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -1326,7 +1655,6 @@ sort($suggestedExperience);
             object-fit: cover;
         }
 
-        /* Responsive */
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -1355,6 +1683,7 @@ sort($suggestedExperience);
             .job-card-actions { justify-content: flex-end; }
             .modal { max-height: 95vh; }
             .modal-body { padding: 1rem; }
+            .ai-optimistic-card { padding: 1.25rem; }
         }
         .main-scroll::-webkit-scrollbar { width: 5px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -1376,55 +1705,53 @@ sort($suggestedExperience);
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
         <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
-        <!-- =============================================
-        SIDEBAR FOOTER
-        ============================================= -->
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
+        <!-- ===== SIDEBAR FOOTER ===== -->
         <?php
         $userProfile = getUserProfileData($userId);
         ?>
@@ -1457,6 +1784,10 @@ sort($suggestedExperience);
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Jobs</span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -1519,10 +1850,16 @@ sort($suggestedExperience);
                 <div class="page-header">
                     <div>
                         <h1>My Jobs</h1>
-                        <p>Manage your job postings and track applications</p>
+                        <p style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                            Manage your job postings and track applications
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined">auto_awesome</span>
+                                AI Enhanced
+                            </span>
+                        </p>
                     </div>
                     <div>
-                        <button class="btn btn-primary" onclick="openModal()">
+                        <button class="btn btn-ai" onclick="openModal()">
                             <span class="material-symbols-outlined">add</span>
                             Post New Job
                         </button>
@@ -1566,8 +1903,6 @@ sort($suggestedExperience);
                     <?php foreach ($filteredJobs as $job): 
                         $skillsData = json_decode($job['skills_required'] ?? '{}', true);
                         $displaySkills = $skillsData['skills'] ?? [];
-                        $displayQualifications = $skillsData['qualifications'] ?? [];
-                        $displayExperience = $skillsData['experience'] ?? [];
                     ?>
                         <div class="job-card">
                             <div class="job-card-header">
@@ -1596,18 +1931,11 @@ sort($suggestedExperience);
                                             <span class="material-symbols-outlined">calendar_today</span>
                                             Posted <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
                                         </span>
-                                        <?php if ($job['experience_level']): ?>
-                                            <span>
-                                                <span class="material-symbols-outlined">trending_up</span>
-                                                <?php echo htmlspecialchars($job['experience_level']); ?>
-                                            </span>
-                                        <?php endif; ?>
                                     </div>
                                     <?php if ($job['agency_name']): ?>
                                         <div class="job-card-agency" style="margin-top:0.25rem;">
                                             <span class="material-symbols-outlined">apartment</span>
                                             Agency: <?php echo htmlspecialchars($job['agency_name']); ?>
-                                            <span style="font-size:0.625rem; color:var(--text-on-surface-variant);">(<?php echo htmlspecialchars($job['agency_code']); ?>)</span>
                                         </div>
                                     <?php endif; ?>
                                 </div>
@@ -1642,12 +1970,6 @@ sort($suggestedExperience);
                                         <span class="material-symbols-outlined">people</span>
                                         <?php echo $job['positions_available'] ?? 1; ?> Positions
                                     </span>
-                                    <?php if ($job['urgency']): ?>
-                                        <span>
-                                            <span class="material-symbols-outlined">priority_high</span>
-                                            <?php echo ucfirst($job['urgency']); ?>
-                                        </span>
-                                    <?php endif; ?>
                                 </div>
                                 <div class="job-card-actions">
                                     <a href="job-details.php?id=<?php echo $job['id']; ?>" class="btn btn-sm btn-outline">
@@ -1684,31 +2006,127 @@ sort($suggestedExperience);
         </main>
     </div>
 
+    <!-- =============================================
+    AI OPTIMISTIC MODAL - ENHANCED
+    ============================================= -->
+    <div class="ai-optimistic-modal" id="aiOptimisticModal">
+        <div class="ai-optimistic-card">
+            <!-- Header -->
+            <div class="ai-header">
+                <div class="ai-icon">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                </div>
+                <div>
+                    <div class="ai-title">AI is crafting your job posting</div>
+                    <div class="ai-subtitle">Generating optimized description, skills, qualifications, and salary</div>
+                </div>
+                <div class="ai-provider" id="aiProvider">Groq</div>
+            </div>
+
+            <!-- Loading State - Dots -->
+            <div class="ai-dots-loading" id="aiDotsLoading">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <span class="loading-text">Analyzing job requirements</span>
+            </div>
+
+            <!-- Error State -->
+            <div class="ai-error" id="aiError">
+                <span class="material-symbols-outlined" style="font-size:2rem; display:block; margin-bottom:0.5rem;">error</span>
+                <span id="aiErrorMessage">Something went wrong. Please try again.</span>
+            </div>
+
+            <!-- Generated Content -->
+            <div class="ai-generated-content" id="aiGeneratedContent">
+                <!-- Description -->
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">description</span> Job Description
+                    </div>
+                    <div class="section-value" id="aiGenDescription"></div>
+                </div>
+
+                <!-- Skills -->
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">psychology</span> Suggested Skills
+                    </div>
+                    <div class="section-tags" id="aiGenSkills"></div>
+                </div>
+
+                <!-- Qualifications -->
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">school</span> Suggested Qualifications
+                    </div>
+                    <div class="section-tags" id="aiGenQualifications"></div>
+                </div>
+
+                <!-- Experience -->
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">work_history</span> Suggested Experience
+                    </div>
+                    <div class="section-tags" id="aiGenExperience"></div>
+                </div>
+
+                <!-- Salary -->
+                <div class="ai-gen-section" style="border-left-color: #059669;">
+                    <div class="section-label" style="color:#059669;">
+                        <span class="material-symbols-outlined">payments</span> Recommended Salary
+                    </div>
+                    <div class="section-salary" id="aiGenSalary">₱50,000 - ₱80,000</div>
+                </div>
+
+                <!-- Actions -->
+                <div class="ai-actions">
+                    <button class="btn btn-primary" onclick="applyAIGeneratedData()">
+                        <span class="material-symbols-outlined">check</span> Apply All
+                    </button>
+                    <button class="btn btn-outline" onclick="applyAIDescriptionOnly()">
+                        <span class="material-symbols-outlined">description</span> Apply Description Only
+                    </button>
+                    <button class="btn btn-ghost" onclick="dismissAIModal()">
+                        Dismiss
+                    </button>
+                    <button class="btn btn-ghost" onclick="regenerateAI()" style="margin-left:auto;">
+                        <span class="material-symbols-outlined">refresh</span> Regenerate
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ===== POST JOB MODAL ===== -->
     <div class="modal-overlay" id="postJobModal">
         <div class="modal">
             <div class="modal-header">
-                <h2>Post New Job</h2>
+                <h2>Post New Job <span class="ai-badge" style="font-size:0.55rem; margin-left:0.5rem;">
+                    <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
+                    AI
+                </span></h2>
                 <button class="modal-close" onclick="closeModal()">×</button>
             </div>
             <form method="POST" action="" id="postJobForm">
                 <input type="hidden" name="action" value="post_job">
                 <div class="modal-body">
-                    <!-- =============================================
-                    RECRUITMENT AGENCY SELECTION
-                    ============================================= -->
+                    <!-- Agency Selection -->
                     <div class="form-group">
                         <label>Recruitment Agency <span class="required">*</span></label>
                         <div class="agency-selection" id="agencySelection">
                             <?php if (empty($agencies)): ?>
                                 <div style="grid-column:1/-1; text-align:center; padding:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">
-                                    No active recruitment agencies found. Please contact your system administrator.
+                                    No active recruitment agencies found.
                                 </div>
                             <?php else: ?>
-                                <?php foreach ($agencies as $agency): ?>
+                                <?php 
+                                $firstAgency = true;
+                                foreach ($agencies as $agency): 
+                                ?>
                                     <label class="agency-option" data-agency-id="<?php echo $agency['id']; ?>">
                                         <input type="radio" name="agency_id" value="<?php echo $agency['id']; ?>" 
-                                               <?php echo $loop->first ?? false ? 'checked' : ''; ?>>
+                                               <?php echo $firstAgency ? 'checked' : ''; ?>>
                                         <div class="agency-logo">
                                             <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
                                                 <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" 
@@ -1720,31 +2138,37 @@ sort($suggestedExperience);
                                         <div class="agency-info">
                                             <span class="agency-name"><?php echo htmlspecialchars($agency['agency_name']); ?></span>
                                             <span class="agency-code"><?php echo htmlspecialchars($agency['agency_code']); ?></span>
-                                            <?php if ($agency['contact_person']): ?>
-                                                <span style="font-size:0.625rem; color:var(--text-on-surface-variant);">
-                                                    <?php echo htmlspecialchars($agency['contact_person']); ?>
-                                                </span>
-                                            <?php endif; ?>
                                         </div>
                                     </label>
-                                <?php endforeach; ?>
+                                <?php 
+                                    $firstAgency = false;
+                                endforeach; 
+                                ?>
                             <?php endif; ?>
-                        </div>
-                        <div class="helper-text" style="margin-top:0.25rem;">
-                            <span class="material-symbols-outlined" style="font-size:0.875rem;">info</span>
-                            Select the recruitment agency that will handle this job posting.
                         </div>
                     </div>
 
+                    <!-- Job Title with AI Button -->
                     <div class="form-group">
                         <label>Job Title <span class="required">*</span></label>
-                        <input type="text" name="title" class="form-control" placeholder="e.g., Senior Software Engineer" required>
+                        <div style="display:flex; gap:0.5rem;">
+                            <input type="text" id="jobTitle" name="title" class="form-control" 
+                                   placeholder="e.g., Senior Software Engineer" required style="flex:1;">
+                            <button type="button" class="btn btn-ai btn-sm" onclick="openAIModal()" id="aiGenerateBtn">
+                                <span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span>
+                                AI Generate
+                            </button>
+                        </div>
+                        <div class="helper-text" style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
+                            Enter a job title, select experience level, and click "AI Generate"
+                        </div>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
                             <label>Location <span class="required">*</span></label>
-                            <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote, Hybrid" required>
+                            <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote" required>
                         </div>
                         <div class="form-group">
                             <label>Job Type <span class="required">*</span></label>
@@ -1759,7 +2183,7 @@ sort($suggestedExperience);
                     <div class="form-row">
                         <div class="form-group">
                             <label>Experience Level <span class="required">*</span></label>
-                            <select name="experience_level" class="form-control" required>
+                            <select name="experience_level" id="experienceLevel" class="form-control" required>
                                 <?php foreach ($experienceLevels as $level): ?>
                                     <option value="<?php echo $level; ?>"><?php echo $level; ?></option>
                                 <?php endforeach; ?>
@@ -1778,11 +2202,11 @@ sort($suggestedExperience);
                     <div class="form-row">
                         <div class="form-group">
                             <label>Salary Range (Min)</label>
-                            <input type="number" name="salary_min" class="form-control" placeholder="e.g., 30000" min="0">
+                            <input type="number" name="salary_min" id="salaryMin" class="form-control" placeholder="e.g., 30000" min="0">
                         </div>
                         <div class="form-group">
                             <label>Salary Range (Max)</label>
-                            <input type="number" name="salary_max" class="form-control" placeholder="e.g., 50000" min="0">
+                            <input type="number" name="salary_max" id="salaryMax" class="form-control" placeholder="e.g., 50000" min="0">
                         </div>
                     </div>
 
@@ -1799,12 +2223,12 @@ sort($suggestedExperience);
 
                     <div class="form-group">
                         <label>Job Description <span class="required">*</span></label>
-                        <textarea name="description" class="form-control" placeholder="Describe the role, responsibilities, and what makes this opportunity great..." rows="4" required></textarea>
+                        <textarea name="description" id="jobDescription" class="form-control" 
+                                  placeholder="Describe the role, responsibilities, and what makes this opportunity great..." 
+                                  rows="4" required></textarea>
                     </div>
 
-                    <!-- =============================================
-                    SKILLS CHECKLIST - CUSTOMIZABLE
-                    ============================================= -->
+                    <!-- Skills -->
                     <div class="form-group">
                         <label>Skills Required <span class="required">*</span></label>
                         <div class="checklist-section">
@@ -1833,9 +2257,7 @@ sort($suggestedExperience);
                         </div>
                     </div>
 
-                    <!-- =============================================
-                    QUALIFICATIONS CHECKLIST - CUSTOMIZABLE
-                    ============================================= -->
+                    <!-- Qualifications -->
                     <div class="form-group">
                         <label>Qualifications <span class="required">*</span></label>
                         <div class="checklist-section">
@@ -1864,9 +2286,7 @@ sort($suggestedExperience);
                         </div>
                     </div>
 
-                    <!-- =============================================
-                    EXPERIENCE CHECKLIST - CUSTOMIZABLE
-                    ============================================= -->
+                    <!-- Experience -->
                     <div class="form-group">
                         <label>Experience Required <span class="required">*</span></label>
                         <div class="checklist-section">
@@ -1902,7 +2322,7 @@ sort($suggestedExperience);
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="submitBtn">
+                    <button type="submit" class="btn btn-ai" id="submitBtn">
                         <span class="material-symbols-outlined">send</span>
                         Post Job
                     </button>
@@ -1912,7 +2332,7 @@ sort($suggestedExperience);
     </div>
 
     <!-- =============================================
-    JAVASCRIPT
+    JAVASCRIPT - ENHANCED AI
     ============================================= -->
     <script>
         // =============================================
@@ -1986,7 +2406,7 @@ sort($suggestedExperience);
         }
 
         // =============================================
-        // 4. AGENCY SELECTION STYLING
+        // 4. AGENCY SELECTION
         // =============================================
         document.querySelectorAll('.agency-option input[type="radio"]').forEach(radio => {
             radio.addEventListener('change', function() {
@@ -2012,6 +2432,7 @@ sort($suggestedExperience);
             const form = document.getElementById('postJobForm');
             if (form) form.reset();
             resetChecklists();
+            
             const firstRadio = document.querySelector('.agency-option input[type="radio"]');
             if (firstRadio) {
                 firstRadio.checked = true;
@@ -2054,13 +2475,336 @@ sort($suggestedExperience);
             if (e.key === 'Escape') {
                 closeModal();
                 closeMobileSidebar();
+                dismissAIModal();
                 if (profileToggle) profileToggle.classList.remove('open');
                 if (profileMenu) profileMenu.classList.remove('open');
             }
         });
 
         // =============================================
-        // 6. CUSTOM CHECKLIST FUNCTIONS
+        // 6. AI OPTIMISTIC MODAL - ENHANCED
+        // =============================================
+        let aiGeneratedData = null;
+        let isGenerating = false;
+
+        function openAIModal() {
+            const jobTitle = document.getElementById('jobTitle').value.trim();
+            const experienceLevel = document.getElementById('experienceLevel').value;
+            
+            if (!jobTitle) {
+                showToast('Please enter a job title first.', 'error');
+                document.getElementById('jobTitle').focus();
+                return;
+            }
+
+            // Show modal with loading
+            const modal = document.getElementById('aiOptimisticModal');
+            const loading = document.getElementById('aiDotsLoading');
+            const content = document.getElementById('aiGeneratedContent');
+            const error = document.getElementById('aiError');
+            
+            modal.classList.add('active');
+            loading.style.display = 'flex';
+            content.classList.remove('active');
+            error.classList.remove('active');
+            
+            // Update loading text with dots animation
+            const loadingText = loading.querySelector('.loading-text');
+            const messages = [
+                'Analyzing job requirements',
+                'Generating optimized description',
+                'Curating skills and qualifications',
+                'Calculating market salary range'
+            ];
+            let msgIndex = 0;
+            loadingText.textContent = messages[0];
+            
+            const interval = setInterval(() => {
+                msgIndex = (msgIndex + 1) % messages.length;
+                loadingText.textContent = messages[msgIndex];
+            }, 1800);
+
+            const generateBtn = document.getElementById('aiGenerateBtn');
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = '⏳ Generating...';
+            isGenerating = true;
+
+            const formData = new FormData();
+            formData.append('action', 'generate_ai_job');
+            formData.append('job_title', jobTitle);
+            formData.append('experience', experienceLevel);
+
+            fetch('jobs.php', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                clearInterval(interval);
+                isGenerating = false;
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+
+                if (data.success) {
+                    aiGeneratedData = data;
+                    
+                    // Show provider
+                    document.getElementById('aiProvider').textContent = data.provider || 'Groq';
+                    
+                    // Fill content
+                    document.getElementById('aiGenDescription').textContent = data.description || 'No description generated.';
+                    
+                    // Skills
+                    const skillsContainer = document.getElementById('aiGenSkills');
+                    skillsContainer.innerHTML = '';
+                    if (data.skills && data.skills.length > 0) {
+                        data.skills.forEach(skill => {
+                            const tag = document.createElement('span');
+                            tag.className = 'tag';
+                            tag.textContent = skill;
+                            skillsContainer.appendChild(tag);
+                        });
+                    } else {
+                        skillsContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No skills suggested</span>';
+                    }
+                    
+                    // Qualifications
+                    const qualContainer = document.getElementById('aiGenQualifications');
+                    qualContainer.innerHTML = '';
+                    if (data.qualifications && data.qualifications.length > 0) {
+                        data.qualifications.forEach(qual => {
+                            const tag = document.createElement('span');
+                            tag.className = 'tag';
+                            tag.textContent = qual;
+                            qualContainer.appendChild(tag);
+                        });
+                    } else {
+                        qualContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No qualifications suggested</span>';
+                    }
+                    
+                    // Experience
+                    const expContainer = document.getElementById('aiGenExperience');
+                    expContainer.innerHTML = '';
+                    if (data.experience && data.experience.length > 0) {
+                        data.experience.forEach(exp => {
+                            const tag = document.createElement('span');
+                            tag.className = 'tag';
+                            tag.textContent = exp;
+                            expContainer.appendChild(tag);
+                        });
+                    } else {
+                        expContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No experience suggested</span>';
+                    }
+                    
+                    // Salary
+                    let salaryDisplay = '₱50,000 - ₱80,000';
+                    if (data.salary_min > 0 && data.salary_max > 0) {
+                        salaryDisplay = '₱' + Number(data.salary_min).toLocaleString() + ' - ₱' + Number(data.salary_max).toLocaleString();
+                    } else if (data.salary_range) {
+                        salaryDisplay = data.salary_range;
+                    }
+                    document.getElementById('aiGenSalary').textContent = salaryDisplay;
+                    
+                    // Show content, hide loading
+                    loading.style.display = 'none';
+                    content.classList.add('active');
+                    showToast('✨ AI job data generated successfully!', 'success');
+                } else {
+                    // Show error
+                    loading.style.display = 'none';
+                    document.getElementById('aiErrorMessage').textContent = data.error || 'Failed to generate job data.';
+                    error.classList.add('active');
+                }
+            })
+            .catch(error => {
+                clearInterval(interval);
+                isGenerating = false;
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+                
+                loading.style.display = 'none';
+                document.getElementById('aiErrorMessage').textContent = 'Network error. Please check your connection and try again.';
+                error.classList.add('active');
+                showToast('Error generating AI data. Please try again.', 'error');
+            });
+        }
+
+        function dismissAIModal() {
+            const modal = document.getElementById('aiOptimisticModal');
+            modal.classList.remove('active');
+            // Reset states
+            document.getElementById('aiDotsLoading').style.display = 'flex';
+            document.getElementById('aiGeneratedContent').classList.remove('active');
+            document.getElementById('aiError').classList.remove('active');
+            document.getElementById('aiProvider').textContent = 'Groq';
+            if (isGenerating) {
+                isGenerating = false;
+                const generateBtn = document.getElementById('aiGenerateBtn');
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+            }
+        }
+
+        function regenerateAI() {
+            // Reset and regenerate
+            document.getElementById('aiDotsLoading').style.display = 'flex';
+            document.getElementById('aiGeneratedContent').classList.remove('active');
+            document.getElementById('aiError').classList.remove('active');
+            openAIModal();
+        }
+
+function applyAIGeneratedData() {
+    if (!aiGeneratedData) {
+        showToast('No AI data to apply. Generate first.', 'error');
+        return;
+    }
+    
+    // Apply description
+    if (aiGeneratedData.description) {
+        document.getElementById('jobDescription').value = aiGeneratedData.description;
+    }
+    
+    // Apply skills - check checkboxes
+    if (aiGeneratedData.skills && aiGeneratedData.skills.length > 0) {
+        const checkboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
+        const skillsLower = aiGeneratedData.skills.map(s => s.toLowerCase().trim());
+        
+        checkboxes.forEach(cb => {
+            const cbLower = cb.value.toLowerCase().trim();
+            if (skillsLower.some(s => cbLower.includes(s) || s.includes(cbLower))) {
+                cb.checked = true;
+                cb.closest('.checklist-item').classList.add('checked');
+            }
+        });
+        // Add any skills not in the checklist as custom
+        const allChecked = Array.from(document.querySelectorAll('#skillsChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+        const missingSkills = aiGeneratedData.skills.filter(s => 
+            !allChecked.some(checked => s.toLowerCase().trim().includes(checked) || checked.includes(s.toLowerCase().trim()))
+        );
+        if (missingSkills.length > 0) {
+            const display = document.getElementById('skillsDisplay');
+            const emptyMsg = display.querySelector('span');
+            if (emptyMsg && display.children.length === 1) {
+                display.innerHTML = '';
+            }
+            missingSkills.forEach(skill => {
+                const tag = document.createElement('span');
+                tag.className = 'item-tag custom-item';
+                tag.innerHTML = `${skill} <button type="button" class="remove-item" data-type="skills" data-value="${skill}">×</button>`;
+                display.appendChild(tag);
+                tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    this.closest('.item-tag').remove();
+                    updateCustomHidden('skills');
+                    updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+                });
+            });
+            updateCustomHidden('skills');
+        }
+        updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+    }
+    
+    // Apply qualifications
+    if (aiGeneratedData.qualifications && aiGeneratedData.qualifications.length > 0) {
+        const checkboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
+        const qualLower = aiGeneratedData.qualifications.map(q => q.toLowerCase().trim());
+        
+        checkboxes.forEach(cb => {
+            const cbLower = cb.value.toLowerCase().trim();
+            if (qualLower.some(q => cbLower.includes(q) || q.includes(cbLower))) {
+                cb.checked = true;
+                cb.closest('.checklist-item').classList.add('checked');
+            }
+        });
+        const allChecked = Array.from(document.querySelectorAll('#qualificationsChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+        const missingQuals = aiGeneratedData.qualifications.filter(q => 
+            !allChecked.some(checked => q.toLowerCase().trim().includes(checked) || checked.includes(q.toLowerCase().trim()))
+        );
+        if (missingQuals.length > 0) {
+            const display = document.getElementById('qualificationsDisplay');
+            const emptyMsg = display.querySelector('span');
+            if (emptyMsg && display.children.length === 1) {
+                display.innerHTML = '';
+            }
+            missingQuals.forEach(qual => {
+                const tag = document.createElement('span');
+                tag.className = 'item-tag custom-item';
+                tag.innerHTML = `${qual} <button type="button" class="remove-item" data-type="qualifications" data-value="${qual}">×</button>`;
+                display.appendChild(tag);
+                tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    this.closest('.item-tag').remove();
+                    updateCustomHidden('qualifications');
+                    updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+                });
+            });
+            updateCustomHidden('qualifications');
+        }
+        updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+    }
+    
+    // Apply experience
+    if (aiGeneratedData.experience && aiGeneratedData.experience.length > 0) {
+        const checkboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
+        const expLower = aiGeneratedData.experience.map(e => e.toLowerCase().trim());
+        
+        checkboxes.forEach(cb => {
+            const cbLower = cb.value.toLowerCase().trim();
+            if (expLower.some(e => cbLower.includes(e) || e.includes(cbLower))) {
+                cb.checked = true;
+                cb.closest('.checklist-item').classList.add('checked');
+            }
+        });
+        const allChecked = Array.from(document.querySelectorAll('#experienceChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+        const missingExp = aiGeneratedData.experience.filter(e => 
+            !allChecked.some(checked => e.toLowerCase().trim().includes(checked) || checked.includes(e.toLowerCase().trim()))
+        );
+        if (missingExp.length > 0) {
+            const display = document.getElementById('experienceDisplay');
+            const emptyMsg = display.querySelector('span');
+            if (emptyMsg && display.children.length === 1) {
+                display.innerHTML = '';
+            }
+            missingExp.forEach(exp => {
+                const tag = document.createElement('span');
+                tag.className = 'item-tag custom-item';
+                tag.innerHTML = `${exp} <button type="button" class="remove-item" data-type="experience" data-value="${exp}">×</button>`;
+                display.appendChild(tag);
+                tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    this.closest('.item-tag').remove();
+                    updateCustomHidden('experience');
+                    updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+                });
+            });
+            updateCustomHidden('experience');
+        }
+        updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+    }
+    
+    // Apply salary - FIXED (now properly inside the function)
+    if (aiGeneratedData.salary_min !== undefined && aiGeneratedData.salary_min > 0) {
+        const salaryMinInput = document.getElementById('salaryMin');
+        if (salaryMinInput) {
+            salaryMinInput.value = aiGeneratedData.salary_min;
+            console.log('Salary Min set to:', aiGeneratedData.salary_min);
+        }
+    }
+    if (aiGeneratedData.salary_max !== undefined && aiGeneratedData.salary_max > 0) {
+        const salaryMaxInput = document.getElementById('salaryMax');
+        if (salaryMaxInput) {
+            salaryMaxInput.value = aiGeneratedData.salary_max;
+            console.log('Salary Max set to:', aiGeneratedData.salary_max);
+        }
+    }
+    
+    // Close modal
+    dismissAIModal();
+    showToast('🎉 All AI suggestions applied to your job posting!', 'success');
+} 
+        // =============================================
+        // 7. CUSTOM CHECKLIST FUNCTIONS
         // =============================================
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -2276,7 +3020,7 @@ sort($suggestedExperience);
         });
 
         // =============================================
-        // 7. FORM VALIDATION
+        // 8. FORM VALIDATION
         // =============================================
         document.getElementById('postJobForm').addEventListener('submit', function(e) {
             const title = this.querySelector('input[name="title"]');
@@ -2356,7 +3100,29 @@ sort($suggestedExperience);
         });
 
         // =============================================
-        // 8. RESPONSIVE HANDLING
+        // 9. TOAST SYSTEM
+        // =============================================
+        function showToast(message, type) {
+            type = type || 'info';
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+            toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                toast.style.transition = 'all 0.4s ease';
+                setTimeout(() => toast.remove(), 400);
+            }, 3500);
+        }
+
+        // =============================================
+        // 10. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -2379,8 +3145,8 @@ sort($suggestedExperience);
             }, 250);
         });
 
-        console.log('📋 ISMERS Job Management loaded successfully!');
+        console.log('📋 AI-Powered ISMERS Job Management loaded successfully!');
+        console.log('🤖 AI Features: Optimistic Modal, Dots Loading, Full Job Data Generation');
     </script>
-
 </body>
 </html>

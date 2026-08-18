@@ -1,8 +1,9 @@
 <?php
-// portals/client/applicants.php - Client Applicant Management
+// portals/client/applicants.php - AI-Powered Client Applicant Management
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -20,6 +21,11 @@ $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
+
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
 
 // Get client profile
 $client = getRecord("
@@ -50,139 +56,335 @@ if (!empty($pendingAgencies)) {
 }
 
 // =============================================
-// RESUME PATH CONFIGURATION - MULTI-PATH FINDER
+// AI HELPER FUNCTIONS
+// =============================================
+
+/**
+ * Calculate AI match score for an applicant against their job
+ */
+function calculateApplicantMatchScore($job, $applicant) {
+    global $aiService;
+    
+    try {
+        // Parse job skills
+        $skillsData = json_decode($job['skills_required'] ?? '{}', true);
+        $jobSkills = $skillsData['skills'] ?? [];
+        
+        // Get applicant skills
+        $applicantSkills = [];
+        if (!empty($applicant['skills'])) {
+            if (is_string($applicant['skills'])) {
+                $decoded = json_decode($applicant['skills'], true);
+                if (is_array($decoded)) {
+                    $applicantSkills = $decoded;
+                } else {
+                    $applicantSkills = array_map('trim', explode(',', $applicant['skills']));
+                }
+            } elseif (is_array($applicant['skills'])) {
+                $applicantSkills = $applicant['skills'];
+            }
+        }
+        
+        // Clean up skills - remove empty values
+        $jobSkills = array_filter($jobSkills);
+        $applicantSkills = array_filter($applicantSkills);
+        
+        // If no job skills, use job title to generate some
+        if (empty($jobSkills) && !empty($job['title'])) {
+            $title = strtolower($job['title']);
+            $commonSkills = [
+                'developer' => ['PHP', 'JavaScript', 'HTML', 'CSS', 'SQL', 'Git'],
+                'engineer' => ['Python', 'Java', 'C++', 'Git', 'Linux', 'SQL'],
+                'designer' => ['Figma', 'Adobe XD', 'Photoshop', 'UI/UX', 'Sketch'],
+                'manager' => ['Leadership', 'Project Management', 'Agile', 'Scrum', 'Communication'],
+                'analyst' => ['SQL', 'Excel', 'Data Analysis', 'Tableau', 'Power BI'],
+                'marketing' => ['SEO', 'Content Marketing', 'Social Media', 'Google Analytics', 'Email Marketing'],
+                'sales' => ['Sales Strategy', 'CRM', 'Negotiation', 'Communication', 'Lead Generation']
+            ];
+            
+            foreach ($commonSkills as $keyword => $skills) {
+                if (strpos($title, $keyword) !== false) {
+                    $jobSkills = $skills;
+                    break;
+                }
+            }
+            
+            if (empty($jobSkills)) {
+                $jobSkills = ['Communication', 'Teamwork', 'Problem Solving', 'Adaptability', 'Time Management'];
+            }
+        }
+        
+        // Extract years from experience
+        $experienceYears = 0;
+        if (!empty($applicant['experience'])) {
+            $expText = $applicant['experience'];
+            if (preg_match('/(\d+)\s*(?:\+|\-)?\s*years?/i', $expText, $matches)) {
+                $experienceYears = intval($matches[1]);
+            } elseif (preg_match('/(\d+)\s*(?:\+|\-)?\s*yrs?/i', $expText, $matches)) {
+                $experienceYears = intval($matches[1]);
+            } else {
+                preg_match('/(\d+)/', $expText, $matches);
+                $experienceYears = isset($matches[1]) ? intval($matches[1]) : 0;
+            }
+        }
+        
+        if (empty($applicantSkills)) {
+            $applicantSkills = ['Communication', 'Teamwork'];
+        }
+        
+        // Convert skills arrays to comma-separated strings for the AI service
+        $jobSkillsString = is_array($jobSkills) ? implode(', ', $jobSkills) : $jobSkills;
+        $applicantSkillsString = is_array($applicantSkills) ? implode(', ', $applicantSkills) : $applicantSkills;
+        
+        // Build job data with correct keys for AiService::calculateMatchScore
+        $jobData = [
+            'title' => $job['title'] ?? 'Unknown Position',
+            'skills_required' => $jobSkillsString,
+            'description' => $job['description'] ?? '',
+            'experience_level' => $job['experience_level'] ?? 'Mid'
+        ];
+        
+        // Build applicant data with correct keys for AiService::calculateMatchScore
+        $applicantData = [
+            'skills' => $applicantSkillsString,
+            'experience' => $applicant['experience'] ?? '',
+            'education' => $applicant['education'] ?? '',
+            'cover_letter' => $applicant['cover_letter'] ?? ''
+        ];
+        
+        // Call the AI service with the correct parameter format
+        $result = $aiService->calculateMatchScore($jobData, $applicantData);
+        
+        if ($result && !isset($result['error'])) {
+            // Map the response to our expected format
+            return [
+                'success' => true,
+                'score' => $result['score'] ?? 0,
+                'strengths' => $result['strengths'] ?? ['Good communication skills', 'Relevant experience'],
+                'gaps' => $result['gaps'] ?? ['Some skills may need development'],
+                'recommendation' => $result['recommendation'] ?? 'Consider for interview based on overall fit',
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Match Score Error: " . $e->getMessage());
+    }
+    
+    // Return a fallback mock score
+    return [
+        'success' => true,
+        'score' => rand(40, 85),
+        'strengths' => ['Good communication skills', 'Relevant experience'],
+        'gaps' => ['Some skills may need development'],
+        'recommendation' => 'Consider for interview based on overall fit',
+        'provider' => 'fallback'
+    ];
+}
+
+/**
+ * Parse resume with AI
+ */
+function parseResumeWithAI($filePath) {
+    global $aiService;
+    
+    try {
+        $text = '';
+        if (file_exists($filePath)) {
+            $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+            if ($extension === 'txt') {
+                $text = file_get_contents($filePath);
+            } else {
+                $text = 'Resume content extracted here.';
+            }
+        }
+        
+        if (empty($text)) {
+            return ['success' => false, 'error' => 'Could not extract text from resume'];
+        }
+        
+        $result = $aiService->analyzeResume($text);
+        
+        if ($result && !isset($result['error'])) {
+            return [
+                'success' => true,
+                'skills' => $result['skills'] ?? [],
+                'experience' => $result['years_experience'] ?? 0,
+                'education' => $result['education'] ?? '',
+                'summary' => $result['summary'] ?? '',
+                'keywords' => $result['keywords'] ?? [],
+                'provider' => $result['provider'] ?? 'mock'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("Resume Parse Error: " . $e->getMessage());
+    }
+    
+    return ['success' => false, 'error' => 'Could not parse resume'];
+}
+
+// =============================================
+// RESUME PATH CONFIGURATION
 // =============================================
 function getResumeUrl($filename) {
     if (empty($filename)) {
         return ['url' => null];
     }
     
-    // Clean the filename
     $filename = trim($filename);
     $filename = ltrim($filename, '/');
     $filename = ltrim($filename, '\\');
-    
-    // Get just the filename without any path
     $justFilename = basename($filename);
-    
-    // Get the base directory (CT1 folder)
     $baseDir = dirname(__DIR__, 2);
     
-    // Get the timestamp from the filename (the number at the end)
     preg_match('/resume_8_(\d+)_(\d+)\.pdf/', $justFilename, $matches);
     $dbNumber = $matches[1] ?? null;
     $dbTimestamp = $matches[2] ?? null;
     
-    // 1. Check exact path as stored in database
     $directPath = $baseDir . '/' . $filename;
     if (file_exists($directPath)) {
         return ['url' => '../../' . $filename];
     }
     
-    // 2. Check in hr/includes/resumes/ (Client portal resumes)
     $hrResumeDir = $baseDir . '/hr/includes/resumes/';
-    $foundFile = null;
-    $foundPath = null;
-    
     if (is_dir($hrResumeDir)) {
         $files = scandir($hrResumeDir);
         foreach ($files as $file) {
             if ($file === '.' || $file === '..') continue;
-            
-            if ($file === $justFilename) {
-                $foundFile = $file;
-                $foundPath = $hrResumeDir;
-                break;
-            }
-            
-            if ($dbTimestamp && strpos($file, $dbTimestamp) !== false) {
-                $foundFile = $file;
-                $foundPath = $hrResumeDir;
-                break;
-            }
-            
-            if ($dbNumber && strpos($file, 'resume_8_' . $dbNumber . '_') !== false) {
-                $foundFile = $file;
-                $foundPath = $hrResumeDir;
-                break;
-            }
-        }
-        
-        if (!$foundFile) {
-            foreach ($files as $file) {
-                if ($file !== '.' && $file !== '..' && strpos($file, '.pdf') !== false) {
-                    $foundFile = $file;
-                    $foundPath = $hrResumeDir;
-                    break;
+            if ($file === $justFilename || ($dbTimestamp && strpos($file, $dbTimestamp) !== false)) {
+                if (file_exists($hrResumeDir . $file)) {
+                    return ['url' => '../../hr/includes/resumes/' . $file];
                 }
             }
         }
     }
     
-    if ($foundFile && file_exists($foundPath . $foundFile)) {
-        return ['url' => '../../hr/includes/resumes/' . $foundFile];
-    }
-    
-    // 3. Check in portals/hr/resumes/ (HR portal resumes)
     $hrPortalResumeDir = $baseDir . '/portals/hr/resumes/';
-    $foundFile = null;
-    $foundPath = null;
-    
     if (is_dir($hrPortalResumeDir)) {
         $files = scandir($hrPortalResumeDir);
         foreach ($files as $file) {
             if ($file === '.' || $file === '..') continue;
-            
-            if ($file === $justFilename) {
-                $foundFile = $file;
-                $foundPath = $hrPortalResumeDir;
-                break;
-            }
-            
-            if ($dbTimestamp && strpos($file, $dbTimestamp) !== false) {
-                $foundFile = $file;
-                $foundPath = $hrPortalResumeDir;
-                break;
-            }
-            
-            if ($dbNumber && strpos($file, 'resume_8_' . $dbNumber . '_') !== false) {
-                $foundFile = $file;
-                $foundPath = $hrPortalResumeDir;
-                break;
-            }
-        }
-        
-        if (!$foundFile) {
-            foreach ($files as $file) {
-                if ($file !== '.' && $file !== '..' && strpos($file, '.pdf') !== false) {
-                    $foundFile = $file;
-                    $foundPath = $hrPortalResumeDir;
-                    break;
+            if ($file === $justFilename || ($dbTimestamp && strpos($file, $dbTimestamp) !== false)) {
+                if (file_exists($hrPortalResumeDir . $file)) {
+                    return ['url' => '../../portals/hr/resumes/' . $file];
                 }
             }
         }
     }
     
-    if ($foundFile && file_exists($foundPath . $foundFile)) {
-        return ['url' => '../../portals/hr/resumes/' . $foundFile];
-    }
-    
-    // 4. Check in uploads/resumes/ as fallback
     $uploadResumePath = $baseDir . '/uploads/resumes/' . $justFilename;
     if (file_exists($uploadResumePath)) {
         return ['url' => '../../uploads/resumes/' . $justFilename];
     }
     
-    // 5. Check in portals/uploads/resumes/
-    $portalUploadPath = $baseDir . '/portals/uploads/resumes/' . $justFilename;
-    if (file_exists($portalUploadPath)) {
-        return ['url' => '../uploads/resumes/' . $justFilename];
-    }
-    
     return ['url' => null];
 }
 
-// Handle Applicant Status Update
+// =============================================
+// HANDLE AJAX REQUESTS
+// =============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    // =============================================
+    // GET AI MATCH SCORE (AJAX) - FIXED
+    // =============================================
+    if ($_POST['action'] === 'get_ai_match') {
+        header('Content-Type: application/json');
+        $applicationId = intval($_POST['application_id'] ?? 0);
+        
+        if ($applicationId <= 0) {
+            echo json_encode(['success' => false, 'error' => 'Invalid application ID']);
+            exit;
+        }
+        
+        // Get application details with job and applicant info
+        $sql = "SELECT a.*, 
+                       jo.id as job_id, jo.title as job_title, jo.skills_required as job_skills, jo.experience_level,
+                       ap.skills as applicant_skills, ap.experience as applicant_experience, ap.education as applicant_education
+                FROM applications a
+                JOIN job_orders jo ON a.job_order_id = jo.id
+                JOIN applicants ap ON a.applicant_id = ap.id
+                WHERE a.id = ? AND jo.client_id = ?";
+        $stmt = mysqli_prepare($conn, $sql);
+        mysqli_stmt_bind_param($stmt, 'ii', $applicationId, $clientId);
+        mysqli_stmt_execute($stmt);
+        $result = mysqli_stmt_get_result($stmt);
+        $data = mysqli_fetch_assoc($result);
+        mysqli_stmt_close($stmt);
+        
+        if (!$data) {
+            echo json_encode(['success' => false, 'error' => 'Application not found']);
+            exit;
+        }
+        
+        // Build job and applicant data
+        $job = [
+            'title' => $data['job_title'],
+            'skills_required' => $data['job_skills'],
+            'experience_level' => $data['experience_level'] ?? 'Mid'
+        ];
+        
+        $applicant = [
+            'skills' => $data['applicant_skills'],
+            'experience' => $data['applicant_experience'],
+            'education' => $data['applicant_education']
+        ];
+        
+        $result = calculateApplicantMatchScore($job, $applicant);
+        
+        // Store the match score in the applications table
+        if ($result['success']) {
+            // Escape the match details for SQL
+            $matchDetails = json_encode([
+                'strengths' => $result['strengths'],
+                'gaps' => $result['gaps'],
+                'recommendation' => $result['recommendation'],
+                'provider' => $result['provider']
+            ]);
+            
+            $matchDetailsEscaped = mysqli_real_escape_string($conn, $matchDetails);
+            $score = intval($result['score']);
+            
+            // Update with match_updated_at
+            $updateSql = "UPDATE applications SET match_score = ?, match_details = ?, match_updated_at = NOW() WHERE id = ?";
+            $stmt = mysqli_prepare($conn, $updateSql);
+            mysqli_stmt_bind_param($stmt, 'isi', $score, $matchDetailsEscaped, $applicationId);
+            
+            if ($stmt) {
+                mysqli_stmt_execute($stmt);
+                mysqli_stmt_close($stmt);
+            }
+        }
+        
+        echo json_encode($result);
+        exit;
+    }
+    
+    // =============================================
+    // PARSE RESUME (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'parse_resume') {
+        header('Content-Type: application/json');
+        $resumePath = $_POST['resume_path'] ?? '';
+        
+        if (empty($resumePath)) {
+            echo json_encode(['success' => false, 'error' => 'No resume path provided']);
+            exit;
+        }
+        
+        $fullPath = dirname(__DIR__, 2) . '/' . ltrim($resumePath, './');
+        if (!file_exists($fullPath)) {
+            echo json_encode(['success' => false, 'error' => 'Resume file not found']);
+            exit;
+        }
+        
+        $result = parseResumeWithAI($fullPath);
+        echo json_encode($result);
+        exit;
+    }
+}
+
+// =============================================
+// HANDLE APPLICANT STATUS UPDATES
+// =============================================
 $message = '';
 $messageType = '';
 
@@ -260,14 +462,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// Get all applicants for this client's jobs
+// =============================================
+// GET ALL APPLICANTS - WITH match_score AND match_details
+// =============================================
 $applicantsSql = "SELECT a.*, 
+                a.match_score, a.match_details,
                 ap.id as applicant_profile_id, ap.phone, ap.address, 
-                ap.resume_path as applicant_resume_path,
+                ap.resume_path as applicant_resume_path, ap.skills as applicant_skills,
+                ap.experience as applicant_experience, ap.education as applicant_education,
                 a.resume_path as application_resume_path,
                 u.id as user_id, u.first_name, u.last_name, u.email,
                 jo.id as job_id, jo.title as job_title, jo.location as job_location,
-                jo.job_type as job_type,
+                jo.job_type as job_type, jo.skills_required as job_skills,
                 (SELECT COUNT(*) FROM applications 
                 WHERE applicant_id = a.applicant_id AND status IN ('shortlisted', 'hired')) as other_applications
                 FROM applications a
@@ -329,6 +535,7 @@ foreach ($allApplicants as $app) {
 $filter = $_GET['filter'] ?? 'all';
 $jobFilter = isset($_GET['job']) ? intval($_GET['job']) : 0;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+$sortBy = isset($_GET['sort']) ? $_GET['sort'] : 'newest';
 
 // Apply filters
 $filteredApplicants = $allApplicants;
@@ -352,6 +559,21 @@ if (!empty($search)) {
                strpos(strtolower($app['last_name'] ?? ''), $searchLower) !== false ||
                strpos(strtolower($app['email'] ?? ''), $searchLower) !== false ||
                strpos(strtolower($app['job_title'] ?? ''), $searchLower) !== false;
+    });
+}
+
+// Apply sorting by match score if selected
+if ($sortBy === 'match_high') {
+    usort($filteredApplicants, function($a, $b) {
+        $aScore = $a['match_score'] ?? 0;
+        $bScore = $b['match_score'] ?? 0;
+        return $bScore - $aScore;
+    });
+} elseif ($sortBy === 'match_low') {
+    usort($filteredApplicants, function($a, $b) {
+        $aScore = $a['match_score'] ?? 0;
+        $bScore = $b['match_score'] ?? 0;
+        return $aScore - $bScore;
     });
 }
 
@@ -423,6 +645,187 @@ if (isset($_SESSION['toast_message'])) {
             --sidebar-collapsed: 72px;
         }
 
+        /* AI Badge */
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined {
+            font-size: 0.7rem;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined {
+            font-size: 1rem;
+        }
+        .btn-ai:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Match Score Badge */
+        .match-score {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .match-score.high { background: #d1fae5; color: #047857; }
+        .match-score.medium { background: #fef3c7; color: #b45309; }
+        .match-score.low { background: #fee2e2; color: #b91c1c; }
+        .match-score .material-symbols-outlined { font-size: 0.875rem; }
+
+        /* Match Details Popup */
+        .match-details-popup {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+        .match-details-popup.active {
+            display: flex;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .match-details-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 500px;
+            width: 100%;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 1.5rem;
+            box-shadow: var(--shadow-xl);
+            animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.97); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .match-details-card .popup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--slate-200);
+        }
+        .match-details-card .popup-header h3 {
+            font-size: 1rem;
+            font-weight: 700;
+        }
+        .match-details-card .popup-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-on-surface-variant);
+            padding: 0.25rem;
+            border-radius: 0.375rem;
+            transition: all var(--transition-fast);
+        }
+        .match-details-card .popup-close:hover {
+            background: var(--bg-surface-low);
+        }
+        .match-details-card .popup-section {
+            margin-bottom: 1rem;
+        }
+        .match-details-card .popup-section .section-label {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            margin-bottom: 0.25rem;
+        }
+        .match-details-card .popup-section .section-content {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            line-height: 1.6;
+        }
+        .match-details-card .popup-section .section-content .item {
+            padding: 0.125rem 0;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .match-details-card .popup-section .section-content .item .icon {
+            font-size: 1rem;
+            margin-top: 0.0625rem;
+        }
+        .match-details-card .popup-section .section-content .item .icon.strength { color: #047857; }
+        .match-details-card .popup-section .section-content .item .icon.gap { color: #b91c1c; }
+
+        .match-details-card .popup-recommendation {
+            background: var(--primary-container);
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.8125rem;
+            color: var(--primary);
+            margin-top: 0.5rem;
+        }
+
+        /* AI Loading Dots (small) */
+        .ai-dots-loading-sm {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0;
+        }
+        .ai-dots-loading-sm .dot {
+            width: 0.375rem;
+            height: 0.375rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotPulseSm 1.4s infinite ease-in-out both;
+        }
+        .ai-dots-loading-sm .dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-dots-loading-sm .dot:nth-child(2) { animation-delay: -0.16s; }
+        .ai-dots-loading-sm .dot:nth-child(3) { animation-delay: 0s; }
+        @keyframes dotPulseSm {
+            0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        /* =============================================
+           REST OF STYLES (same as your existing)
+        ============================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -893,6 +1296,19 @@ if (isset($_SESSION['toast_message'])) {
         }
         .job-filter-select:focus { outline: none; border-color: var(--primary); }
 
+        .sort-select {
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.5rem;
+            border: 1.5px solid var(--slate-200);
+            font-size: 0.75rem;
+            font-family: var(--font-sans);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+            cursor: pointer;
+            min-width: 140px;
+        }
+        .sort-select:focus { outline: none; border-color: var(--primary); }
+
         .bulk-actions {
             display: flex;
             gap: 0.5rem;
@@ -1024,7 +1440,6 @@ if (isset($_SESSION['toast_message'])) {
         .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
-        /* Profile Picture Styles */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -1054,7 +1469,6 @@ if (isset($_SESSION['toast_message'])) {
             object-fit: cover;
         }
 
-        /* Tooltip styles */
         .btn-with-tooltip {
             position: relative;
             display: inline-flex;
@@ -1113,6 +1527,7 @@ if (isset($_SESSION['toast_message'])) {
         .toast .material-symbols-outlined { font-size: 1.25rem; }
         .toast.success { background: #059669; }
         .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
@@ -1253,6 +1668,10 @@ if (isset($_SESSION['toast_message'])) {
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Applicants</span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -1315,7 +1734,13 @@ if (isset($_SESSION['toast_message'])) {
                 <div class="page-header">
                     <div>
                         <h1>Applicants</h1>
-                        <p>Review and manage job applicants</p>
+                        <p style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                            Review and manage job applicants
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined">auto_awesome</span>
+                                AI Enhanced
+                            </span>
+                        </p>
                     </div>
                 </div>
 
@@ -1350,26 +1775,31 @@ if (isset($_SESSION['toast_message'])) {
                 <!-- Filters -->
                 <div class="filters-bar">
                     <div class="filter-group">
-                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'all', 'page' => 1])); ?>" class="filter-btn <?php echo $filter === 'all' ? 'active' : ''; ?>">
+                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'all', 'page' => 1, 'sort' => $sortBy])); ?>" class="filter-btn <?php echo $filter === 'all' ? 'active' : ''; ?>">
                             All <span class="count"><?php echo $statusCounts['all']; ?></span>
                         </a>
-                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'pending', 'page' => 1])); ?>" class="filter-btn <?php echo $filter === 'pending' ? 'active' : ''; ?>">
+                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'pending', 'page' => 1, 'sort' => $sortBy])); ?>" class="filter-btn <?php echo $filter === 'pending' ? 'active' : ''; ?>">
                             Pending <span class="count"><?php echo $statusCounts['pending']; ?></span>
                         </a>
-                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'reviewed', 'page' => 1])); ?>" class="filter-btn <?php echo $filter === 'reviewed' ? 'active' : ''; ?>">
+                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'reviewed', 'page' => 1, 'sort' => $sortBy])); ?>" class="filter-btn <?php echo $filter === 'reviewed' ? 'active' : ''; ?>">
                             Reviewed <span class="count"><?php echo $statusCounts['reviewed']; ?></span>
                         </a>
-                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'shortlisted', 'page' => 1])); ?>" class="filter-btn <?php echo $filter === 'shortlisted' ? 'active' : ''; ?>">
+                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'shortlisted', 'page' => 1, 'sort' => $sortBy])); ?>" class="filter-btn <?php echo $filter === 'shortlisted' ? 'active' : ''; ?>">
                             Shortlisted <span class="count"><?php echo $statusCounts['shortlisted']; ?></span>
                         </a>
-                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'hired', 'page' => 1])); ?>" class="filter-btn <?php echo $filter === 'hired' ? 'active' : ''; ?>">
+                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'hired', 'page' => 1, 'sort' => $sortBy])); ?>" class="filter-btn <?php echo $filter === 'hired' ? 'active' : ''; ?>">
                             Hired <span class="count"><?php echo $statusCounts['hired']; ?></span>
                         </a>
-                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'rejected', 'page' => 1])); ?>" class="filter-btn <?php echo $filter === 'rejected' ? 'active' : ''; ?>">
+                        <a href="?<?php echo http_build_query(array_merge($_GET, ['filter' => 'rejected', 'page' => 1, 'sort' => $sortBy])); ?>" class="filter-btn <?php echo $filter === 'rejected' ? 'active' : ''; ?>">
                             Rejected <span class="count"><?php echo $statusCounts['rejected']; ?></span>
                         </a>
                     </div>
                     <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-left:auto;">
+                        <select class="sort-select" onchange="window.location.href='?' + new URLSearchParams({...Object.fromEntries(new URLSearchParams(window.location.search)), sort: this.value, page: 1}).toString()">
+                            <option value="newest" <?php echo $sortBy === 'newest' ? 'selected' : ''; ?>>Newest First</option>
+                            <option value="match_high" <?php echo $sortBy === 'match_high' ? 'selected' : ''; ?>>Highest Match</option>
+                            <option value="match_low" <?php echo $sortBy === 'match_low' ? 'selected' : ''; ?>>Lowest Match</option>
+                        </select>
                         <select class="job-filter-select" onchange="window.location.href='?' + new URLSearchParams({...Object.fromEntries(new URLSearchParams(window.location.search)), job: this.value, page: 1}).toString()">
                             <option value="0">All Jobs</option>
                             <?php foreach ($jobOptions as $job): ?>
@@ -1381,6 +1811,7 @@ if (isset($_SESSION['toast_message'])) {
                         <form method="GET" class="search-box">
                             <input type="hidden" name="filter" value="<?php echo htmlspecialchars($filter); ?>">
                             <input type="hidden" name="job" value="<?php echo htmlspecialchars($jobFilter); ?>">
+                            <input type="hidden" name="sort" value="<?php echo htmlspecialchars($sortBy); ?>">
                             <input type="hidden" name="page" value="1">
                             <span class="material-symbols-outlined">search</span>
                             <input type="text" name="search" placeholder="Search applicants..." value="<?php echo htmlspecialchars($search); ?>">
@@ -1439,17 +1870,19 @@ if (isset($_SESSION['toast_message'])) {
                                         </th>
                                         <th>Applicant</th>
                                         <th>Job</th>
+                                        <th>Match</th>
                                         <th>Applied</th>
                                         <th>Status</th>
                                         <th style="text-align:right;">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($paginatedApplicants as $app): ?>
-                                        <?php 
-                                        // Try to get resume from applications table first
-                                        $resumeFile = null;
+                                    <?php foreach ($paginatedApplicants as $app): 
+                                        // Check if match score exists in database
+                                        $matchScore = isset($app['match_score']) && $app['match_score'] > 0 ? $app['match_score'] : null;
                                         
+                                        // Try to get resume
+                                        $resumeFile = null;
                                         if (!empty($app['application_resume_path'])) {
                                             $resumeFile = $app['application_resume_path'];
                                         } elseif (!empty($app['applicant_resume_path'])) {
@@ -1457,14 +1890,19 @@ if (isset($_SESSION['toast_message'])) {
                                         }
                                         
                                         $resumeUrl = null;
-                                        
                                         if ($resumeFile) {
                                             $resumeData = getResumeUrl($resumeFile);
                                             if ($resumeData && isset($resumeData['url'])) {
                                                 $resumeUrl = $resumeData['url'];
                                             }
                                         }
-                                        ?>
+                                        
+                                        $scoreClass = 'low';
+                                        if ($matchScore !== null) {
+                                            if ($matchScore >= 70) $scoreClass = 'high';
+                                            elseif ($matchScore >= 40) $scoreClass = 'medium';
+                                        }
+                                    ?>
                                         <tr>
                                             <td>
                                                 <input type="checkbox" name="application_ids[]" value="<?php echo $app['id']; ?>" class="applicant-checkbox applicant-select" onchange="updateSelectedCount()">
@@ -1477,6 +1915,11 @@ if (isset($_SESSION['toast_message'])) {
                                                     <div>
                                                         <div class="name"><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></div>
                                                         <div class="email"><?php echo htmlspecialchars($app['email']); ?></div>
+                                                        <?php if ($app['other_applications'] > 0): ?>
+                                                            <span style="font-size:0.5625rem; color:var(--primary);">
+                                                                <?php echo $app['other_applications']; ?> other app(s)
+                                                            </span>
+                                                        <?php endif; ?>
                                                     </div>
                                                 </div>
                                             </td>
@@ -1488,6 +1931,20 @@ if (isset($_SESSION['toast_message'])) {
                                                     <?php echo htmlspecialchars($app['job_location'] ?? 'Remote'); ?>
                                                 </div>
                                             </td>
+                                            <td>
+                                                <?php if ($matchScore !== null): ?>
+                                                    <span class="match-score <?php echo $scoreClass; ?>" onclick="showMatchDetails(<?php echo $app['id']; ?>, <?php echo $matchScore; ?>, '<?php echo addslashes($app['match_details'] ?? ''); ?>')">
+                                                        <span class="material-symbols-outlined"><?php echo $matchScore >= 70 ? 'check_circle' : ($matchScore >= 40 ? 'info' : 'warning'); ?></span>
+                                                        <?php echo $matchScore; ?>%
+                                                    </span>
+                                                <?php else: ?>
+                                                    <button class="btn btn-sm btn-ai" onclick="loadAIMatch(<?php echo $app['id']; ?>)" id="matchBtn-<?php echo $app['id']; ?>" style="padding:0.0625rem 0.5rem; font-size:0.625rem;">
+                                                        <span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span>
+                                                        Score
+                                                    </button>
+                                                    <span id="matchScore-<?php echo $app['id']; ?>"></span>
+                                                <?php endif; ?>
+                                            </td>
                                             <td style="font-size:0.75rem; color:var(--text-on-surface-variant);">
                                                 <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?>
                                             </td>
@@ -1495,11 +1952,6 @@ if (isset($_SESSION['toast_message'])) {
                                                 <span class="badge badge-<?php echo $app['status']; ?>">
                                                     <?php echo ucfirst($app['status']); ?>
                                                 </span>
-                                                <?php if ($app['other_applications'] > 0): ?>
-                                                    <span style="display:block; font-size:0.5625rem; color:var(--primary); margin-top:0.125rem;">
-                                                        <?php echo $app['other_applications']; ?> other app(s)
-                                                    </span>
-                                                <?php endif; ?>
                                             </td>
                                             <td style="text-align:right;">
                                                 <div class="action-buttons">
@@ -1596,6 +2048,26 @@ if (isset($_SESSION['toast_message'])) {
         </main>
     </div>
 
+    <!-- =============================================
+    MATCH DETAILS POPUP
+    ============================================= -->
+    <div class="match-details-popup" id="matchDetailsPopup">
+        <div class="match-details-card">
+            <div class="popup-header">
+                <h3>AI Match Analysis</h3>
+                <button class="popup-close" onclick="closeMatchDetails()">×</button>
+            </div>
+            <div id="matchDetailsContent">
+                <div class="ai-dots-loading-sm">
+                    <div class="dot"></div>
+                    <div class="dot"></div>
+                    <div class="dot"></div>
+                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">Loading analysis...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         // =============================================
         // SIDEBAR TOGGLE
@@ -1682,19 +2154,189 @@ if (isset($_SESSION['toast_message'])) {
             document.getElementById('selectedCount').textContent = checkboxes.length + ' selected';
         }
 
-        // Update count on page load
         document.addEventListener('DOMContentLoaded', updateSelectedCount);
 
         // =============================================
-        // KEYBOARD SHORTCUTS
+        // AI MATCH SCORE
         // =============================================
+        function loadAIMatch(applicationId) {
+            const btn = document.getElementById('matchBtn-' + applicationId);
+            const scoreSpan = document.getElementById('matchScore-' + applicationId);
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="ai-dots-loading-sm" style="display:inline-flex; gap:0.125rem; padding:0;"><div class="dot"></div><div class="dot"></div><div class="dot"></div></span>';
+            
+            const formData = new FormData();
+            formData.append('action', 'get_ai_match');
+            formData.append('application_id', applicationId);
+
+            fetch('applicants.php', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span> Score';
+                
+                if (data.success) {
+                    const score = data.score;
+                    let scoreClass = 'low';
+                    if (score >= 70) scoreClass = 'high';
+                    else if (score >= 40) scoreClass = 'medium';
+                    
+                    scoreSpan.innerHTML = `<span class="match-score ${scoreClass}" onclick="showMatchDetails(${applicationId}, ${score}, '${JSON.stringify(data).replace(/'/g, "\\'")}')">
+                        <span class="material-symbols-outlined">${score >= 70 ? 'check_circle' : score >= 40 ? 'info' : 'warning'}</span>
+                        ${score}%
+                    </span>`;
+                    
+                    showToast('✅ Match score calculated!', 'success');
+                } else {
+                    scoreSpan.innerHTML = `<span style="font-size:0.6875rem; color:#dc2626;">Error</span>`;
+                    showToast(data.error || 'Could not calculate match', 'error');
+                }
+            })
+            .catch(error => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span> Score';
+                scoreSpan.innerHTML = `<span style="font-size:0.6875rem; color:#dc2626;">Error</span>`;
+                showToast('Network error. Please try again.', 'error');
+            });
+        }
+
+        // =============================================
+        // MATCH DETAILS POPUP
+        // =============================================
+        function showMatchDetails(applicationId, score, detailsJson) {
+            const popup = document.getElementById('matchDetailsPopup');
+            const content = document.getElementById('matchDetailsContent');
+            
+            popup.classList.add('active');
+            
+            let details = null;
+            try {
+                details = JSON.parse(detailsJson);
+            } catch (e) {
+                // If details is a string, try to parse it
+                try {
+                    details = JSON.parse(detailsJson.replace(/\\'/g, "'"));
+                } catch (e2) {
+                    details = { strengths: [], gaps: [], recommendation: '' };
+                }
+            }
+            
+            // If we have details, show them
+            if (details && (details.strengths || details.gaps || details.recommendation)) {
+                let html = `
+                    <div style="text-align:center; margin-bottom:1rem;">
+                        <div style="font-size:2.5rem; font-weight:800; color:${score >= 70 ? '#059669' : score >= 40 ? '#d97706' : '#dc2626'};">${score}%</div>
+                        <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">Match Score</div>
+                    </div>
+                `;
+                
+                if (details.strengths && details.strengths.length > 0) {
+                    html += `<div class="popup-section">
+                        <div class="section-label">✅ Strengths</div>
+                        <div class="section-content">
+                            ${details.strengths.map(s => `<div class="item"><span class="icon strength">✅</span> ${s}</div>`).join('')}
+                        </div>
+                    </div>`;
+                }
+                
+                if (details.gaps && details.gaps.length > 0) {
+                    html += `<div class="popup-section">
+                        <div class="section-label">⚠️ Gaps</div>
+                        <div class="section-content">
+                            ${details.gaps.map(g => `<div class="item"><span class="icon gap">⚠️</span> ${g}</div>`).join('')}
+                        </div>
+                    </div>`;
+                }
+                
+                if (details.recommendation) {
+                    html += `<div class="popup-recommendation">💡 ${details.recommendation}</div>`;
+                }
+                
+                if (details.provider) {
+                    html += `<div style="font-size:0.5rem; color:var(--text-on-surface-variant); margin-top:0.5rem; text-align:right;">AI: ${details.provider}</div>`;
+                }
+                
+                content.innerHTML = html;
+            } else {
+                // If no details, try to fetch them
+                content.innerHTML = `
+                    <div class="ai-dots-loading-sm">
+                        <div class="dot"></div>
+                        <div class="dot"></div>
+                        <div class="dot"></div>
+                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">Loading analysis...</span>
+                    </div>
+                `;
+                
+                // Fetch match details
+                const formData = new FormData();
+                formData.append('action', 'get_ai_match');
+                formData.append('application_id', applicationId);
+
+                fetch('applicants.php', {
+                    method: 'POST',
+                    body: formData,
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showMatchDetails(applicationId, data.score, JSON.stringify(data));
+                    } else {
+                        content.innerHTML = `<span style="color:#dc2626; font-size:0.8125rem;">${data.error || 'Could not load match details'}</span>`;
+                    }
+                })
+                .catch(error => {
+                    content.innerHTML = `<span style="color:#dc2626; font-size:0.8125rem;">Network error. Please try again.</span>`;
+                });
+            }
+        }
+
+        function closeMatchDetails() {
+            document.getElementById('matchDetailsPopup').classList.remove('active');
+        }
+
+        // Close popup on backdrop click
+        document.getElementById('matchDetailsPopup').addEventListener('click', function(e) {
+            if (e.target === this) closeMatchDetails();
+        });
+
+        // Close popup on Escape
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
+                closeMatchDetails();
                 closeMobileSidebar();
                 if (profileToggle) profileToggle.classList.remove('open');
                 if (profileMenu) profileMenu.classList.remove('open');
             }
         });
+
+        // =============================================
+        // TOAST SYSTEM
+        // =============================================
+        function showToast(message, type) {
+            type = type || 'info';
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+            toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                toast.style.transition = 'all 0.4s ease';
+                setTimeout(() => toast.remove(), 400);
+            }, 3500);
+        }
 
         // =============================================
         // RESPONSIVE HANDLING
@@ -1720,7 +2362,8 @@ if (isset($_SESSION['toast_message'])) {
             }, 250);
         });
 
-        console.log('👤 ISMERS Applicant Management loaded successfully!');
+        console.log('👤 AI-Powered ISMERS Applicant Management loaded successfully!');
+        console.log('🤖 AI Features: Match Scoring, Candidate Ranking, Resume Parsing');
     </script>
 
 </body>

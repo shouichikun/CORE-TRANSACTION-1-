@@ -1,8 +1,9 @@
 <?php
-// portals/hr/jobs.php - Manage Jobs with Modals
+// portals/hr/jobs.php - Manage Jobs with Advanced AI Insights
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -23,7 +24,12 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 $isHRManager = $role === 'hr_manager';
 
-// Database helper function (if not already in config.php)
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
+
+// Database helper function
 if (!function_exists('getRecord')) {
     function getRecord($sql, $params = [], $types = "") {
         global $conn;
@@ -42,7 +48,240 @@ if (!function_exists('getRecord')) {
     }
 }
 
+// =============================================
+// INDUSTRY-BASED SKILLS MAPPING (from post_job.php)
+// =============================================
+function getIndustrySkills($industry, $jobTitle) {
+    $industry = strtolower($industry);
+    $titleLower = strtolower($jobTitle);
+    
+    $industrySkills = [
+        'technology' => [
+            'software' => ['PHP', 'JavaScript', 'Python', 'Java', 'SQL', 'Git', 'Docker', 'REST APIs', 'Agile', 'Scrum'],
+            'web' => ['HTML5', 'CSS3', 'React', 'Vue.js', 'Angular', 'Node.js', 'Laravel', 'WordPress', 'Responsive Design'],
+            'mobile' => ['Swift', 'Kotlin', 'React Native', 'Flutter', 'Firebase', 'REST APIs', 'Git', 'App Store', 'Play Store'],
+            'data' => ['Python', 'SQL', 'Power BI', 'Tableau', 'ETL', 'Data Visualization', 'Statistical Analysis', 'Machine Learning'],
+            'devops' => ['AWS', 'Docker', 'Kubernetes', 'Linux', 'Jenkins', 'Terraform', 'CI/CD', 'Ansible', 'Cloud Computing'],
+            'security' => ['Network Security', 'Penetration Testing', 'OWASP', 'Kali Linux', 'Burp Suite', 'Firewall', 'Encryption'],
+            'default' => ['Programming', 'Problem Solving', 'Git', 'Teamwork', 'Communication', 'Agile', 'Testing']
+        ],
+        'finance' => [
+            'accounting' => ['Financial Reporting', 'QuickBooks', 'Xero', 'Payroll', 'Tax Compliance', 'Accounts Payable', 'Accounts Receivable'],
+            'investment' => ['Financial Analysis', 'Portfolio Management', 'Investment Banking', 'Bloomberg', 'Excel', 'Financial Modeling'],
+            'banking' => ['Risk Management', 'Compliance', 'Anti-Money Laundering', 'Financial Analysis', 'Regulatory Reporting', 'Customer Service'],
+            'insurance' => ['Underwriting', 'Claims Processing', 'Risk Assessment', 'Insurance Regulations', 'Customer Service', 'Data Analysis'],
+            'default' => ['Financial Analysis', 'Excel', 'Budgeting', 'Compliance', 'Attention to Detail', 'Analytical Skills']
+        ],
+        'healthcare' => [
+            'nursing' => ['Patient Care', 'Medical Records', 'Vital Signs', 'Medication Administration', 'EMR Systems', 'CPR Certified'],
+            'medical' => ['Medical Terminology', 'Patient Care', 'HIPAA Compliance', 'Clinical Documentation', 'Anatomy', 'Physiology'],
+            'pharma' => ['Pharmaceutical Knowledge', 'Regulatory Compliance', 'Drug Safety', 'Clinical Research', 'FDA Regulations'],
+            'wellness' => ['Health Promotion', 'Wellness Programs', 'Nutrition', 'Health Education', 'Fitness Assessment', 'Rehabilitation'],
+            'default' => ['Patient Care', 'Communication', 'Medical Knowledge', 'Empathy', 'Attention to Detail', 'Teamwork']
+        ],
+        'education' => [
+            'teaching' => ['Lesson Planning', 'Curriculum Development', 'Classroom Management', 'Student Assessment', 'Educational Technology'],
+            'administration' => ['Educational Leadership', 'Staff Management', 'Curriculum Design', 'Student Services', 'Policy Development'],
+            'training' => ['Instructional Design', 'Training Delivery', 'Learning Management Systems', 'Curriculum Development', 'Assessment'],
+            'default' => ['Teaching', 'Communication', 'Patience', 'Organization', 'Creativity', 'Assessment']
+        ],
+        'retail' => [
+            'store' => ['Inventory Management', 'Visual Merchandising', 'Customer Service', 'Point of Sale', 'Staff Training', 'Loss Prevention'],
+            'ecommerce' => ['E-commerce Platforms', 'Digital Marketing', 'SEO', 'Analytics', 'Customer Service', 'Inventory Management'],
+            'supply_chain' => ['Logistics', 'Supply Chain Management', 'Inventory Control', 'Vendor Management', 'Procurement'],
+            'default' => ['Customer Service', 'Sales', 'Communication', 'Teamwork', 'Problem Solving', 'Inventory Management']
+        ],
+        'hospitality' => [
+            'hotel' => ['Front Desk', 'Guest Services', 'Bookings', 'Property Management', 'Housekeeping', 'Event Planning'],
+            'restaurant' => ['Food Service', 'Kitchen Management', 'Inventory Management', 'Menu Planning', 'Food Safety', 'Customer Service'],
+            'tourism' => ['Travel Planning', 'Tour Guide', 'Customer Service', 'Booking Systems', 'Destination Knowledge'],
+            'default' => ['Customer Service', 'Communication', 'Teamwork', 'Problem Solving', 'Multitasking', 'Organization']
+        ],
+        'construction' => [
+            'engineering' => ['AutoCAD', 'Revit', 'Civil Engineering', 'Project Management', 'Safety Compliance', 'Structural Design'],
+            'project' => ['Project Management', 'Safety Compliance', 'Budgeting', 'Blueprint Reading', 'Construction Methods'],
+            'skilled' => ['Blueprint Reading', 'Safety Protocols', 'Tool Knowledge', 'Trade Skills', 'Problem Solving', 'Teamwork'],
+            'default' => ['Safety Compliance', 'Project Management', 'Blueprint Reading', 'Communication', 'Teamwork', 'Problem Solving']
+        ],
+        'media' => [
+            'content' => ['Content Creation', 'Video Production', 'Editing', 'Social Media', 'Copywriting', 'Photoshop', 'Premiere Pro'],
+            'digital' => ['Digital Marketing', 'SEO', 'SEM', 'Analytics', 'Ad Campaigns', 'Social Media Strategy'],
+            'broadcast' => ['Broadcast Production', 'Video Editing', 'Audio Engineering', 'Script Writing', 'On-Air Talent'],
+            'default' => ['Content Creation', 'Communication', 'Creativity', 'Social Media', 'Video Production', 'Copywriting']
+        ],
+        'legal' => [
+            'law' => ['Legal Research', 'Document Review', 'Case Management', 'Legal Writing', 'Client Communication'],
+            'paralegal' => ['Legal Documentation', 'Case Management', 'Legal Research', 'Client Communication', 'Scheduling'],
+            'compliance' => ['Compliance Management', 'Risk Assessment', 'Policy Development', 'Regulatory Reporting'],
+            'default' => ['Legal Research', 'Attention to Detail', 'Communication', 'Organization', 'Problem Solving']
+        ],
+        'real_estate' => [
+            'property' => ['Property Management', 'Sales', 'Customer Service', 'Marketing', 'Negotiation', 'Market Analysis'],
+            'development' => ['Real Estate Development', 'Project Management', 'Zoning Regulations', 'Construction', 'Feasibility Studies'],
+            'default' => ['Property Management', 'Sales', 'Negotiation', 'Marketing', 'Communication', 'Market Knowledge']
+        ],
+        'manufacturing' => [
+            'production' => ['Production Planning', 'Quality Control', 'Lean Manufacturing', 'Six Sigma', 'Safety Compliance', 'Machine Operation'],
+            'quality' => ['Quality Assurance', 'ISO Standards', 'Auditing', 'Statistical Analysis', 'Root Cause Analysis'],
+            'supply' => ['Supply Chain', 'Inventory Management', 'Logistics', 'Procurement', 'Vendor Management'],
+            'default' => ['Safety Compliance', 'Quality Control', 'Production Planning', 'Problem Solving', 'Teamwork']
+        ],
+        'fitness' => [
+            'training' => ['Personal Training', 'Exercise Science', 'Nutrition', 'First Aid', 'Group Fitness', 'Client Assessment'],
+            'coaching' => ['Sports Coaching', 'Athlete Development', 'Performance Training', 'Team Management', 'Game Strategy'],
+            'wellness' => ['Wellness Program', 'Health Education', 'Fitness Assessment', 'Nutrition', 'Lifestyle Coaching'],
+            'default' => ['Physical Fitness', 'Nutrition Knowledge', 'Communication', 'Motivation', 'First Aid', 'CPR']
+        ]
+    ];
+    
+    // Find matching industry
+    $industryKey = 'default';
+    $subIndustryKey = 'default';
+    
+    foreach ($industrySkills as $ind => $subIndustries) {
+        if (stripos($industry, $ind) !== false || stripos($ind, $industry) !== false) {
+            $industryKey = $ind;
+            foreach ($subIndustries as $sub => $skills) {
+                if (stripos($titleLower, $sub) !== false) {
+                    $subIndustryKey = $sub;
+                    break 2;
+                }
+            }
+            break;
+        }
+    }
+    
+    if (isset($industrySkills[$industryKey][$subIndustryKey])) {
+        return $industrySkills[$industryKey][$subIndustryKey];
+    } elseif (isset($industrySkills[$industryKey]['default'])) {
+        return $industrySkills[$industryKey]['default'];
+    }
+    
+    return ['Communication', 'Problem Solving', 'Teamwork', 'Time Management', 'Leadership', 'Analytical Skills'];
+}
+
+/**
+ * Calculate Job Quality Score
+ */
+function calculateJobQualityScore($job) {
+    $score = 0;
+    $maxScore = 100;
+    $details = [];
+    
+    // 1. Title quality (max 15 points)
+    $titleLength = strlen($job['title'] ?? '');
+    if ($titleLength >= 10 && $titleLength <= 60) {
+        $score += 15;
+        $details[] = 'Title length is optimal';
+    } elseif ($titleLength > 0) {
+        $score += 8;
+        $details[] = 'Title length could be improved';
+    } else {
+        $details[] = 'Title is missing';
+    }
+    
+    // 2. Description quality (max 25 points)
+    $descLength = strlen($job['description'] ?? '');
+    if ($descLength >= 200) {
+        $score += 25;
+        $details[] = 'Description is comprehensive';
+    } elseif ($descLength >= 100) {
+        $score += 15;
+        $details[] = 'Description could be more detailed';
+    } elseif ($descLength > 0) {
+        $score += 5;
+        $details[] = 'Description is too short';
+    } else {
+        $details[] = 'Description is missing';
+    }
+    
+    // 3. Skills quality (max 20 points)
+    $skills = array_filter(array_map('trim', explode(',', $job['skills_required'] ?? '')));
+    $skillCount = count($skills);
+    if ($skillCount >= 5) {
+        $score += 20;
+        $details[] = 'Good number of skills listed';
+    } elseif ($skillCount >= 3) {
+        $score += 12;
+        $details[] = 'Consider adding more skills';
+    } elseif ($skillCount > 0) {
+        $score += 5;
+        $details[] = 'Too few skills listed';
+    } else {
+        $details[] = 'No skills listed';
+    }
+    
+    // 4. Salary range (max 10 points)
+    if (!empty($job['salary_range']) && strlen($job['salary_range']) > 3) {
+        $score += 10;
+        $details[] = 'Salary range provided';
+    } else {
+        $details[] = 'Salary range not specified';
+    }
+    
+    // 5. Location (max 10 points)
+    if (!empty($job['location'])) {
+        $score += 10;
+        $details[] = 'Location specified';
+    } else {
+        $details[] = 'Location not specified';
+    }
+    
+    // 6. Job type (max 10 points)
+    if (!empty($job['job_type']) && $job['job_type'] !== 'Full-time') {
+        $score += 10;
+        $details[] = 'Job type specified';
+    } elseif (!empty($job['job_type'])) {
+        $score += 6;
+        $details[] = 'Job type specified (Full-time)';
+    } else {
+        $details[] = 'Job type not specified';
+    }
+    
+    // 7. Experience level (max 10 points)
+    if (!empty($job['experience_level'])) {
+        $score += 10;
+        $details[] = 'Experience level specified';
+    } else {
+        $details[] = 'Experience level not specified';
+    }
+    
+    // Determine level
+    if ($score >= 80) {
+        $level = 'Excellent';
+        $color = '#059669';
+        $bg = '#d1fae5';
+        $icon = 'star';
+    } elseif ($score >= 60) {
+        $level = 'Good';
+        $color = '#2563eb';
+        $bg = '#dbeafe';
+        $icon = 'thumb_up';
+    } elseif ($score >= 40) {
+        $level = 'Fair';
+        $color = '#d97706';
+        $bg = '#fef3c7';
+        $icon = 'flag';
+    } else {
+        $level = 'Needs Improvement';
+        $color = '#dc2626';
+        $bg = '#fecaca';
+        $icon = 'error';
+    }
+    
+    return [
+        'score' => $score,
+        'level' => $level,
+        'color' => $color,
+        'bg' => $bg,
+        'icon' => $icon,
+        'details' => $details
+    ];
+}
+
+// =============================================
 // Get filter parameters
+// =============================================
 $statusFilter = $_GET['status'] ?? 'all';
 $searchQuery = $_GET['search'] ?? '';
 
@@ -74,8 +313,8 @@ if (!empty($searchQuery)) {
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
 
-// Get jobs
-$sql = "SELECT jo.*, c.company_name, 
+// Get jobs with client industry
+$sql = "SELECT jo.*, c.company_name, c.industry,
         (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id) as application_count,
         (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'pending') as pending_count
         FROM job_orders jo
@@ -84,6 +323,18 @@ $sql = "SELECT jo.*, c.company_name,
         ORDER BY jo.created_at DESC";
 
 $jobs = getRecords($sql, $params, $types);
+
+// Calculate quality scores for each job
+foreach ($jobs as &$job) {
+    $quality = calculateJobQualityScore($job);
+    $job['quality_score'] = $quality['score'];
+    $job['quality_level'] = $quality['level'];
+    $job['quality_color'] = $quality['color'];
+    $job['quality_bg'] = $quality['bg'];
+    $job['quality_icon'] = $quality['icon'];
+    $job['quality_details'] = $quality['details'];
+}
+unset($job);
 
 // Get status counts
 $statusCounts = ['all' => count($jobs)];
@@ -101,10 +352,8 @@ foreach ($statuses as $status) {
     $statusCounts[$status] = $result['count'] ?? 0;
 }
 
-// Get all statuses for filter
 $allStatuses = ['all' => 'All Jobs', 'open' => 'Open', 'ongoing' => 'Ongoing', 'filled' => 'Filled', 'cancelled' => 'Cancelled', 'draft' => 'Draft'];
 
-// Status badge mapping
 $statusBadges = [
     'open' => 'badge-open',
     'ongoing' => 'badge-ongoing',
@@ -132,7 +381,162 @@ $experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead', 'Manager'];
 $jobStatuses = ['draft', 'open', 'ongoing', 'filled', 'cancelled'];
 $urgencyLevels = ['low', 'medium', 'high'];
 
-// Handle AJAX requests for view/edit
+// =============================================
+// ENHANCED AI FUNCTIONS
+// =============================================
+
+/**
+ * Get enhanced AI insights for a job with industry context
+ */
+function getEnhancedAIJobInsights($jobId) {
+    global $aiService, $conn;
+    
+    $job = getRecord("
+        SELECT jo.*, c.industry, c.company_name 
+        FROM job_orders jo 
+        JOIN clients c ON jo.client_id = c.id 
+        WHERE jo.id = ?
+    ", [$jobId], "i");
+    
+    if (!$job) return null;
+    
+    $industry = $job['industry'] ?? 'Technology';
+    $title = $job['title'] ?? '';
+    
+    // =============================================
+    // USE REAL AI FOR OPTIMIZATION
+    // =============================================
+    $jobData = [
+        'title' => $title,
+        'description' => $job['description'] ?? '',
+        'skills_required' => $job['skills_required'] ?? '',
+        'experience_level' => $job['experience_level'] ?? ''
+    ];
+    
+    // Get real AI optimization
+    $aiOptimization = $aiService->optimizeJobDescription($jobData);
+    $provider = $aiOptimization['provider'] ?? 'mock';
+    
+    // Get industry-specific skills as fallback
+    $industrySkills = getIndustrySkills($industry, $title);
+    $existingSkills = array_filter(array_map('trim', explode(',', $job['skills_required'] ?? '')));
+    $allSkills = $aiOptimization['suggested_skills'] ?? array_unique(array_merge($industrySkills, $existingSkills));
+    
+    // Get real description or fallback
+    $smartDescription = $aiOptimization['improved_description'] ?? generateSmartJobDescription($job);
+    
+    // Get salary range
+    $salaryRanges = [
+        'Technology' => ['default' => '₱50,000 - ₱90,000'],
+        'Finance' => ['default' => '₱55,000 - ₱100,000'],
+        'Healthcare' => ['default' => '₱40,000 - ₱80,000'],
+        'Education' => ['default' => '₱35,000 - ₱70,000'],
+        'Retail' => ['default' => '₱35,000 - ₱65,000'],
+        'Hospitality' => ['default' => '₱30,000 - ₱60,000'],
+        'Fitness' => ['default' => '₱30,000 - ₱55,000'],
+        'Construction' => ['default' => '₱40,000 - ₱75,000'],
+        'Media' => ['default' => '₱35,000 - ₱70,000'],
+        'Legal' => ['default' => '₱40,000 - ₱80,000'],
+        'Real Estate' => ['default' => '₱35,000 - ₱70,000'],
+        'Manufacturing' => ['default' => '₱40,000 - ₱75,000']
+    ];
+    $salary = $aiOptimization['salary_range'] ?? ($salaryRanges[$industry]['default'] ?? '₱50,000 - ₱80,000');
+    
+    // Get quality score
+    $quality = calculateJobQualityScore($job);
+    
+    // Generate interview questions
+    $interviewQuestions = $aiService->generateInterviewQuestions($jobData);
+    
+    return [
+        'optimization' => [
+            'suggested_skills' => is_array($allSkills) ? array_values($allSkills) : [],
+            'improved_description' => $smartDescription,
+            'suggested_title' => $aiOptimization['suggested_title'] ?? $title,
+            'salary_range' => $salary
+        ],
+        'interview_questions' => $interviewQuestions,
+        'quality' => $quality,
+        'industry' => $industry,
+        'job' => $job,
+        'provider' => $provider
+    ];
+}
+
+/**
+ * Generate industry-specific job description
+ */
+function generateSmartJobDescription($job) {
+    $title = $job['title'] ?? 'the position';
+    $skills = $job['skills_required'] ?? '';
+    $experience = $job['experience_level'] ?? 'Mid';
+    $industry = $job['industry'] ?? 'Technology';
+    
+    $skillList = array_filter(array_map('trim', explode(',', $skills)));
+    
+    $experienceMap = [
+        'Entry' => '0-2 years',
+        'Junior' => '1-3 years',
+        'Mid' => '3-5 years',
+        'Senior' => '5-8 years',
+        'Lead' => '8+ years',
+        'Manager' => '5+ years'
+    ];
+    $expYears = $experienceMap[$experience] ?? '3-5 years';
+    
+    $industrySkills = getIndustrySkills($industry, $title);
+    $allSkills = array_unique(array_merge($industrySkills, $skillList));
+    
+    $industryDescriptions = [
+        'technology' => "cutting-edge technology solutions and digital innovation",
+        'finance' => "financial excellence and strategic investment",
+        'healthcare' => "patient-centered care and medical excellence",
+        'education' => "student success and learning excellence",
+        'retail' => "customer satisfaction and retail excellence",
+        'hospitality' => "exceptional guest experiences",
+        'construction' => "quality construction and infrastructure",
+        'media' => "creative content and audience engagement",
+        'legal' => "legal excellence and client advocacy",
+        'real_estate' => "property development and investment",
+        'manufacturing' => "quality manufacturing and production",
+        'fitness' => "health, wellness, and fitness excellence"
+    ];
+    
+    $industryFocus = $industryDescriptions[strtolower($industry)] ?? 'professional excellence';
+    
+    $fullDescription = "We are seeking a talented and experienced {$title} to join our team in the {$industry} industry. This is an exciting opportunity for a professional who is passionate about {$industryFocus}.\n\n";
+    
+    $fullDescription .= "Key Responsibilities:\n";
+    $fullDescription .= "• Lead and manage key initiatives within the {$title} role\n";
+    $fullDescription .= "• Collaborate with cross-functional teams to achieve organizational goals\n";
+    $fullDescription .= "• Drive innovation and implement best practices in the {$industry} sector\n";
+    $fullDescription .= "• Ensure high-quality deliverables and client satisfaction\n";
+    $fullDescription .= "• Stay up-to-date with industry trends and emerging practices\n\n";
+    
+    $fullDescription .= "Required Qualifications:\n";
+    $fullDescription .= "• {$expYears} of experience in a similar role\n";
+    if (!empty($allSkills)) {
+        $fullDescription .= "• Strong proficiency in: " . implode(', ', array_slice($allSkills, 0, 8)) . "\n";
+    }
+    $fullDescription .= "• Excellent communication and interpersonal skills\n";
+    $fullDescription .= "• Strong problem-solving and analytical abilities\n";
+    $fullDescription .= "• Bachelor's degree in a related field\n\n";
+    
+    $fullDescription .= "What We Offer:\n";
+    $fullDescription .= "• Competitive salary and benefits package\n";
+    $fullDescription .= "• Professional development and growth opportunities\n";
+    $fullDescription .= "• Collaborative and inclusive work culture\n";
+    $fullDescription .= "• Opportunity to work on impactful projects in the {$industry} industry\n";
+    $fullDescription .= "• Flexible work arrangements\n\n";
+    
+    $fullDescription .= "If you are passionate about the {$industry} industry and want to make a difference, we would love to hear from you!";
+    
+    return $fullDescription;
+}
+
+// =============================================
+// Handle AJAX requests
+// =============================================
 if (isset($_GET['ajax'])) {
     $ajaxAction = $_GET['ajax'] ?? '';
     $jobId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -159,9 +563,37 @@ if (isset($_GET['ajax'])) {
         }
         exit;
     }
+    
+    if ($ajaxAction === 'ai_insights' && $jobId > 0) {
+        $insights = getEnhancedAIJobInsights($jobId);
+        if ($insights) {
+            echo json_encode(['success' => true, 'insights' => $insights]);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to get AI insights']);
+        }
+        exit;
+    }
+    
+    if ($ajaxAction === 'bulk_ai_analysis') {
+        // Analyze all jobs
+        $results = [];
+        foreach ($jobs as $job) {
+            $quality = calculateJobQualityScore($job);
+            $results[] = [
+                'id' => $job['id'],
+                'title' => $job['title'],
+                'quality_score' => $quality['score'],
+                'quality_level' => $quality['level']
+            ];
+        }
+        echo json_encode(['success' => true, 'results' => $results]);
+        exit;
+    }
 }
 
+// =============================================
 // Handle POST for edit/delete
+// =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $jobId = isset($_POST['job_id']) ? (int)$_POST['job_id'] : 0;
@@ -230,12 +662,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Manage Jobs - ISMERS</title>
+    <title>Manage Jobs - ISMERS AI</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - JOBS MANAGEMENT
+           MATERIAL 3 DESIGN SYSTEM - JOBS MANAGEMENT WITH AI
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -293,277 +725,256 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: inherit;
         }
 
-        /* =============================================
-           SIDEBAR - FIXED
-        ============================================= */
-        .dashboard-sidebar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            bottom: 0;
-            z-index: 50;
-            background: var(--bg-surface);
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            width: var(--sidebar-width);
-            border-right: 1px solid var(--slate-200);
-            transition: width 0.3s ease, transform 0.3s ease;
-            overflow: hidden;
-            box-shadow: var(--shadow-xl);
-            flex-shrink: 0;
-        }
+      /* =============================================
+   SIDEBAR - STANDARDIZED
+   ============================================= */
+.dashboard-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    background: var(--bg-surface);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: var(--sidebar-width);
+    border-right: 1px solid var(--slate-200);
+    transition: width 0.3s ease, transform 0.3s ease;
+    overflow: hidden;
+    box-shadow: var(--shadow-xl);
+    flex-shrink: 0;
+}
 
-        .dashboard-sidebar.collapsed {
-            width: var(--sidebar-collapsed);
-        }
+.dashboard-sidebar.collapsed {
+    width: var(--sidebar-collapsed);
+}
 
-        .dashboard-sidebar.mobile-hidden {
-            transform: translateX(-100%);
-        }
+.dashboard-sidebar.mobile-hidden {
+    transform: translateX(-100%);
+}
 
-        .dashboard-sidebar.mobile-open {
-            transform: translateX(0);
-        }
+.dashboard-sidebar.mobile-open {
+    transform: translateX(0);
+}
 
-        .dashboard-sidebar .sidebar-brand-text,
-        .dashboard-sidebar .sidebar-brand-category,
-        .dashboard-sidebar .sidebar-nav .nav-label,
-        .dashboard-sidebar .sidebar-nav .nav-text,
-        .dashboard-sidebar .sidebar-nav .nav-badge,
-        .dashboard-sidebar .sidebar-footer .user-info {
-            opacity: 1;
-            transition: opacity 0.3s ease;
-            overflow: hidden;
-            white-space: nowrap;
-        }
+/* Hide text when collapsed */
+.dashboard-sidebar .sidebar-brand-text,
+.dashboard-sidebar .sidebar-brand-category,
+.dashboard-sidebar .sidebar-nav .nav-label,
+.dashboard-sidebar .sidebar-nav .nav-text,
+.dashboard-sidebar .sidebar-nav .nav-badge,
+.dashboard-sidebar .sidebar-footer .user-info {
+    opacity: 1;
+    transition: opacity 0.3s ease;
+    overflow: hidden;
+    white-space: nowrap;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-brand-text,
-        .dashboard-sidebar.collapsed .sidebar-brand-category,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
-            margin: 0;
-            padding: 0;
-        }
+.dashboard-sidebar.collapsed .sidebar-brand-text,
+.dashboard-sidebar.collapsed .sidebar-brand-category,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+.dashboard-sidebar.collapsed .sidebar-footer .user-info {
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-brand-card {
-            padding: 1rem 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-brand-card {
+    padding: 1rem 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-nav {
-            padding: 0.5rem 0.25rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-nav {
+    padding: 0.5rem 0.25rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-main-link {
-            justify-content: center;
-            padding: 0.75rem 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-main-link {
+    justify-content: center;
+    padding: 0.75rem 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
+    font-size: 1.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
-            justify-content: center;
-            padding: 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-footer .user-card {
+    justify-content: center;
+    padding: 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            font-size: 0.875rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    font-size: 0.875rem;
+}
 
-        .sidebar-brand-card {
-            border-radius: 2rem;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            gap: 0.75rem;
-        }
+/* Sidebar Brand */
+.sidebar-brand-card {
+    border-radius: 2rem;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 0.75rem;
+}
 
-        .sidebar-brand-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 3.5rem;
-            height: 3.5rem;
-            border-radius: 1.75rem;
-            background: var(--slate-100);
-            color: var(--primary);
-            font-size: 1.5rem;
-            flex-shrink: 0;
-        }
+.sidebar-brand-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 1.75rem;
+    background: var(--slate-100);
+    color: var(--primary);
+    font-size: 1.5rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-brand-icon .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+.sidebar-brand-icon .material-symbols-outlined {
+    font-size: 1.5rem;
+}
 
-        .sidebar-brand-text {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--slate-900);
-        }
+.sidebar-brand-text {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--slate-900);
+}
 
-        .sidebar-brand-category {
-            font-size: 0.75rem;
-            color: var(--slate-500);
-            margin-top: 0.25rem;
-        }
+.sidebar-brand-category {
+    font-size: 0.75rem;
+    color: var(--slate-500);
+    margin-top: 0.25rem;
+}
 
-        .sidebar-nav {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem 1.25rem;
-        }
+/* Sidebar Navigation */
+.sidebar-nav {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem 1.25rem;
+}
 
-        .sidebar-nav .nav-label {
-            font-size: 0.75rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--slate-500);
-            padding: 0.5rem 0.75rem;
-            margin-bottom: 0.5rem;
-        }
+.sidebar-nav .nav-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--slate-500);
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+}
 
-        .sidebar-main-link {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.75rem 1rem;
-            border-radius: 0.75rem;
-            color: var(--text-on-surface-variant);
-            transition: all var(--transition-fast);
-            margin-bottom: 0.25rem;
-            font-family: var(--font-label);
-            font-weight: 500;
-            font-size: 0.875rem;
-        }
+.sidebar-main-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    color: var(--text-on-surface-variant);
+    transition: all var(--transition-fast);
+    margin-bottom: 0.25rem;
+    font-family: var(--font-label);
+    font-weight: 500;
+    font-size: 0.875rem;
+}
 
-        .sidebar-main-link:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
+.sidebar-main-link:hover {
+    background: var(--bg-surface-low);
+    color: var(--text-on-surface);
+}
 
-        .sidebar-main-link.active {
-            background: var(--bg-surface-container-high);
-            color: var(--primary);
-        }
+.sidebar-main-link.active {
+    background: var(--bg-surface-container-high);
+    color: var(--primary);
+}
 
-        .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
+.sidebar-main-link .material-symbols-outlined {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-main-link .nav-text {
-            transition: opacity 0.3s ease;
-        }
+.sidebar-main-link .nav-text {
+    transition: opacity 0.3s ease;
+}
 
-        .sidebar-main-link .nav-badge {
-            margin-left: auto;
-            background: var(--primary);
-            color: white;
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 0.125rem 0.5rem;
-            border-radius: 50px;
-            transition: opacity 0.3s ease;
-        }
+.sidebar-main-link .nav-badge {
+    margin-left: auto;
+    background: var(--primary);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.125rem 0.5rem;
+    border-radius: 50px;
+    transition: opacity 0.3s ease;
+}
 
-        .sidebar-footer {
-            padding: 1rem 1.25rem;
-            border-top: 1px solid var(--slate-200);
-        }
+/* Sidebar Footer */
+.sidebar-footer {
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--slate-200);
+}
 
-        .sidebar-footer .user-card {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.5rem 0.75rem;
-            border-radius: 1rem;
-            background: var(--bg-surface-low);
-        }
+.sidebar-footer .user-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 1rem;
+    background: var(--bg-surface-low);
+}
 
-        .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            border-radius: 50%;
-            background: var(--primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 700;
-            font-size: 0.875rem;
-            flex-shrink: 0;
-        }
+.sidebar-footer .user-card .avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    background: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: 700;
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-footer .user-card .user-info .user-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
+.sidebar-footer .user-card .user-info .user-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-on-surface);
+}
 
-        .sidebar-footer .user-card .user-info .user-email {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
+.sidebar-footer .user-card .user-info .user-email {
+    font-size: 0.75rem;
+    color: var(--text-on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.875rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
+/* Sidebar Backdrop */
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(17, 24, 39, 0.5);
+    backdrop-filter: blur(8px);
+    z-index: 40;
+    transition: opacity 0.3s ease;
+    opacity: 0;
+}
 
-        .sidebar-footer .logout-btn:hover {
-            background: #fef2f2;
-        }
-
-        .sidebar-footer .logout-btn .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
-
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
-        }
+.sidebar-backdrop.active {
+    display: block;
+    opacity: 1;
+}
 
         /* =============================================
            MAIN CONTENT
@@ -993,6 +1404,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-size: 1rem;
         }
 
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+        }
+
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        /* =============================================
+           AI QUALITY SCORE BADGE
+        ============================================= */
+        .quality-score {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.65rem;
+            font-weight: 700;
+            cursor: help;
+            border: 1px solid transparent;
+        }
+
+        .quality-score .material-symbols-outlined {
+            font-size: 0.75rem;
+        }
+
+        .quality-score.excellent { background: #d1fae5; color: #059669; border-color: #059669; }
+        .quality-score.good { background: #dbeafe; color: #2563eb; border-color: #2563eb; }
+        .quality-score.fair { background: #fef3c7; color: #d97706; border-color: #d97706; }
+        .quality-score.needs-improvement { background: #fecaca; color: #dc2626; border-color: #dc2626; }
+
         /* =============================================
            SEARCH & FILTERS
         ============================================= */
@@ -1140,7 +1586,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.875rem;
-            min-width: 640px;
+            min-width: 800px;
         }
 
         table thead {
@@ -1282,7 +1728,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .modal {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
-            max-width: 48rem;
+            max-width: 56rem;
             width: 100%;
             max-height: 90vh;
             overflow: hidden;
@@ -1408,6 +1854,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .view-item.full-width {
             grid-column: 1 / -1;
+        }
+
+        /* AI Insights Panel in Modal */
+        .ai-insights {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background: linear-gradient(135deg, #ede9fe, #e0e7ff);
+            border-radius: var(--radius-xl);
+            border: 1px solid #c7c4d8;
+        }
+
+        .ai-insights .ai-insights-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .ai-insights .ai-insights-header .ai-icon {
+            color: var(--primary);
+        }
+
+        .ai-insights .ai-insights-header h4 {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+        }
+
+        .ai-insights .ai-insight-item {
+            padding: 0.5rem 0.75rem;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .ai-insights .ai-insight-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .ai-insights .ai-insight-item .insight-label {
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        .ai-insights .quality-score-display {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.5rem 0.75rem;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .ai-insights .quality-score-display .score-badge {
+            font-size: 1.5rem;
+            font-weight: 800;
+        }
+
+        .ai-insights .quality-score-display .score-details {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
         }
 
         /* Edit Form */
@@ -1627,6 +2136,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 grid-template-columns: 1fr;
             }
 
+            .modal {
+                max-width: 100%;
+                margin: 0.5rem;
+                max-height: 95vh;
+            }
+
+            .modal-header {
+                padding: 1rem 1.25rem;
+            }
+
+            .modal-body {
+                padding: 1rem 1.25rem;
+            }
+
+            .modal-footer {
+                padding: 0.75rem 1.25rem;
+                flex-direction: column;
+            }
+
+            .modal-footer .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .action-buttons .btn-sm {
+                font-size: 0.6875rem;
+                padding: 0.25rem 0.5rem;
+            }
+
             .dashboard-sidebar.collapsed .sidebar-brand-text,
             .dashboard-sidebar.collapsed .sidebar-brand-category,
             .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
@@ -1700,38 +2238,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 padding: 0.5rem 0.75rem;
             }
 
-            .modal {
-                max-height: 95vh;
-                margin: 0.5rem;
-            }
-
-            .modal-header {
-                padding: 1rem 1.25rem;
-            }
-
             .modal-body {
-                padding: 1rem 1.25rem;
-            }
-
-            .modal-footer {
-                padding: 0.75rem 1.25rem;
-                flex-direction: column;
-            }
-
-            .modal-footer .btn {
-                width: 100%;
-                justify-content: center;
-            }
-
-            .action-buttons .btn-sm {
-                font-size: 0.6875rem;
-                padding: 0.25rem 0.5rem;
+                padding: 0.75rem 1rem;
             }
 
             .toast {
                 max-width: 90%;
                 bottom: 1rem;
                 right: 1rem;
+            }
+
+            .quality-score {
+                font-size: 0.55rem;
+                padding: 0.1rem 0.4rem;
+            }
+
+            .quality-score .material-symbols-outlined {
+                font-size: 0.65rem;
             }
         }
 
@@ -1760,9 +2283,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">account_balance</span>
+            <span class="material-symbols-outlined">work</span>
         </span>
-        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-text">ISMERS</p>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1782,6 +2305,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
+            <span class="nav-badge"><?php 
+                // Get pending applications count
+                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+                echo $pendingApps; 
+            ?></span>
         </a>
         <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">view_kanban</span>
@@ -1795,7 +2323,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
         </a>
-        <!-- NO "System" section with Settings -->
+        <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">archive</span>
+            <span class="nav-text">Archive</span>
+            <span class="nav-badge"><?php 
+                // Get total archive count
+                $totalArchived = 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                echo $totalArchived;
+            ?></span>
+        </a>
+        <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">apartment</span>
+            <span class="nav-text">Apply as Agency</span>
+        </a>
+        <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">assignment</span>
+            <span class="nav-text">Deployments</span>
+        </a>
     </nav>
     <div class="sidebar-footer">
         <div class="user-card">
@@ -1805,785 +2357,1121 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
-        <!-- NO logout-btn here - only in profile dropdown -->
     </div>
 </aside>
 
-
-    <!-- =============================================
-    MAIN CONTENT
-    ============================================= -->
-    <div class="main-wrapper" id="mainWrapper">
-        <!-- Top Header -->
-       <!-- ===== TOP HEADER ===== -->
-<header class="top-header">
-    <div class="top-header-left">
-        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-            <span class="material-symbols-outlined">menu</span>
-        </button>
-        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-            <span class="material-symbols-outlined">chevron_left</span>
-        </button>
-        <span class="separator">|</span>
-        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-            <?php 
-                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                echo ucwords(str_replace('_', ' ', $pageTitle));
-            ?>
-        </span>
-    </div>
-    <div class="profile-dropdown-wrapper">
-        <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-            <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-            <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-            <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-            <span class="material-symbols-outlined">expand_more</span>
-        </button>
-        <div class="profile-dropdown-menu" id="profileMenu">
-            <div class="dropdown-header">Account</div>
-            <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                <span class="material-symbols-outlined">person</span> Profile
+<!-- =============================================
+MAIN CONTENT
+============================================= -->
+<div class="main-wrapper" id="mainWrapper">
+    <!-- Top Header -->
+    <header class="top-header">
+        <div class="top-header-left">
+            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+                <span class="material-symbols-outlined">menu</span>
             </button>
-            <div class="dropdown-divider"></div>
-            <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                <span class="material-symbols-outlined">logout</span> Logout
+            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+                <span class="material-symbols-outlined">chevron_left</span>
             </button>
+            <span class="separator">|</span>
+            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+                <?php 
+                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                    echo ucwords(str_replace('_', ' ', $pageTitle));
+                ?>
+            </span>
         </div>
-    </div>
-</header>
-
-        <!-- Scrollable Content -->
-        <main class="main-scroll">
-            <div class="container">
-
-                <!-- Breadcrumb -->
-                <div class="breadcrumb-bar">
-                    <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">work</span>
-                        <span>Jobs</span>
-                        <span class="status-dot"></span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
-                            <?php echo $statusFilter === 'all' ? 'All' : ucfirst($statusFilter); ?> 
-                            (<?php echo count($jobs); ?> jobs)
-                        </span>
-                    </div>
-                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        Last updated: <?php echo date('M d, Y H:i'); ?>
-                    </span>
-                </div>
-
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Manage Jobs</h1>
-                        <p>View and manage all your job postings</p>
-                    </div>
-                    <div class="header-actions">
-                        <a href="post_job.php" class="btn btn-primary">
-                            <span class="material-symbols-outlined">add</span>
-                            Post New Job
-                        </a>
-                    </div>
-                </div>
-
-                <!-- Search Bar -->
-                <div class="search-bar">
-                    <div class="search-input-wrapper">
-                        <span class="material-symbols-outlined">search</span>
-                        <input type="text" id="searchInput" placeholder="Search jobs, companies, locations..." 
-                               value="<?php echo htmlspecialchars($searchQuery); ?>">
-                    </div>
-                    <button class="btn btn-primary" onclick="applyFilters()">Search</button>
-                    <?php if (!empty($searchQuery) || $statusFilter !== 'all'): ?>
-                        <a href="jobs.php" class="btn btn-outline">Clear Filters</a>
-                    <?php endif; ?>
-                </div>
-
-                <!-- Status Filters -->
-                <div class="status-filters">
-                    <?php foreach ($allStatuses as $key => $label): ?>
-                        <a href="?status=<?php echo $key; ?>&search=<?php echo urlencode($searchQuery); ?>" 
-                           class="status-filter <?php echo $statusFilter === $key ? 'active' : ''; ?>">
-                            <?php echo $label; ?>
-                            <span class="filter-count"><?php echo $statusCounts[$key] ?? 0; ?></span>
-                        </a>
-                    <?php endforeach; ?>
-                </div>
-
-                <!-- Jobs Table -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">work</span>
-                            <?php if ($statusFilter === 'all'): ?>
-                                All Jobs
-                            <?php else: ?>
-                                <?php echo ucfirst($statusFilter); ?> Jobs
-                            <?php endif; ?>
-                        </h3>
-                        <span class="job-count"><?php echo count($jobs); ?> jobs found</span>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($jobs)): ?>
-                            <div class="empty-state">
-                                <span class="material-symbols-outlined">work_off</span>
-                                <h4>No Jobs Found</h4>
-                                <p>
-                                    <?php if ($statusFilter !== 'all'): ?>
-                                        You don't have any <?php echo $statusFilter; ?> jobs.
-                                    <?php else: ?>
-                                        You haven't posted any jobs yet.
-                                    <?php endif; ?>
-                                </p>
-                                <a href="post_job.php" class="btn btn-primary">Post Your First Job</a>
-                            </div>
-                        <?php else: ?>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Job Title</th>
-                                        <th>Company</th>
-                                        <th>Location</th>
-                                        <th>Applications</th>
-                                        <th>Status</th>
-                                        <th style="text-align:center;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($jobs as $job): ?>
-                                        <tr>
-                                            <td>
-                                                <div class="job-title"><?php echo htmlspecialchars($job['title']); ?></div>
-                                                <div class="job-meta">
-                                                    <span class="meta-item">
-                                                        <span class="material-symbols-outlined">work_history</span>
-                                                        <?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?>
-                                                    </span>
-                                                    <span class="meta-item">
-                                                        <span class="material-symbols-outlined">payments</span>
-                                                        <?php echo htmlspecialchars($job['salary_range'] ?? 'N/A'); ?>
-                                                    </span>
-                                                    <span class="meta-item">
-                                                        <span class="badge <?php echo $urgencyBadges[$job['urgency']] ?? 'badge-urgency-low'; ?>">
-                                                            <?php echo ucfirst($job['urgency'] ?? 'Low'); ?> Urgency
-                                                        </span>
-                                                    </span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="job-company"><?php echo htmlspecialchars($job['company_name']); ?></div>
-                                            </td>
-                                            <td>
-                                                <div style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
-                                                    <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">location_on</span>
-                                                    <?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div style="font-weight:600; color:var(--text-on-surface);">
-                                                    <?php echo $job['application_count'] ?? 0; ?>
-                                                </div>
-                                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                                    <?php echo $job['pending_count'] ?? 0; ?> pending
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <span class="badge <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
-                                                    <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <div class="action-buttons">
-                                                    <button class="btn btn-outline btn-sm" onclick="viewJob(<?php echo $job['id']; ?>)">
-                                                        <span class="material-symbols-outlined">visibility</span>
-                                                    </button>
-                                                    <button class="btn btn-primary btn-sm" onclick="editJob(<?php echo $job['id']; ?>)">
-                                                        <span class="material-symbols-outlined">edit</span>
-                                                    </button>
-                                                    <?php if ($isHRManager || $role === 'admin'): ?>
-                                                        <button class="btn btn-danger btn-sm" onclick="deleteJob(<?php echo $job['id']; ?>)">
-                                                            <span class="material-symbols-outlined">delete</span>
-                                                        </button>
-                                                    <?php endif; ?>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-            </div>
-        </main>
-    </div>
-
-    <!-- =============================================
-    MODAL
-    ============================================= -->
-    <div class="modal-overlay" id="jobModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined" id="modalIcon">work</span>
-                    <span id="modalTitle">Job Details</span>
-                </h2>
-                <button class="modal-close" onclick="closeModal()">
-                    <span class="material-symbols-outlined">close</span>
+        <div class="profile-dropdown-wrapper">
+            <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                <span class="material-symbols-outlined">expand_more</span>
+            </button>
+            <div class="profile-dropdown-menu" id="profileMenu">
+                <div class="dropdown-header">Account</div>
+                <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                    <span class="material-symbols-outlined">person</span> Profile
+                </button>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <span class="material-symbols-outlined">logout</span> Logout
                 </button>
             </div>
-            <div class="modal-body" id="modalBody">
-                <div class="loading-spinner" id="modalLoading">
-                    <div class="spinner"></div>
-                    <p>Loading...</p>
+        </div>
+    </header>
+
+    <!-- Scrollable Content -->
+    <main class="main-scroll">
+        <div class="container">
+
+            <!-- Breadcrumb -->
+            <div class="breadcrumb-bar">
+                <div class="breadcrumb-view">
+                    <span class="material-symbols-outlined">work</span>
+                    <span>Jobs</span>
+                    <span class="status-dot"></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo $statusFilter === 'all' ? 'All' : ucfirst($statusFilter); ?> 
+                        (<?php echo count($jobs); ?> jobs)
+                    </span>
                 </div>
-                <div id="modalContent" style="display:none;"></div>
+                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    Last updated: <?php echo date('M d, Y H:i'); ?>
+                </span>
             </div>
-            <div class="modal-footer" id="modalFooter">
-                <button class="btn btn-outline" onclick="closeModal()">Close</button>
-                <button class="btn btn-primary" id="modalActionBtn" style="display:none;">Save Changes</button>
+
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Manage Jobs</h1>
+                    <p>View and manage all your job postings with AI insights</p>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-ai" onclick="bulkAIAnalysis()">
+                        <span class="material-symbols-outlined">auto_awesome</span>
+                        Analyze All Jobs
+                    </button>
+                    <a href="post_job.php" class="btn btn-primary">
+                        <span class="material-symbols-outlined">add</span>
+                        Post New Job
+                    </a>
+                </div>
             </div>
+
+            <!-- Search Bar -->
+            <div class="search-bar">
+                <div class="search-input-wrapper">
+                    <span class="material-symbols-outlined">search</span>
+                    <input type="text" id="searchInput" placeholder="Search jobs, companies, locations..." 
+                           value="<?php echo htmlspecialchars($searchQuery); ?>">
+                </div>
+                <button class="btn btn-primary" onclick="applyFilters()">Search</button>
+                <?php if (!empty($searchQuery) || $statusFilter !== 'all'): ?>
+                    <a href="jobs.php" class="btn btn-outline">Clear Filters</a>
+                <?php endif; ?>
+            </div>
+
+            <!-- Status Filters -->
+            <div class="status-filters">
+                <?php foreach ($allStatuses as $key => $label): ?>
+                    <a href="?status=<?php echo $key; ?>&search=<?php echo urlencode($searchQuery); ?>" 
+                       class="status-filter <?php echo $statusFilter === $key ? 'active' : ''; ?>">
+                        <?php echo $label; ?>
+                        <span class="filter-count"><?php echo $statusCounts[$key] ?? 0; ?></span>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+
+            <!-- Jobs Table -->
+            <div class="card">
+                <div class="card-header">
+                    <h3>
+                        <span class="material-symbols-outlined">work</span>
+                        <?php if ($statusFilter === 'all'): ?>
+                            All Jobs
+                        <?php else: ?>
+                            <?php echo ucfirst($statusFilter); ?> Jobs
+                        <?php endif; ?>
+                    </h3>
+                    <span class="job-count"><?php echo count($jobs); ?> jobs found</span>
+                </div>
+                <div class="card-body">
+                    <?php if (empty($jobs)): ?>
+                        <div class="empty-state">
+                            <span class="material-symbols-outlined">work_off</span>
+                            <h4>No Jobs Found</h4>
+                            <p>
+                                <?php if ($statusFilter !== 'all'): ?>
+                                    You don't have any <?php echo $statusFilter; ?> jobs.
+                                <?php else: ?>
+                                    You haven't posted any jobs yet.
+                                <?php endif; ?>
+                            </p>
+                            <a href="post_job.php" class="btn btn-primary">Post Your First Job</a>
+                        </div>
+                    <?php else: ?>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Job Title</th>
+                                    <th>Company</th>
+                                    <th>Location</th>
+                                    <th>Applications</th>
+                                    <th>Quality</th>
+                                    <th>Status</th>
+                                    <th style="text-align:center;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($jobs as $job): ?>
+                                    <tr>
+                                        <td>
+                                            <div class="job-title"><?php echo htmlspecialchars($job['title']); ?></div>
+                                            <div class="job-meta">
+                                                <span class="meta-item">
+                                                    <span class="material-symbols-outlined">work_history</span>
+                                                    <?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?>
+                                                </span>
+                                                <span class="meta-item">
+                                                    <span class="material-symbols-outlined">payments</span>
+                                                    <?php echo htmlspecialchars($job['salary_range'] ?? 'N/A'); ?>
+                                                </span>
+                                                <span class="meta-item">
+                                                    <span class="badge <?php echo $urgencyBadges[$job['urgency']] ?? 'badge-urgency-low'; ?>">
+                                                        <?php echo ucfirst($job['urgency'] ?? 'Low'); ?>
+                                                    </span>
+                                                </span>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div class="job-company"><?php echo htmlspecialchars($job['company_name']); ?></div>
+                                            <div style="font-size:0.65rem; color:var(--text-on-surface-variant);">
+                                                <?php echo htmlspecialchars($job['industry'] ?? 'General'); ?>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
+                                                <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">location_on</span>
+                                                <?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div style="font-weight:600; color:var(--text-on-surface);">
+                                                <?php echo $job['application_count'] ?? 0; ?>
+                                            </div>
+                                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo $job['pending_count'] ?? 0; ?> pending
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <?php if (isset($job['quality_score'])): 
+                                                $levelClass = strtolower(str_replace(' ', '-', $job['quality_level']));
+                                            ?>
+                                                <span class="quality-score <?php echo $levelClass; ?>" 
+                                                      title="<?php echo htmlspecialchars(implode('; ', $job['quality_details'] ?? [])); ?>">
+                                                    <span class="material-symbols-outlined"><?php echo $job['quality_icon'] ?? 'star'; ?></span>
+                                                    <?php echo $job['quality_score']; ?>%
+                                                </span>
+                                            <?php else: ?>
+                                                <span class="quality-score" style="background:#f3f4f6; color:#6b7280;">
+                                                    <span class="material-symbols-outlined">help</span>
+                                                    N/A
+                                                </span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <span class="badge <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
+                                                <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <div class="action-buttons">
+                                                <button class="btn btn-outline btn-sm" onclick="viewJob(<?php echo $job['id']; ?>)">
+                                                    <span class="material-symbols-outlined">visibility</span>
+                                                </button>
+                                                <button class="btn btn-primary btn-sm" onclick="editJob(<?php echo $job['id']; ?>)">
+                                                    <span class="material-symbols-outlined">edit</span>
+                                                </button>
+                                                <button class="btn btn-ai btn-sm" onclick="viewAIInsights(<?php echo $job['id']; ?>)">
+                                                    <span class="material-symbols-outlined">auto_awesome</span>
+                                                </button>
+                                                <?php if ($isHRManager || $role === 'admin'): ?>
+                                                    <button class="btn btn-danger btn-sm" onclick="deleteJob(<?php echo $job['id']; ?>)">
+                                                        <span class="material-symbols-outlined">delete</span>
+                                                    </button>
+                                                <?php endif; ?>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+        </div>
+    </main>
+</div>
+
+<!-- =============================================
+MODAL
+============================================= -->
+<div class="modal-overlay" id="jobModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined" id="modalIcon">work</span>
+                <span id="modalTitle">Job Details</span>
+            </h2>
+            <button class="modal-close" onclick="closeModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body" id="modalBody">
+            <div class="loading-spinner" id="modalLoading">
+                <div class="spinner"></div>
+                <p>Loading...</p>
+            </div>
+            <div id="modalContent" style="display:none;"></div>
+        </div>
+        <div class="modal-footer" id="modalFooter">
+            <button class="btn btn-outline" onclick="closeModal()">Close</button>
+            <button class="btn btn-primary" id="modalActionBtn" style="display:none;">Save Changes</button>
         </div>
     </div>
+</div>
 
-    <!-- =============================================
-    JAVASCRIPT
-    ============================================= -->
-  <script>
-    // =============================================
-    // 1. SIDEBAR TOGGLE
-    // =============================================
-    const sidebar = document.getElementById('appSidebar');
-    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-    const mainWrapper = document.getElementById('mainWrapper');
-    const isMobile = window.innerWidth <= 768;
-    const savedState = localStorage.getItem('sidebarCollapsed');
+<!-- =============================================
+JAVASCRIPT
+============================================= -->
+<script>
+// =============================================
+// 1. SIDEBAR TOGGLE
+// =============================================
+const sidebar = document.getElementById('appSidebar');
+const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+const mainWrapper = document.getElementById('mainWrapper');
+const isMobile = window.innerWidth <= 768;
+const savedState = localStorage.getItem('sidebarCollapsed');
 
-    if (savedState === 'true' && !isMobile) {
-        sidebar.classList.add('collapsed');
-        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-        if (icon) icon.textContent = 'chevron_right';
+if (savedState === 'true' && !isMobile) {
+    sidebar.classList.add('collapsed');
+    const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+    if (icon) icon.textContent = 'chevron_right';
+}
+
+sidebarToggleBtn.addEventListener('click', function() {
+    if (window.innerWidth <= 768) return;
+    sidebar.classList.toggle('collapsed');
+    const icon = this.querySelector('.material-symbols-outlined');
+    if (icon) {
+        icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
     }
+    localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+});
 
-    sidebarToggleBtn.addEventListener('click', function() {
-        if (window.innerWidth <= 768) return;
-        sidebar.classList.toggle('collapsed');
-        const icon = this.querySelector('.material-symbols-outlined');
-        if (icon) {
-            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+// =============================================
+// 2. MOBILE SIDEBAR
+// =============================================
+const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+
+function openMobileSidebar() {
+    sidebar.classList.add('mobile-open');
+    sidebarBackdrop.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeMobileSidebar() {
+    sidebar.classList.remove('mobile-open');
+    sidebarBackdrop.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+if (mobileMenuBtn) {
+    mobileMenuBtn.addEventListener('click', openMobileSidebar);
+}
+if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+}
+
+document.querySelectorAll('.sidebar-main-link').forEach(link => {
+    link.addEventListener('click', function() {
+        if (window.innerWidth <= 768) {
+            closeMobileSidebar();
         }
-        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    });
+});
+
+// =============================================
+// 3. PROFILE DROPDOWN
+// =============================================
+const profileToggle = document.getElementById('profileToggle');
+const profileMenu = document.getElementById('profileMenu');
+
+if (profileToggle && profileMenu) {
+    profileToggle.addEventListener('click', function(e) {
+        e.stopPropagation();
+        this.classList.toggle('open');
+        profileMenu.classList.toggle('open');
     });
 
-    // =============================================
-    // 2. MOBILE SIDEBAR
-    // =============================================
-    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    document.addEventListener('click', function(e) {
+        if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+            profileToggle.classList.remove('open');
+            profileMenu.classList.remove('open');
+        }
+    });
+}
 
-    function openMobileSidebar() {
-        sidebar.classList.add('mobile-open');
-        sidebarBackdrop.classList.add('active');
+// =============================================
+// 4. SEARCH FUNCTION
+// =============================================
+function applyFilters() {
+    const search = document.getElementById('searchInput');
+    if (!search) return;
+    
+    const status = '<?php echo $statusFilter; ?>';
+    let url = 'jobs.php?';
+    if (status !== 'all') url += 'status=' + status + '&';
+    if (search.value) url += 'search=' + encodeURIComponent(search.value);
+    window.location.href = url;
+}
+
+const searchInput = document.getElementById('searchInput');
+if (searchInput) {
+    searchInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            applyFilters();
+        }
+    });
+}
+
+// =============================================
+// 5. MODAL FUNCTIONS
+// =============================================
+const modalOverlay = document.getElementById('jobModal');
+const modalContent = document.getElementById('modalContent');
+const modalLoading = document.getElementById('modalLoading');
+const modalTitle = document.getElementById('modalTitle');
+const modalIcon = document.getElementById('modalIcon');
+const modalActionBtn = document.getElementById('modalActionBtn');
+
+function openModal() {
+    if (modalOverlay) {
+        modalOverlay.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
+}
 
-    function closeMobileSidebar() {
-        sidebar.classList.remove('mobile-open');
-        sidebarBackdrop.classList.remove('active');
+function closeModal() {
+    if (modalOverlay) {
+        modalOverlay.classList.remove('active');
         document.body.style.overflow = '';
     }
+    if (modalContent) modalContent.style.display = 'none';
+    if (modalLoading) modalLoading.style.display = 'block';
+    if (modalActionBtn) modalActionBtn.style.display = 'none';
+}
 
-    if (mobileMenuBtn) {
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-    }
-    if (sidebarBackdrop) {
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-    }
-
-    document.querySelectorAll('.sidebar-main-link').forEach(link => {
-        link.addEventListener('click', function() {
-            if (window.innerWidth <= 768) {
-                closeMobileSidebar();
-            }
-        });
-    });
-
-    // =============================================
-    // 3. PROFILE DROPDOWN - FIXED WITH NULL CHECK
-    // =============================================
-    const profileToggle = document.getElementById('profileToggle');
-    const profileMenu = document.getElementById('profileMenu');
-
-    if (profileToggle && profileMenu) {
-        profileToggle.addEventListener('click', function(e) {
-            e.stopPropagation();
-            this.classList.toggle('open');
-            profileMenu.classList.toggle('open');
-        });
-
-        document.addEventListener('click', function(e) {
-            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
-    }
-
-    // =============================================
-    // 4. SEARCH FUNCTION - FIXED WITH NULL CHECK
-    // =============================================
-    function applyFilters() {
-        const search = document.getElementById('searchInput');
-        if (!search) return;
-        
-        const status = '<?php echo $statusFilter; ?>';
-        let url = 'jobs.php?';
-        if (status !== 'all') url += 'status=' + status + '&';
-        if (search.value) url += 'search=' + encodeURIComponent(search.value);
-        window.location.href = url;
-    }
-
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                applyFilters();
-            }
-        });
-    }
-
-    // =============================================
-    // 5. MODAL FUNCTIONS - FIXED WITH NULL CHECKS
-    // =============================================
-    const modalOverlay = document.getElementById('jobModal');
-    const modalContent = document.getElementById('modalContent');
-    const modalLoading = document.getElementById('modalLoading');
-    const modalTitle = document.getElementById('modalTitle');
-    const modalIcon = document.getElementById('modalIcon');
-    const modalActionBtn = document.getElementById('modalActionBtn');
-
-    function openModal() {
-        if (modalOverlay) {
-            modalOverlay.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-    }
-
-    function closeModal() {
-        if (modalOverlay) {
-            modalOverlay.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-        if (modalContent) modalContent.style.display = 'none';
-        if (modalLoading) modalLoading.style.display = 'block';
-        if (modalActionBtn) modalActionBtn.style.display = 'none';
-    }
-
-    // Close on overlay click
-    if (modalOverlay) {
-        modalOverlay.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal();
-            }
-        });
-    }
-
-    // Close on Escape - FIXED
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            if (modalOverlay && modalOverlay.classList.contains('active')) {
-                closeModal();
-            } else {
-                closeMobileSidebar();
-                if (profileToggle) profileToggle.classList.remove('open');
-                if (profileMenu) profileMenu.classList.remove('open');
-            }
+if (modalOverlay) {
+    modalOverlay.addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeModal();
         }
     });
+}
 
-    // =============================================
-    // 6. VIEW JOB - FIXED WITH NULL CHECKS
-    // =============================================
-    function viewJob(jobId) {
-        openModal();
-        if (modalTitle) modalTitle.textContent = 'Job Details';
-        if (modalIcon) modalIcon.textContent = 'work';
-        if (modalActionBtn) modalActionBtn.style.display = 'none';
-        if (modalLoading) modalLoading.style.display = 'block';
-        if (modalContent) modalContent.style.display = 'none';
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        if (modalOverlay && modalOverlay.classList.contains('active')) {
+            closeModal();
+        } else {
+            closeMobileSidebar();
+            if (profileToggle) profileToggle.classList.remove('open');
+            if (profileMenu) profileMenu.classList.remove('open');
+        }
+    }
+});
 
-        fetch('jobs.php?ajax=view&id=' + jobId)
-            .then(response => response.json())
-            .then(data => {
-                if (modalLoading) modalLoading.style.display = 'none';
-                if (modalContent) modalContent.style.display = 'block';
+// =============================================
+// 6. VIEW JOB
+// =============================================
+function viewJob(jobId) {
+    openModal();
+    if (modalTitle) modalTitle.textContent = 'Job Details';
+    if (modalIcon) modalIcon.textContent = 'work';
+    if (modalActionBtn) modalActionBtn.style.display = 'none';
+    if (modalLoading) modalLoading.style.display = 'block';
+    if (modalContent) modalContent.style.display = 'none';
 
-                if (data.success) {
-                    const job = data.job;
-                    const skills = job.skills_list || [];
-                    const skillsHtml = skills.filter(s => s.trim()).map(s => 
-                        '<span class="skill-tag">' + escapeHtml(s.trim()) + '</span>'
-                    ).join('');
+    fetch('jobs.php?ajax=view&id=' + jobId)
+        .then(response => response.json())
+        .then(data => {
+            if (modalLoading) modalLoading.style.display = 'none';
+            if (modalContent) modalContent.style.display = 'block';
 
-                    if (modalContent) {
-                        modalContent.innerHTML = `
-                            <div class="view-grid">
-                                <div class="view-item">
-                                    <div class="label">Job Title</div>
-                                    <div class="value">${escapeHtml(job.title)}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Company</div>
-                                    <div class="value">${escapeHtml(job.company_name)}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Location</div>
-                                    <div class="value">${escapeHtml(job.location || 'Remote')}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Job Type</div>
-                                    <div class="value">${escapeHtml(job.job_type || 'Full-time')}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Experience Level</div>
-                                    <div class="value">${escapeHtml(job.experience_level || 'Entry')}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Salary Range</div>
-                                    <div class="value">${escapeHtml(job.salary_range || 'N/A')}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Status</div>
-                                    <div class="value"><span class="badge ${getStatusBadge(job.status)}">${escapeHtml(job.status || 'Draft')}</span></div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Urgency</div>
-                                    <div class="value"><span class="badge ${getUrgencyBadge(job.urgency)}">${escapeHtml(job.urgency || 'Low')}</span></div>
-                                </div>
-                                <div class="view-item full-width">
-                                    <div class="label">Required Skills</div>
-                                    <div class="value skills">${skillsHtml || '<span style="color:var(--text-on-surface-variant);">No skills listed</span>'}</div>
-                                </div>
-                                <div class="view-item full-width">
-                                    <div class="label">Job Description</div>
-                                    <div class="value">${escapeHtml(job.description || 'No description provided.')}</div>
-                                </div>
-                                <div class="view-item full-width">
-                                    <div class="label">Applications</div>
-                                    <div class="value">${job.application_count || 0} total (${job.pending_count || 0} pending)</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Positions Available</div>
-                                    <div class="value">${job.positions_available || 1}</div>
-                                </div>
-                                <div class="view-item">
-                                    <div class="label">Created</div>
-                                    <div class="value">${new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
-                                </div>
-                            </div>
-                        `;
-                    }
-                } else {
-                    if (modalContent) {
-                        modalContent.innerHTML = `
-                            <div style="text-align:center; padding:1rem; color:#dc2626;">
-                                <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                                <p style="margin-top:0.5rem;">${data.error || 'Failed to load job details.'}</p>
-                            </div>
-                        `;
-                    }
-                }
-            })
-            .catch(error => {
-                if (modalLoading) modalLoading.style.display = 'none';
+            if (data.success) {
+                const job = data.job;
+                const skills = job.skills_list || [];
+                const skillsHtml = skills.filter(s => s.trim()).map(s => 
+                    '<span class="skill-tag">' + escapeHtml(s.trim()) + '</span>'
+                ).join('');
+
                 if (modalContent) {
-                    modalContent.style.display = 'block';
                     modalContent.innerHTML = `
-                        <div style="text-align:center; padding:1rem; color:#dc2626;">
-                            <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                            <p style="margin-top:0.5rem;">Error loading job details. Please try again.</p>
+                        <div class="view-grid">
+                            <div class="view-item">
+                                <div class="label">Job Title</div>
+                                <div class="value">${escapeHtml(job.title)}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Company</div>
+                                <div class="value">${escapeHtml(job.company_name)}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Location</div>
+                                <div class="value">${escapeHtml(job.location || 'Remote')}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Job Type</div>
+                                <div class="value">${escapeHtml(job.job_type || 'Full-time')}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Experience Level</div>
+                                <div class="value">${escapeHtml(job.experience_level || 'Entry')}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Salary Range</div>
+                                <div class="value">${escapeHtml(job.salary_range || 'N/A')}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Status</div>
+                                <div class="value"><span class="badge ${getStatusBadge(job.status)}">${escapeHtml(job.status || 'Draft')}</span></div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Urgency</div>
+                                <div class="value"><span class="badge ${getUrgencyBadge(job.urgency)}">${escapeHtml(job.urgency || 'Low')}</span></div>
+                            </div>
+                            <div class="view-item full-width">
+                                <div class="label">Required Skills</div>
+                                <div class="value skills">${skillsHtml || '<span style="color:var(--text-on-surface-variant);">No skills listed</span>'}</div>
+                            </div>
+                            <div class="view-item full-width">
+                                <div class="label">Job Description</div>
+                                <div class="value">${escapeHtml(job.description || 'No description provided.')}</div>
+                            </div>
+                            <div class="view-item full-width">
+                                <div class="label">Applications</div>
+                                <div class="value">${job.application_count || 0} total (${job.pending_count || 0} pending)</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Positions Available</div>
+                                <div class="value">${job.positions_available || 1}</div>
+                            </div>
+                            <div class="view-item">
+                                <div class="label">Created</div>
+                                <div class="value">${new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                            </div>
                         </div>
                     `;
                 }
-            });
-    }
-
-    // =============================================
-    // 7. EDIT JOB - FIXED WITH NULL CHECKS
-    // =============================================
-    function editJob(jobId) {
-        openModal();
-        if (modalTitle) modalTitle.textContent = 'Edit Job';
-        if (modalIcon) modalIcon.textContent = 'edit';
-        if (modalActionBtn) {
-            modalActionBtn.style.display = 'flex';
-            modalActionBtn.textContent = 'Update Job';
-        }
-        if (modalLoading) modalLoading.style.display = 'block';
-        if (modalContent) modalContent.style.display = 'none';
-
-        fetch('jobs.php?ajax=edit&id=' + jobId)
-            .then(response => response.json())
-            .then(data => {
-                if (modalLoading) modalLoading.style.display = 'none';
-                if (modalContent) modalContent.style.display = 'block';
-
-                if (data.success) {
-                    const job = data.job;
-                    const jobTypes = <?php echo json_encode($jobTypes); ?>;
-                    const experienceLevels = <?php echo json_encode($experienceLevels); ?>;
-                    const jobStatuses = <?php echo json_encode($jobStatuses); ?>;
-                    const urgencyLevels = <?php echo json_encode($urgencyLevels); ?>;
-
-                    function createOptions(options, selected) {
-                        return options.map(opt => 
-                            `<option value="${opt}" ${opt === selected ? 'selected' : ''}>${opt}</option>`
-                        ).join('');
-                    }
-
-                    if (modalContent) {
-                        modalContent.innerHTML = `
-                            <form id="editJobForm" onsubmit="submitEditJob(event, ${jobId})">
-                                <input type="hidden" name="action" value="update_job">
-                                <input type="hidden" name="job_id" value="${jobId}">
-
-                                <div class="form-group">
-                                    <label>Job Title <span class="required">*</span></label>
-                                    <input type="text" name="title" class="form-control" value="${escapeHtml(job.title)}" required>
-                                </div>
-
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label>Job Type</label>
-                                        <select name="job_type" class="form-control">${createOptions(jobTypes, job.job_type)}</select>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Experience Level</label>
-                                        <select name="experience_level" class="form-control">${createOptions(experienceLevels, job.experience_level)}</select>
-                                    </div>
-                                </div>
-
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label>Location</label>
-                                        <input type="text" name="location" class="form-control" value="${escapeHtml(job.location || '')}" placeholder="e.g., Makati, Philippines">
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Salary Range</label>
-                                        <input type="text" name="salary_range" class="form-control" value="${escapeHtml(job.salary_range || '')}" placeholder="e.g., ₱50,000 - ₱80,000">
-                                    </div>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Skills Required</label>
-                                    <input type="text" name="skills_required" class="form-control" value="${escapeHtml(job.skills_required || '')}" placeholder="e.g., PHP, Laravel, MySQL, JavaScript">
-                                    <div style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">Separate skills with commas</div>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Job Description</label>
-                                    <textarea name="description" class="form-control" rows="4" placeholder="Describe the job responsibilities and requirements">${escapeHtml(job.description || '')}</textarea>
-                                </div>
-
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label>Status</label>
-                                        <select name="status" class="form-control">${createOptions(jobStatuses, job.status)}</select>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Urgency</label>
-                                        <select name="urgency" class="form-control">${createOptions(urgencyLevels, job.urgency)}</select>
-                                    </div>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Positions Available</label>
-                                    <input type="number" name="positions_available" class="form-control" value="${job.positions_available || 1}" min="1">
-                                </div>
-                            </form>
-                        `;
-                    }
-                } else {
-                    if (modalContent) {
-                        modalContent.innerHTML = `
-                            <div style="text-align:center; padding:1rem; color:#dc2626;">
-                                <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                                <p style="margin-top:0.5rem;">${data.error || 'Failed to load job details.'}</p>
-                            </div>
-                        `;
-                    }
-                    if (modalActionBtn) modalActionBtn.style.display = 'none';
-                }
-            })
-            .catch(error => {
-                if (modalLoading) modalLoading.style.display = 'none';
+            } else {
                 if (modalContent) {
-                    modalContent.style.display = 'block';
                     modalContent.innerHTML = `
                         <div style="text-align:center; padding:1rem; color:#dc2626;">
                             <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                            <p style="margin-top:0.5rem;">Error loading job details. Please try again.</p>
+                            <p style="margin-top:0.5rem;">${data.error || 'Failed to load job details.'}</p>
+                        </div>
+                    `;
+                }
+            }
+        })
+        .catch(error => {
+            if (modalLoading) modalLoading.style.display = 'none';
+            if (modalContent) {
+                modalContent.style.display = 'block';
+                modalContent.innerHTML = `
+                    <div style="text-align:center; padding:1rem; color:#dc2626;">
+                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                        <p style="margin-top:0.5rem;">Error loading job details. Please try again.</p>
+                    </div>
+                `;
+            }
+        });
+}
+
+// =============================================
+// 7. AI INSIGHTS - ENHANCED
+// =============================================
+function viewAIInsights(jobId) {
+    openModal();
+    if (modalTitle) modalTitle.textContent = 'AI Insights & Recommendations';
+    if (modalIcon) modalIcon.textContent = 'auto_awesome';
+    if (modalActionBtn) modalActionBtn.style.display = 'none';
+    if (modalLoading) modalLoading.style.display = 'block';
+    if (modalContent) modalContent.style.display = 'none';
+
+    fetch('jobs.php?ajax=ai_insights&id=' + jobId)
+        .then(response => response.json())
+        .then(data => {
+            if (modalLoading) modalLoading.style.display = 'none';
+            if (modalContent) modalContent.style.display = 'block';
+
+            if (data.success) {
+                const insights = data.insights;
+                const job = insights.job;
+                const optimization = insights.optimization || {};
+                const questions = insights.interview_questions || {};
+                const quality = insights.quality || {};
+                const industry = insights.industry || 'General';
+
+                // Quality score display
+                let qualityHtml = '';
+                if (quality.score !== undefined) {
+                    const levelClass = quality.level ? quality.level.toLowerCase().replace(' ', '-') : 'fair';
+                    const icon = quality.icon || 'star';
+                    qualityHtml = `
+                        <div class="quality-score-display">
+                            <span class="score-badge" style="color:${quality.color || '#059669'}">
+                                ${quality.score}%
+                            </span>
+                            <div>
+                                <span class="quality-score ${levelClass}" style="font-size:0.8rem; padding:0.2rem 0.6rem;">
+                                    <span class="material-symbols-outlined" style="font-size:0.9rem;">${icon}</span>
+                                    ${quality.level || 'N/A'}
+                                </span>
+                                <div class="score-details" style="margin-top:0.25rem;">
+                                    ${(quality.details || []).map(d => `• ${d}`).join('<br>')}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Skills
+                let skillsHtml = '';
+                if (optimization.suggested_skills && optimization.suggested_skills.length > 0) {
+                    skillsHtml = optimization.suggested_skills.map(s => 
+                        `<span class="skill-tag" style="background:#7c3aed; color:white;">${escapeHtml(s)}</span>`
+                    ).join('');
+                }
+
+                // Questions
+                let questionsHtml = '';
+                if (questions.technical && questions.technical.length > 0) {
+                    questionsHtml += '<div style="margin-bottom:0.5rem;"><strong>Technical Questions:</strong></div><ul style="list-style:disc; list-style-position:inside; margin-bottom:0.75rem;">';
+                    questions.technical.forEach(q => {
+                        questionsHtml += `<li style="font-size:0.85rem; padding:0.125rem 0;">${escapeHtml(q)}</li>`;
+                    });
+                    questionsHtml += '</ul>';
+                }
+                if (questions.behavioral && questions.behavioral.length > 0) {
+                    questionsHtml += '<div style="margin-bottom:0.5rem;"><strong>Behavioral Questions:</strong></div><ul style="list-style:disc; list-style-position:inside; margin-bottom:0.75rem;">';
+                    questions.behavioral.forEach(q => {
+                        questionsHtml += `<li style="font-size:0.85rem; padding:0.125rem 0;">${escapeHtml(q)}</li>`;
+                    });
+                    questionsHtml += '</ul>';
+                }
+                if (questions.role_specific && questions.role_specific.length > 0) {
+                    questionsHtml += '<div style="margin-bottom:0.5rem;"><strong>Role-Specific Questions:</strong></div><ul style="list-style:disc; list-style-position:inside;">';
+                    questions.role_specific.forEach(q => {
+                        questionsHtml += `<li style="font-size:0.85rem; padding:0.125rem 0;">${escapeHtml(q)}</li>`;
+                    });
+                    questionsHtml += '</ul>';
+                }
+
+                if (modalContent) {
+                    modalContent.innerHTML = `
+                        <div class="view-grid">
+                            <div class="view-item full-width">
+                                <div class="label">Job Title</div>
+                                <div class="value">${escapeHtml(job.title)}</div>
+                            </div>
+                            <div class="view-item full-width">
+                                <div class="label">Company</div>
+                                <div class="value">${escapeHtml(job.company_name)} <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">(${escapeHtml(industry)})</span></div>
+                            </div>
+                        </div>
+
+                        <div class="ai-insights">
+                            <div class="ai-insights-header">
+                                <span class="ai-icon material-symbols-outlined">auto_awesome</span>
+                                <h4>AI Optimization Suggestions</h4>
+                                <span style="margin-left:auto; font-size:0.65rem; color:var(--text-on-surface-variant);">Powered by AI</span>
+                            </div>
+
+                            ${qualityHtml}
+
+                            ${skillsHtml ? `
+                                <div class="ai-insight-item">
+                                    <div><span class="insight-label">Industry-Specific Skills:</span></div>
+                                    <div style="margin-top:0.25rem;">${skillsHtml}</div>
+                                    <div style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                        <button class="btn btn-sm btn-outline" onclick="applySuggestedSkills('${job.id}')" style="font-size:0.7rem; padding:0.125rem 0.5rem;">
+                                            Apply to Job
+                                        </button>
+                                    </div>
+                                </div>
+                            ` : ''}
+
+                            ${optimization.salary_range ? `
+                                <div class="ai-insight-item">
+                                    <span class="insight-label">Suggested Salary Range:</span>
+                                    <span style="margin-left:0.5rem;">${escapeHtml(optimization.salary_range)}</span>
+                                    <span style="margin-left:0.5rem; font-size:0.75rem;">
+                                        <button class="btn btn-sm btn-outline" onclick="applySalaryRange(${job.id}, '${escapeHtml(optimization.salary_range)}')" style="font-size:0.7rem; padding:0.125rem 0.5rem;">
+                                            Apply
+                                        </button>
+                                    </span>
+                                </div>
+                            ` : ''}
+
+                            ${optimization.suggested_title ? `
+                                <div class="ai-insight-item">
+                                    <span class="insight-label">Suggested Title:</span>
+                                    <span style="margin-left:0.5rem;">${escapeHtml(optimization.suggested_title)}</span>
+                                    <span style="margin-left:0.5rem; font-size:0.75rem;">
+                                        <button class="btn btn-sm btn-outline" onclick="applySuggestedTitle(${job.id}, '${escapeHtml(optimization.suggested_title)}')" style="font-size:0.7rem; padding:0.125rem 0.5rem;">
+                                            Apply
+                                        </button>
+                                    </span>
+                                </div>
+                            ` : ''}
+
+                            ${optimization.improved_description ? `
+                                <div class="ai-insight-item">
+                                    <span class="insight-label">Description Improvement:</span>
+                                    <div style="margin-top:0.25rem; font-size:0.8rem; max-height:80px; overflow-y:auto; background:rgba(255,255,255,0.5); padding:0.5rem; border-radius:0.5rem;">
+                                        ${escapeHtml(optimization.improved_description)}
+                                    </div>
+                                    <div style="margin-top:0.25rem; font-size:0.75rem;">
+                                        <button class="btn btn-sm btn-outline" onclick="applyImprovedDescription(${job.id})" style="font-size:0.7rem; padding:0.125rem 0.5rem;">
+                                            Apply to Job
+                                        </button>
+                                    </div>
+                                </div>
+                            ` : ''}
+
+                            ${questionsHtml ? `
+                                <div style="margin-top:0.75rem; border-top:1px solid rgba(79,70,229,0.2); padding-top:0.75rem;">
+                                    <div class="ai-insights-header" style="margin-bottom:0.5rem;">
+                                        <span class="ai-icon material-symbols-outlined">quiz</span>
+                                        <h4>Interview Questions</h4>
+                                    </div>
+                                    ${questionsHtml}
+                                </div>
+                            ` : ''}
+                        </div>
+
+                        <div style="margin-top:1rem; text-align:center; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
+                            AI suggestions are generated based on industry best practices and job requirements.
+                        </div>
+                    `;
+                }
+            } else {
+                if (modalContent) {
+                    modalContent.innerHTML = `
+                        <div style="text-align:center; padding:1rem; color:#dc2626;">
+                            <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                            <p style="margin-top:0.5rem;">${data.error || 'Failed to load AI insights.'}</p>
+                        </div>
+                    `;
+                }
+            }
+        })
+        .catch(error => {
+            if (modalLoading) modalLoading.style.display = 'none';
+            if (modalContent) {
+                modalContent.style.display = 'block';
+                modalContent.innerHTML = `
+                    <div style="text-align:center; padding:1rem; color:#dc2626;">
+                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                        <p style="margin-top:0.5rem;">Error loading AI insights. Please try again.</p>
+                    </div>
+                `;
+            }
+        });
+}
+
+// =============================================
+// 8. BULK AI ANALYSIS
+// =============================================
+function bulkAIAnalysis() {
+    if (!confirm('This will analyze all your jobs and show quality scores. Continue?')) return;
+    
+    const btn = document.querySelector('[onclick="bulkAIAnalysis()"]');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="material-symbols-outlined" style="animation:spin 0.8s linear infinite;">refresh</span> Analyzing...';
+    }
+    
+    fetch('jobs.php?ajax=bulk_ai_analysis')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                let message = '📊 Job Quality Analysis Results:\n\n';
+                data.results.forEach(job => {
+                    const level = job.quality_level || 'N/A';
+                    const score = job.quality_score || 0;
+                    message += `${job.title}: ${score}% (${level})\n`;
+                });
+                alert(message);
+                showToast('Analysis complete! Check the Quality column for scores.', 'success');
+                location.reload();
+            } else {
+                showToast('Failed to analyze jobs.', 'error');
+            }
+        })
+        .catch(error => {
+            showToast('Error analyzing jobs.', 'error');
+        })
+        .finally(() => {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> Analyze All Jobs';
+            }
+        });
+}
+
+// =============================================
+// 9. APPLY AI SUGGESTIONS
+// =============================================
+function applySuggestedSkills(jobId) {
+    fetch('jobs.php?ajax=ai_insights&id=' + jobId)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const skills = data.insights.optimization.suggested_skills || [];
+                if (skills.length > 0) {
+                    updateJobField(jobId, 'skills_required', skills.join(', '));
+                }
+            }
+        })
+        .catch(() => {});
+}
+
+function applySalaryRange(jobId, salary) {
+    updateJobField(jobId, 'salary_range', salary);
+}
+
+function applySuggestedTitle(jobId, title) {
+    updateJobField(jobId, 'title', title);
+}
+
+function applyImprovedDescription(jobId) {
+    fetch('jobs.php?ajax=ai_insights&id=' + jobId)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.insights.optimization.improved_description) {
+                updateJobField(jobId, 'description', data.insights.optimization.improved_description);
+            }
+        })
+        .catch(() => {});
+}
+
+function updateJobField(jobId, field, value) {
+    fetch('jobs.php?ajax=edit&id=' + jobId)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const job = data.job;
+                const formData = new FormData();
+                formData.append('action', 'update_job');
+                formData.append('job_id', jobId);
+                formData.append('title', field === 'title' ? value : job.title);
+                formData.append('description', field === 'description' ? value : job.description);
+                formData.append('skills_required', field === 'skills_required' ? value : job.skills_required);
+                formData.append('salary_range', field === 'salary_range' ? value : job.salary_range);
+                formData.append('location', job.location || '');
+                formData.append('job_type', job.job_type || 'Full-time');
+                formData.append('experience_level', job.experience_level || 'Entry');
+                formData.append('status', job.status || 'draft');
+                formData.append('urgency', job.urgency || 'medium');
+                formData.append('positions_available', job.positions_available || 1);
+
+                fetch('jobs.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(result => {
+                    if (result.success) {
+                        showToast('Job updated successfully with AI suggestion!', 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        showToast('Failed to update job: ' + (result.error || 'Unknown error'), 'error');
+                    }
+                })
+                .catch(() => {
+                    showToast('Error updating job. Please try again.', 'error');
+                });
+            }
+        })
+        .catch(() => {
+            showToast('Error loading job data.', 'error');
+        });
+}
+
+// =============================================
+// 10. EDIT JOB
+// =============================================
+function editJob(jobId) {
+    openModal();
+    if (modalTitle) modalTitle.textContent = 'Edit Job';
+    if (modalIcon) modalIcon.textContent = 'edit';
+    if (modalActionBtn) {
+        modalActionBtn.style.display = 'flex';
+        modalActionBtn.textContent = 'Update Job';
+    }
+    if (modalLoading) modalLoading.style.display = 'block';
+    if (modalContent) modalContent.style.display = 'none';
+
+    fetch('jobs.php?ajax=edit&id=' + jobId)
+        .then(response => response.json())
+        .then(data => {
+            if (modalLoading) modalLoading.style.display = 'none';
+            if (modalContent) modalContent.style.display = 'block';
+
+            if (data.success) {
+                const job = data.job;
+                const jobTypes = <?php echo json_encode($jobTypes); ?>;
+                const experienceLevels = <?php echo json_encode($experienceLevels); ?>;
+                const jobStatuses = <?php echo json_encode($jobStatuses); ?>;
+                const urgencyLevels = <?php echo json_encode($urgencyLevels); ?>;
+
+                function createOptions(options, selected) {
+                    return options.map(opt => 
+                        `<option value="${opt}" ${opt === selected ? 'selected' : ''}>${opt}</option>`
+                    ).join('');
+                }
+
+                if (modalContent) {
+                    modalContent.innerHTML = `
+                        <form id="editJobForm" onsubmit="submitEditJob(event, ${jobId})">
+                            <input type="hidden" name="action" value="update_job">
+                            <input type="hidden" name="job_id" value="${jobId}">
+
+                            <div class="form-group">
+                                <label>Job Title <span class="required">*</span></label>
+                                <input type="text" name="title" class="form-control" value="${escapeHtml(job.title)}" required>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Job Type</label>
+                                    <select name="job_type" class="form-control">${createOptions(jobTypes, job.job_type)}</select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Experience Level</label>
+                                    <select name="experience_level" class="form-control">${createOptions(experienceLevels, job.experience_level)}</select>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Location</label>
+                                    <input type="text" name="location" class="form-control" value="${escapeHtml(job.location || '')}" placeholder="e.g., Makati, Philippines">
+                                </div>
+                                <div class="form-group">
+                                    <label>Salary Range</label>
+                                    <input type="text" name="salary_range" class="form-control" value="${escapeHtml(job.salary_range || '')}" placeholder="e.g., ₱50,000 - ₱80,000">
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Skills Required</label>
+                                <input type="text" name="skills_required" class="form-control" value="${escapeHtml(job.skills_required || '')}" placeholder="e.g., PHP, Laravel, MySQL, JavaScript">
+                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">Separate skills with commas</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Job Description</label>
+                                <textarea name="description" class="form-control" rows="4" placeholder="Describe the job responsibilities and requirements">${escapeHtml(job.description || '')}</textarea>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Status</label>
+                                    <select name="status" class="form-control">${createOptions(jobStatuses, job.status)}</select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Urgency</label>
+                                    <select name="urgency" class="form-control">${createOptions(urgencyLevels, job.urgency)}</select>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Positions Available</label>
+                                <input type="number" name="positions_available" class="form-control" value="${job.positions_available || 1}" min="1">
+                            </div>
+                        </form>
+                    `;
+                }
+            } else {
+                if (modalContent) {
+                    modalContent.innerHTML = `
+                        <div style="text-align:center; padding:1rem; color:#dc2626;">
+                            <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                            <p style="margin-top:0.5rem;">${data.error || 'Failed to load job details.'}</p>
                         </div>
                     `;
                 }
                 if (modalActionBtn) modalActionBtn.style.display = 'none';
-            });
+            }
+        })
+        .catch(error => {
+            if (modalLoading) modalLoading.style.display = 'none';
+            if (modalContent) {
+                modalContent.style.display = 'block';
+                modalContent.innerHTML = `
+                    <div style="text-align:center; padding:1rem; color:#dc2626;">
+                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                        <p style="margin-top:0.5rem;">Error loading job details. Please try again.</p>
+                    </div>
+                `;
+            }
+            if (modalActionBtn) modalActionBtn.style.display = 'none';
+        });
+}
+
+// =============================================
+// 11. SUBMIT EDIT JOB
+// =============================================
+function submitEditJob(event, jobId) {
+    event.preventDefault();
+    const form = document.getElementById('editJobForm');
+    if (!form) return;
+    
+    const formData = new FormData(form);
+    
+    if (modalActionBtn) {
+        modalActionBtn.disabled = true;
+        modalActionBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Saving...';
     }
 
-    // =============================================
-    // 8. SUBMIT EDIT JOB
-    // =============================================
-    function submitEditJob(event, jobId) {
-        event.preventDefault();
-        const form = document.getElementById('editJobForm');
-        if (!form) return;
-        
-        const formData = new FormData(form);
-        
+    fetch('jobs.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
         if (modalActionBtn) {
-            modalActionBtn.disabled = true;
-            modalActionBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:1rem; animation:spin 0.8s linear infinite;">refresh</span> Saving...';
+            modalActionBtn.disabled = false;
+            modalActionBtn.innerHTML = 'Save Changes';
         }
 
-        fetch('jobs.php', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (modalActionBtn) {
-                modalActionBtn.disabled = false;
-                modalActionBtn.innerHTML = 'Save Changes';
-            }
-
-            if (data.success) {
-                showToast('Job updated successfully!', 'success');
-                setTimeout(() => {
-                    closeModal();
-                    location.reload();
-                }, 1000);
-            } else {
-                showToast(data.error || 'Failed to update job.', 'error');
-            }
-        })
-        .catch(error => {
-            if (modalActionBtn) {
-                modalActionBtn.disabled = false;
-                modalActionBtn.innerHTML = 'Save Changes';
-            }
-            showToast('Error updating job. Please try again.', 'error');
-        });
-    }
-
-    // =============================================
-    // 9. DELETE JOB
-    // =============================================
-    function deleteJob(jobId) {
-        if (!confirm('Are you sure you want to delete this job? This action cannot be undone.')) {
-            return;
+        if (data.success) {
+            showToast('Job updated successfully!', 'success');
+            setTimeout(() => {
+                closeModal();
+                location.reload();
+            }, 1000);
+        } else {
+            showToast(data.error || 'Failed to update job.', 'error');
         }
-
-        showToast('Deleting job...', 'info');
-        
-        const formData = new FormData();
-        formData.append('action', 'delete_job');
-        formData.append('job_id', jobId);
-
-        fetch('jobs.php', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast(data.message, 'success');
-                setTimeout(() => location.reload(), 1500);
-            } else {
-                showToast(data.error || 'Failed to delete job.', 'error');
-            }
-        })
-        .catch(error => {
-            showToast('Error deleting job. Please try again.', 'error');
-        });
-    }
-
-    // =============================================
-    // 10. TOAST SYSTEM
-    // =============================================
-    function showToast(message, type = 'info') {
-        const existingToast = document.querySelector('.toast');
-        if (existingToast) existingToast.remove();
-
-        const toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        toast.textContent = message;
-        document.body.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(20px)';
-            toast.style.transition = 'all 0.4s ease';
-            setTimeout(() => toast.remove(), 400);
-        }, 3000);
-    }
-
-    // =============================================
-    // 11. UTILITY FUNCTIONS
-    // =============================================
-    function escapeHtml(text) {
-        if (!text) return '';
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    function getStatusBadge(status) {
-        const badges = {
-            'open': 'badge-open',
-            'ongoing': 'badge-ongoing',
-            'filled': 'badge-filled',
-            'cancelled': 'badge-cancelled',
-            'draft': 'badge-draft'
-        };
-        return badges[status] || 'badge-draft';
-    }
-
-    function getUrgencyBadge(urgency) {
-        const badges = {
-            'low': 'badge-urgency-low',
-            'medium': 'badge-urgency-medium',
-            'high': 'badge-urgency-high'
-        };
-        return badges[urgency] || 'badge-urgency-low';
-    }
-
-    // =============================================
-    // 12. RESPONSIVE HANDLING
-    // =============================================
-    let resizeTimer;
-    window.addEventListener('resize', function() {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(function() {
-            const width = window.innerWidth;
-            if (width <= 768) {
-                sidebar.classList.remove('collapsed');
-            } else {
-                sidebar.classList.remove('mobile-open');
-                sidebarBackdrop.classList.remove('active');
-                document.body.style.overflow = '';
-                const saved = localStorage.getItem('sidebarCollapsed');
-                if (saved === 'true') {
-                    sidebar.classList.add('collapsed');
-                } else {
-                    sidebar.classList.remove('collapsed');
-                }
-            }
-        }, 250);
+    })
+    .catch(error => {
+        if (modalActionBtn) {
+            modalActionBtn.disabled = false;
+            modalActionBtn.innerHTML = 'Save Changes';
+        }
+        showToast('Error updating job. Please try again.', 'error');
     });
+}
 
-    console.log('📋 ISMERS Jobs Management loaded successfully!');
+// =============================================
+// 12. DELETE JOB
+// =============================================
+function deleteJob(jobId) {
+    if (!confirm('Are you sure you want to delete this job? This action cannot be undone.')) {
+        return;
+    }
+
+    showToast('Deleting job...', 'info');
+    
+    const formData = new FormData();
+    formData.append('action', 'delete_job');
+    formData.append('job_id', jobId);
+
+    fetch('jobs.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast(data.message, 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showToast(data.error || 'Failed to delete job.', 'error');
+        }
+    })
+    .catch(error => {
+        showToast('Error deleting job. Please try again.', 'error');
+    });
+}
+
+// =============================================
+// 13. TOAST SYSTEM
+// =============================================
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// 14. UTILITY FUNCTIONS
+// =============================================
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function getStatusBadge(status) {
+    const badges = {
+        'open': 'badge-open',
+        'ongoing': 'badge-ongoing',
+        'filled': 'badge-filled',
+        'cancelled': 'badge-cancelled',
+        'draft': 'badge-draft'
+    };
+    return badges[status] || 'badge-draft';
+}
+
+function getUrgencyBadge(urgency) {
+    const badges = {
+        'low': 'badge-urgency-low',
+        'medium': 'badge-urgency-medium',
+        'high': 'badge-urgency-high'
+    };
+    return badges[urgency] || 'badge-urgency-low';
+}
+
+// =============================================
+// 15. RESPONSIVE HANDLING
+// =============================================
+let resizeTimer;
+window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+        const width = window.innerWidth;
+        if (width <= 768) {
+            sidebar.classList.remove('collapsed');
+        } else {
+            sidebar.classList.remove('mobile-open');
+            sidebarBackdrop.classList.remove('active');
+            document.body.style.overflow = '';
+            const saved = localStorage.getItem('sidebarCollapsed');
+            if (saved === 'true') {
+                sidebar.classList.add('collapsed');
+            } else {
+                sidebar.classList.remove('collapsed');
+            }
+        }
+    }, 250);
+});
+
+console.log('📋 ISMERS Jobs Management with Enhanced AI Integration loaded successfully!');
+console.log('💪 Features: Industry-Specific AI Insights + Job Quality Scores!');
 </script>
 
 </body>

@@ -1,5 +1,5 @@
 <?php
-// portals/client/reports.php - Client Reports & Analytics
+// portals/client/reports.php - AI-Powered Client Reports & Analytics
 session_start();
 
 // =============================================
@@ -11,6 +11,7 @@ ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/debug.log');
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -28,6 +29,11 @@ $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
+
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
 
 // Get client profile
 $client = getRecord("
@@ -55,6 +61,221 @@ $pendingAgencies = getRecords("
 
 if (!empty($pendingAgencies)) {
     $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+}
+
+// =============================================
+// GET FILTER PARAMETERS
+// =============================================
+$reportType = $_GET['type'] ?? 'applications';
+$startDate = $_GET['start_date'] ?? date('Y-m-d', strtotime('-30 days'));
+$endDate = $_GET['end_date'] ?? date('Y-m-d');
+
+// =============================================
+// AI HELPER FUNCTIONS
+// =============================================
+
+/**
+ * Generate AI-powered executive summary
+ */
+function generateAIExecutiveSummary($data, $companyName) {
+    global $aiService;
+    
+    try {
+        // Prepare data for AI
+        $summaryData = [
+            'company' => $companyName,
+            'total_jobs' => $data['total_jobs'] ?? 0,
+            'total_applications' => $data['total_applications'] ?? 0,
+            'total_hires' => $data['total_hires'] ?? 0,
+            'active_employees' => $data['active_employees'] ?? 0,
+            'conversion_rate' => ($data['total_applications'] ?? 1) > 0 
+                ? round(($data['total_hires'] / $data['total_applications']) * 100) 
+                : 0,
+            'period_days' => 30
+        ];
+        
+        $result = $aiService->generateExecutiveSummary($summaryData);
+        
+        if ($result && !isset($result['error'])) {
+            return [
+                'success' => true,
+                'summary' => $result['summary'] ?? 'No summary available',
+                'insights' => $result['insights'] ?? [],
+                'recommendations' => $result['recommendations'] ?? [],
+                'trend_forecast' => $result['trend_forecast'] ?? 'Stable',
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Executive Summary Error: " . $e->getMessage());
+    }
+    
+    // Return fallback mock summary
+    return generateMockExecutiveSummary($data, $companyName);
+}
+
+/**
+ * Generate mock executive summary (fallback)
+ */
+function generateMockExecutiveSummary($data, $companyName) {
+    $totalApps = $data['total_applications'] ?? 0;
+    $totalHires = $data['total_hires'] ?? 0;
+    $conversionRate = ($totalApps > 0) ? round(($totalHires / $totalApps) * 100) : 0;
+    $activeEmployees = $data['active_employees'] ?? 0;
+    $totalJobs = $data['total_jobs'] ?? 0;
+    
+    $insights = [];
+    $recommendations = [];
+    $trendForecast = 'Stable';
+    
+    if ($totalApps > 10) {
+        $insights[] = "You have received {$totalApps} applications across {$totalJobs} jobs, showing good market engagement.";
+    } else {
+        $insights[] = "Consider increasing your job visibility to attract more applications.";
+    }
+    
+    if ($conversionRate > 10) {
+        $insights[] = "Your conversion rate of {$conversionRate}% is healthy.";
+        $recommendations[] = "Continue with your current hiring strategy.";
+    } elseif ($conversionRate > 5) {
+        $insights[] = "Your conversion rate of {$conversionRate}% is moderate.";
+        $recommendations[] = "Consider reviewing your shortlisting criteria to improve conversions.";
+    } else {
+        $insights[] = "Your conversion rate of {$conversionRate}% is below average.";
+        $recommendations[] = "Review your job descriptions and interview process to improve conversions.";
+    }
+    
+    if ($activeEmployees > 5) {
+        $insights[] = "You have {$activeEmployees} active employees, indicating a healthy workforce.";
+    }
+    
+    if ($totalJobs > 5) {
+        $recommendations[] = "Consider consolidating similar job roles to improve efficiency.";
+    }
+    
+    // Add general recommendations
+    if (empty($recommendations)) {
+        $recommendations = [
+            "Post jobs on multiple platforms to reach more candidates",
+            "Consider offering employee referral bonuses",
+            "Review your job descriptions for clarity and attractiveness",
+            "Track your hiring metrics regularly to identify trends"
+        ];
+    }
+    
+    // Trend forecast
+    if ($totalApps > 20) {
+        $trendForecast = 'Growing';
+    } elseif ($totalApps > 5) {
+        $trendForecast = 'Stable';
+    } else {
+        $trendForecast = 'Declining';
+    }
+    
+    $summary = "{$companyName} has received {$totalApps} applications for {$totalJobs} jobs in the last 30 days, with {$totalHires} hires and {$activeEmployees} active employees. " .
+               "The conversion rate is {$conversionRate}%. " .
+               "The overall trend is {$trendForecast}.";
+    
+    return [
+        'success' => true,
+        'summary' => $summary,
+        'insights' => $insights,
+        'recommendations' => $recommendations,
+        'trend_forecast' => $trendForecast,
+        'provider' => 'mock'
+    ];
+}
+
+/**
+ * Generate AI hiring forecast
+ */
+function generateHiringForecast($historicalData) {
+    global $aiService;
+    
+    try {
+        $result = $aiService->generateHiringForecast([
+            'historical_data' => $historicalData,
+            'period_months' => 3
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            return [
+                'success' => true,
+                'forecast' => $result['forecast'] ?? 'Stable hiring expected',
+                'predicted_hires' => $result['predicted_hires'] ?? 0,
+                'confidence' => $result['confidence'] ?? 'Medium',
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("Hiring Forecast Error: " . $e->getMessage());
+    }
+    
+    // Return fallback mock forecast
+    return [
+        'success' => true,
+        'forecast' => 'Based on current trends, hiring is expected to remain stable over the next 3 months.',
+        'predicted_hires' => rand(2, 8),
+        'confidence' => 'Medium',
+        'provider' => 'mock'
+    ];
+}
+
+// =============================================
+// HANDLE AJAX REQUESTS
+// =============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    // =============================================
+    // GET AI EXECUTIVE SUMMARY (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'get_ai_summary') {
+        header('Content-Type: application/json');
+        
+        // Get overall stats
+        $stats = getRecord("
+            SELECT 
+                (SELECT COUNT(*) FROM job_orders WHERE client_id = ?) as total_jobs,
+                (SELECT COUNT(*) FROM applications a 
+                 JOIN job_orders jo ON a.job_order_id = jo.id 
+                 WHERE jo.client_id = ?) as total_applications,
+                (SELECT COUNT(*) FROM deployments d 
+                 JOIN job_orders jo ON d.job_order_id = jo.id 
+                 WHERE jo.client_id = ? AND d.status = 'active') as active_employees,
+                (SELECT COUNT(*) FROM offers o 
+                 JOIN applications a ON o.application_id = a.id 
+                 JOIN job_orders jo ON a.job_order_id = jo.id 
+                 WHERE jo.client_id = ? AND o.status = 'accepted') as total_hires
+        ", [$clientId, $clientId, $clientId, $clientId], "iiii");
+        
+        $result = generateAIExecutiveSummary($stats, $companyName);
+        echo json_encode($result);
+        exit;
+    }
+    
+    // =============================================
+    // GET HIRING FORECAST (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'get_hiring_forecast') {
+        header('Content-Type: application/json');
+        
+        // Get historical monthly data
+        $historicalData = getRecords("
+            SELECT 
+                DATE_FORMAT(a.applied_at, '%Y-%m') as month,
+                COUNT(*) as applications,
+                SUM(CASE WHEN a.status = 'hired' THEN 1 ELSE 0 END) as hires
+            FROM applications a
+            JOIN job_orders jo ON a.job_order_id = jo.id
+            WHERE jo.client_id = ?
+            AND DATE(a.applied_at) >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+            GROUP BY month
+            ORDER BY month ASC
+        ", [$clientId], "i");
+        
+        $result = generateHiringForecast($historicalData);
+        echo json_encode($result);
+        exit;
+    }
 }
 
 // =============================================
@@ -234,6 +455,11 @@ $overallStats = getRecord("
          WHERE jo.client_id = ? AND o.status = 'accepted') as total_hires
 ", [$clientId, $clientId, $clientId, $clientId], "iiii");
 
+// =============================================
+// PRE-COMPUTE AI SUMMARY FOR DISPLAY
+// =============================================
+$aiSummary = generateAIExecutiveSummary($overallStats, $companyName);
+
 // Get greeting
 $currentHour = date('H');
 $greeting = 'Good Evening';
@@ -256,6 +482,16 @@ $reportLabels = [
 // Helper function to format number
 function formatNumber($num) {
     return number_format($num);
+}
+
+// Get trend forecast color
+function getTrendColor($trend) {
+    $colors = [
+        'Growing' => '#059669',
+        'Stable' => '#2563eb',
+        'Declining' => '#dc2626'
+    ];
+    return $colors[$trend] ?? '#6b7280';
 }
 ?>
 <!DOCTYPE html>
@@ -312,6 +548,156 @@ function formatNumber($num) {
             --sidebar-collapsed: 72px;
         }
 
+        /* AI Badge */
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined {
+            font-size: 0.7rem;
+        }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined {
+            font-size: 1rem;
+        }
+        .btn-ai:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* AI Dots Loading (small) */
+        .ai-dots-loading-sm {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0;
+        }
+        .ai-dots-loading-sm .dot {
+            width: 0.375rem;
+            height: 0.375rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotPulseSm 1.4s infinite ease-in-out both;
+        }
+        .ai-dots-loading-sm .dot:nth-child(1) { animation-delay: -0.32s; }
+        .ai-dots-loading-sm .dot:nth-child(2) { animation-delay: -0.16s; }
+        .ai-dots-loading-sm .dot:nth-child(3) { animation-delay: 0s; }
+        @keyframes dotPulseSm {
+            0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        /* AI Summary Panel */
+        .ai-summary-panel {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+            box-shadow: var(--shadow-sm);
+        }
+        .ai-summary-panel .summary-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.75rem;
+        }
+        .ai-summary-panel .summary-header .title {
+            font-weight: 700;
+            font-size: 0.875rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .ai-summary-panel .summary-header .trend-badge {
+            font-size: 0.625rem;
+            font-weight: 600;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            text-transform: uppercase;
+        }
+        .ai-summary-panel .summary-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+            line-height: 1.7;
+        }
+        .ai-summary-panel .summary-insights {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+            margin-top: 0.75rem;
+        }
+        @media (max-width: 480px) {
+            .ai-summary-panel .summary-insights { grid-template-columns: 1fr; }
+        }
+        .ai-summary-panel .insight-item {
+            background: rgba(255,255,255,0.6);
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.8125rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .ai-summary-panel .insight-item .icon {
+            color: var(--primary);
+            font-size: 1rem;
+            margin-top: 0.0625rem;
+        }
+        .ai-summary-panel .insight-item .text {
+            color: var(--text-on-surface);
+        }
+        .ai-summary-panel .summary-recommendations {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid rgba(196, 181, 253, 0.3);
+        }
+        .ai-summary-panel .summary-recommendations .rec-item {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            padding: 0.125rem 0;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .ai-summary-panel .summary-recommendations .rec-item .icon {
+            color: #7c3aed;
+            font-size: 1rem;
+            margin-top: 0.0625rem;
+        }
+        .ai-summary-panel .summary-provider {
+            font-size: 0.5rem;
+            color: var(--text-on-surface-variant);
+            text-align: right;
+            margin-top: 0.5rem;
+        }
+
+        /* =============================================
+           REST OF STYLES (same as your existing)
+        ============================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -326,9 +712,6 @@ function formatNumber($num) {
         }
         a { text-decoration: none; color: inherit; }
 
-        /* =============================================
-           SIDEBAR
-        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -620,9 +1003,6 @@ function formatNumber($num) {
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* =============================================
-           BREADCRUMB
-        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -651,9 +1031,6 @@ function formatNumber($num) {
         .breadcrumb-view .material-symbols-outlined { font-size: 1rem; }
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
-        /* =============================================
-           PAGE HEADER
-        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -664,9 +1041,6 @@ function formatNumber($num) {
         .page-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); letter-spacing: -0.025em; }
         .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
 
-        /* =============================================
-           BUTTONS
-        ============================================= */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -695,9 +1069,6 @@ function formatNumber($num) {
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* =============================================
-           OVERALL STATS
-        ============================================= */
         .stats-row {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -741,9 +1112,6 @@ function formatNumber($num) {
             color: var(--text-on-surface-variant);
         }
 
-        /* =============================================
-           REPORT CONTROLS
-        ============================================= */
         .report-controls {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -778,9 +1146,6 @@ function formatNumber($num) {
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
         }
 
-        /* =============================================
-           REPORT TABLE
-        ============================================= */
         .report-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -861,9 +1226,6 @@ function formatNumber($num) {
         .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
-        /* =============================================
-           FUNNEL VISUALIZATION
-        ============================================= */
         .funnel-container {
             padding: 1.5rem;
         }
@@ -913,9 +1275,6 @@ function formatNumber($num) {
             color: var(--text-on-surface);
         }
 
-        /* =============================================
-           MONTHLY TREND CHART (CSS-based)
-        ============================================= */
         .trend-container {
             padding: 1.5rem;
         }
@@ -956,9 +1315,6 @@ function formatNumber($num) {
             text-align: center;
         }
 
-        /* =============================================
-           TOAST
-        ============================================= */
         .toast {
             position: fixed;
             top: 1rem;
@@ -985,9 +1341,6 @@ function formatNumber($num) {
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* =============================================
-           RESPONSIVE
-        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -1027,9 +1380,6 @@ function formatNumber($num) {
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
         
-        /* =============================================
-           PROFILE PICTURE STYLES
-        ============================================= */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -1110,6 +1460,7 @@ function formatNumber($num) {
             <a href="reports.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">analytics</span>
                 <span class="nav-text">Reports</span>
+                <span class="ai-badge" style="margin-left:auto; font-size:0.45rem;">AI</span>
             </a>
             <div class="nav-label" style="margin-top:1rem;">Settings</div>
             <a href="profile.php" class="sidebar-main-link">
@@ -1157,6 +1508,10 @@ function formatNumber($num) {
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Reports</span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -1203,7 +1558,67 @@ function formatNumber($num) {
                 <div class="page-header">
                     <div>
                         <h1>Reports & Analytics</h1>
-                        <p>Track your hiring metrics and make data-driven decisions</p>
+                        <p style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                            Track your hiring metrics and make data-driven decisions
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined">auto_awesome</span>
+                                AI Enhanced
+                            </span>
+                        </p>
+                    </div>
+                    <button class="btn btn-ai" onclick="regenerateAISummary()" id="aiSummaryBtn">
+                        <span class="material-symbols-outlined">auto_awesome</span>
+                        AI Executive Summary
+                    </button>
+                </div>
+
+                <!-- AI Executive Summary Panel -->
+                <div class="ai-summary-panel" id="aiSummaryPanel">
+                    <div class="summary-header">
+                        <div class="title">
+                            <span class="material-symbols-outlined" style="font-size:1rem;">auto_awesome</span>
+                            AI Executive Summary
+                            <span style="font-size:0.55rem; font-weight:400; color:var(--text-on-surface-variant);" id="aiSummaryProvider">
+                                <?php echo $aiSummary['provider'] ?? 'AI'; ?>
+                            </span>
+                        </div>
+                        <div>
+                            <span class="trend-badge" style="background:<?php echo getTrendColor($aiSummary['trend_forecast'] ?? 'Stable'); ?>; color:white;" id="aiTrendBadge">
+                                <?php echo $aiSummary['trend_forecast'] ?? 'Stable'; ?> Trend
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <div id="aiSummaryContent">
+                        <div class="summary-text" id="aiSummaryText">
+                            <?php echo $aiSummary['summary'] ?? 'No summary available.'; ?>
+                        </div>
+                        
+                        <?php if (!empty($aiSummary['insights'])): ?>
+                        <div class="summary-insights" id="aiInsightsList">
+                            <?php foreach ($aiSummary['insights'] as $insight): ?>
+                                <div class="insight-item">
+                                    <span class="icon material-symbols-outlined">lightbulb</span>
+                                    <span class="text"><?php echo $insight; ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if (!empty($aiSummary['recommendations'])): ?>
+                        <div class="summary-recommendations" id="aiRecommendationsList">
+                            <?php foreach ($aiSummary['recommendations'] as $rec): ?>
+                                <div class="rec-item">
+                                    <span class="icon material-symbols-outlined">trending_up</span>
+                                    <span><?php echo $rec; ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <div class="summary-provider">
+                        AI insights powered by <?php echo $aiSummary['provider'] ?? 'ISMERS AI'; ?>
                     </div>
                 </div>
 
@@ -1752,7 +2167,125 @@ function formatNumber($num) {
         }
 
         // =============================================
-        // 6. RESPONSIVE HANDLING
+        // 6. REGENERATE AI SUMMARY
+        // =============================================
+        function regenerateAISummary() {
+            const btn = document.getElementById('aiSummaryBtn');
+            const panel = document.getElementById('aiSummaryPanel');
+            const content = document.getElementById('aiSummaryContent');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="ai-dots-loading-sm"><div class="dot"></div><div class="dot"></div><div class="dot"></div></span> Generating...';
+            
+            // Show loading state
+            content.innerHTML = `
+                <div style="text-align:center; padding:1.5rem 0;">
+                    <div class="ai-dots-loading-sm" style="justify-content:center; gap:0.5rem;">
+                        <div class="dot" style="width:0.75rem; height:0.75rem;"></div>
+                        <div class="dot" style="width:0.75rem; height:0.75rem;"></div>
+                        <div class="dot" style="width:0.75rem; height:0.75rem;"></div>
+                        <span style="font-size:0.875rem; color:var(--text-on-surface-variant); margin-left:0.5rem;">Generating AI insights...</span>
+                    </div>
+                </div>
+            `;
+
+            const formData = new FormData();
+            formData.append('action', 'get_ai_summary');
+
+            fetch('reports.php', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> AI Executive Summary';
+                
+                if (data.success) {
+                    // Update provider
+                    document.getElementById('aiSummaryProvider').textContent = data.provider || 'AI';
+                    
+                    // Update trend badge
+                    const trendBadge = document.getElementById('aiTrendBadge');
+                    const trendColors = {
+                        'Growing': '#059669',
+                        'Stable': '#2563eb',
+                        'Declining': '#dc2626'
+                    };
+                    trendBadge.textContent = (data.trend_forecast || 'Stable') + ' Trend';
+                    trendBadge.style.background = trendColors[data.trend_forecast] || '#6b7280';
+                    
+                    // Build content
+                    let html = `
+                        <div class="summary-text">${data.summary || 'No summary available.'}</div>
+                    `;
+                    
+                    if (data.insights && data.insights.length > 0) {
+                        html += `<div class="summary-insights">`;
+                        data.insights.forEach(insight => {
+                            html += `
+                                <div class="insight-item">
+                                    <span class="icon material-symbols-outlined">lightbulb</span>
+                                    <span class="text">${insight}</span>
+                                </div>
+                            `;
+                        });
+                        html += `</div>`;
+                    }
+                    
+                    if (data.recommendations && data.recommendations.length > 0) {
+                        html += `<div class="summary-recommendations">`;
+                        data.recommendations.forEach(rec => {
+                            html += `
+                                <div class="rec-item">
+                                    <span class="icon material-symbols-outlined">trending_up</span>
+                                    <span>${rec}</span>
+                                </div>
+                            `;
+                        });
+                        html += `</div>`;
+                    }
+                    
+                    content.innerHTML = html;
+                    showToast('✨ AI summary regenerated successfully!', 'success');
+                } else {
+                    content.innerHTML = `<div style="color:#dc2626; padding:0.5rem;">${data.error || 'Could not generate AI summary'}</div>`;
+                    showToast(data.error || 'Could not generate AI summary', 'error');
+                }
+            })
+            .catch(error => {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="material-symbols-outlined">auto_awesome</span> AI Executive Summary';
+                content.innerHTML = `<div style="color:#dc2626; padding:0.5rem;">Network error. Please try again.</div>`;
+                showToast('Network error. Please try again.', 'error');
+            });
+        }
+
+        // =============================================
+        // 7. TOAST SYSTEM
+        // =============================================
+        function showToast(message, type) {
+            type = type || 'info';
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+            toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                toast.style.transition = 'all 0.4s ease';
+                setTimeout(() => toast.remove(), 400);
+            }, 3500);
+        }
+
+        // =============================================
+        // 8. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -1775,7 +2308,9 @@ function formatNumber($num) {
             }, 250);
         });
 
-        console.log('📊 Reports & Analytics loaded successfully!');
+        console.log('📊 AI-Powered Reports & Analytics loaded successfully!');
+        console.log('🤖 AI Features: Executive Summary, Insights, Recommendations, Trend Forecast');
     </script>
+
 </body>
 </html>

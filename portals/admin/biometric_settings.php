@@ -1,5 +1,5 @@
 <?php
-// portals/admin/biometric_settings.php - Biometric Security Settings
+// portals/admin/biometric_settings.php - Biometric Security Settings + Face Enrollment
 session_start();
 require_once '../../app/config.php';
 
@@ -38,6 +38,25 @@ $settings = [];
 $result = getRecords("SELECT * FROM biometric_settings");
 foreach ($result as $row) {
     $settings[$row['setting_key']] = $row['setting_value'];
+}
+
+// =============================================
+// HANDLE FACE ENROLLMENT ACTIONS
+// =============================================
+
+// Delete face enrollment
+if (isset($_GET['action']) && $_GET['action'] === 'delete_face' && isset($_GET['user_id'])) {
+    $deleteUserId = intval($_GET['user_id']);
+    if ($deleteUserId > 0) {
+        $deleteSql = "DELETE FROM face_scans WHERE user_id = ?";
+        $result = deleteRecord($deleteSql, [$deleteUserId], "i");
+        if ($result) {
+            logActivity($_SESSION['user_id'], 'Face Deleted', 'face_scans', $deleteUserId, 'Face enrollment deleted for user ID: ' . $deleteUserId);
+            $success = 'Face enrollment deleted successfully!';
+        } else {
+            $error = 'Failed to delete face enrollment.';
+        }
+    }
 }
 
 // Handle form submission
@@ -103,6 +122,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 }
+
+// =============================================
+// GET FACE ENROLLMENT DATA
+// =============================================
+
+// Get all users with face enrollment status
+$faceEnrollments = getRecords("
+    SELECT 
+        u.id as user_id,
+        u.first_name,
+        u.last_name,
+        u.email,
+        u.role,
+        fs.id as face_id,
+        fs.created_at as face_enrolled_at,
+        fs.updated_at as face_updated_at,
+        fs.liveness_score,
+        CASE WHEN fs.id IS NOT NULL THEN 1 ELSE 0 END as has_face
+    FROM users u
+    LEFT JOIN face_scans fs ON u.id = fs.user_id
+    WHERE u.is_active = 1
+    ORDER BY has_face DESC, u.first_name ASC
+");
+
+// Get total users for badge
+$totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
+$totalEnrolled = getRecord("SELECT COUNT(*) as count FROM face_scans")['count'] ?? 0;
+
+// Get user profile data for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -397,32 +446,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-        }
-
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.875rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-
-        .sidebar-footer .logout-btn:hover {
-            background: #fef2f2;
-        }
-
-        .sidebar-footer .logout-btn .material-symbols-outlined {
-            font-size: 1.125rem;
         }
 
         .sidebar-backdrop {
@@ -1052,17 +1075,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         /* =============================================
-           ACTIVITY LOG
+           FACE ENROLLMENT TABLE
         ============================================= */
-        .activity-log {
+        .enrollment-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            margin-bottom: 1.5rem;
         }
 
-        .activity-log .log-header {
+        .enrollment-card .card-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
@@ -1072,7 +1096,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             gap: 0.75rem;
         }
 
-        .activity-log .log-header h3 {
+        .enrollment-card .card-header h3 {
             font-size: 1rem;
             font-weight: 700;
             display: flex;
@@ -1080,27 +1104,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             gap: 0.625rem;
         }
 
-        .activity-log .log-header h3 .material-symbols-outlined {
+        .enrollment-card .card-header h3 .material-symbols-outlined {
             font-size: 1.25rem;
             color: var(--primary);
         }
 
-        .activity-log .log-body {
+        .enrollment-card .card-header .badge-count {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--radius-full);
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface-variant);
+        }
+
+        .enrollment-card .card-body {
             padding: 0;
             overflow-x: auto;
         }
 
-        .activity-log table {
+        .enrollment-card table {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.875rem;
         }
 
-        .activity-log table thead {
+        .enrollment-card table thead {
             background: var(--bg-surface-low);
         }
 
-        .activity-log table th {
+        .enrollment-card table th {
             padding: 0.75rem 1rem;
             text-align: left;
             font-weight: 600;
@@ -1111,21 +1144,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             border-bottom: 1px solid var(--slate-200);
         }
 
-        .activity-log table td {
+        .enrollment-card table td {
             padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--slate-200);
             vertical-align: middle;
         }
 
-        .activity-log table tr:last-child td {
+        .enrollment-card table tr:last-child td {
             border-bottom: none;
         }
 
-        .activity-log table tr:hover td {
+        .enrollment-card table tr:hover td {
             background: var(--bg-surface-low);
         }
 
-        .activity-log .status-badge {
+        .status-badge {
             display: inline-block;
             padding: 0.125rem 0.625rem;
             border-radius: var(--radius-full);
@@ -1133,28 +1166,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             font-weight: 600;
         }
 
-        .activity-log .status-badge.success {
+        .status-badge.enrolled {
             background: #d1fae5;
             color: #059669;
         }
 
-        .activity-log .status-badge.failed {
-            background: #fecaca;
-            color: #dc2626;
-        }
-
-        .activity-log .status-badge.pending {
+        .status-badge.not-enrolled {
             background: #fef3c7;
             color: #d97706;
         }
 
-        .activity-log .empty-state {
+        .role-tag {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface-variant);
+            border: 1px solid var(--slate-200);
+        }
+
+        .role-tag.admin { background: #fef3c7; color: #d97706; border-color: #fcd34d; }
+        .role-tag.hr_manager { background: #dbeafe; color: #2563eb; border-color: #93c5fd; }
+        .role-tag.recruiter { background: #d1fae5; color: #059669; border-color: #6ee7b7; }
+        .role-tag.client { background: #e0e7ff; color: #4f46e5; border-color: #a5b4fc; }
+        .role-tag.applicant { background: #fce7f3; color: #db2777; border-color: #f9a8d4; }
+        .role-tag.employee { background: #cffafe; color: #0891b2; border-color: #67e8f9; }
+        .role-tag.supervisor { background: #ede9fe; color: #7c3aed; border-color: #c4b5fd; }
+
+        .btn-sm {
+            padding: 0.25rem 0.625rem;
+            font-size: 0.75rem;
+            border-radius: 0.5rem;
+        }
+
+        .btn-sm .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
+        .btn-enroll {
+            background: var(--primary);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-enroll:hover {
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-1px);
+        }
+
+        .btn-delete {
+            background: #dc2626;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-delete:hover {
+            background: #b91c1c;
+            transform: translateY(-1px);
+        }
+
+        .btn-verify {
+            background: #2563eb;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-verify:hover {
+            background: #1d4ed8;
+            transform: translateY(-1px);
+        }
+
+        .empty-state {
             text-align: center;
             padding: 3rem 1.5rem;
             color: var(--text-on-surface-variant);
         }
 
-        .activity-log .empty-state .material-symbols-outlined {
+        .empty-state .material-symbols-outlined {
             font-size: 3rem;
             color: var(--slate-200);
             display: block;
@@ -1361,12 +1459,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 padding: 1rem 1.25rem;
             }
 
-            .activity-log .log-header {
+            .enrollment-card .card-header {
                 padding: 1rem 1.25rem;
             }
 
-            .activity-log table th,
-            .activity-log table td {
+            .enrollment-card table th,
+            .enrollment-card table td {
                 padding: 0.5rem 0.75rem;
                 font-size: 0.75rem;
             }
@@ -1406,14 +1504,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">fingerprint</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Admin Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">admin_panel_settings</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Admin Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1427,6 +1523,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             <a href="users.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Users</span>
+                <span class="nav-badge"><?php echo $totalUsers; ?></span>
             </a>
 
             <a href="roles.php" class="sidebar-main-link">
@@ -1434,24 +1531,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 <span class="nav-text">Roles</span>
             </a>
 
+            <a href="reports.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+
             <a href="biometric_settings.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">fingerprint</span>
                 <span class="nav-text">Biometric</span>
             </a>
-
-
-           
         </nav>
 
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-          
         </div>
     </aside>
 
@@ -1474,20 +1578,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                    <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
                     <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
                     <span class="profile-role">Admin</span>
                     <span class="material-symbols-outlined">expand_more</span>
                 </button>
                 <div class="profile-dropdown-menu" id="profileMenu">
                     <div class="dropdown-header">Account</div>
-                   
-                    
+                    <a href="profile.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">person</span>
+                        My Profile
+                    </a>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
                     <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <a href="../../logout.php" class="dropdown-item danger">
                         <span class="material-symbols-outlined">logout</span>
                         Logout
-                    </button>
+                    </a>
                 </div>
             </div>
         </header>
@@ -1503,10 +1613,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         <span>Biometric Security</span>
                         <span class="status-dot"></span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">Settings & Logs</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">Settings & Enrollment</span>
                     </div>
                     <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        Last updated: <?php echo date('M d, Y H:i'); ?>
+                        <?php echo $totalEnrolled; ?> faces enrolled
                     </span>
                 </div>
 
@@ -1662,6 +1772,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+
+                <!-- =============================================
+                FACE ENROLLMENT MANAGEMENT
+                ============================================= -->
+                <div class="enrollment-card">
+                    <div class="card-header">
+                        <h3>
+                            <span class="material-symbols-outlined">face</span>
+                            Face Enrollment Management
+                            <span style="font-weight:400; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                (Enroll users for face recognition)
+                            </span>
+                        </h3>
+                        <span class="badge-count">
+                            <?php echo $totalEnrolled; ?> enrolled / <?php echo $totalUsers; ?> users
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($faceEnrollments)): ?>
+                            <div class="empty-state">
+                                <span class="material-symbols-outlined">face</span>
+                                <p>No users found. Add users first to enable face enrollment.</p>
+                            </div>
+                        <?php else: ?>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Role</th>
+                                        <th>Status</th>
+                                        <th>Enrolled At</th>
+                                        <th>Liveness Score</th>
+                                        <th style="text-align:center;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($faceEnrollments as $user): ?>
+                                        <tr>
+                                            <td>
+                                                <div style="display:flex; align-items:center; gap:0.5rem;">
+                                                    <span style="display:inline-flex; align-items:center; justify-content:center; width:2rem; height:2rem; border-radius:50%; background:var(--bg-surface-low); font-weight:600; font-size:0.75rem; color:var(--primary);">
+                                                        <?php echo strtoupper(substr($user['first_name'], 0, 1) ?: 'U'); ?>
+                                                    </span>
+                                                    <div>
+                                                        <div style="font-weight:600;"><?php echo htmlspecialchars($user['first_name'] . ' ' . $user['last_name']); ?></div>
+                                                        <div style="font-size:0.75rem; color:var(--text-on-surface-variant);"><?php echo htmlspecialchars($user['email']); ?></div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <span class="role-tag <?php echo $user['role']; ?>">
+                                                    <?php echo ucfirst(str_replace('_', ' ', $user['role'])); ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <?php if ($user['has_face']): ?>
+                                                    <span class="status-badge enrolled">✅ Enrolled</span>
+                                                <?php else: ?>
+                                                    <span class="status-badge not-enrolled">⚠️ Not Enrolled</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                                <?php echo $user['has_face'] ? date('M d, Y H:i', strtotime($user['face_enrolled_at'])) : '—'; ?>
+                                            </td>
+                                            <td>
+                                                <?php echo $user['has_face'] ? ($user['liveness_score'] ? number_format($user['liveness_score'], 2) . '%' : '—') : '—'; ?>
+                                            </td>
+                                            <td style="text-align:center;">
+                                                <div style="display:flex; gap:0.375rem; justify-content:center; flex-wrap:wrap;">
+                                                    <?php if ($user['has_face']): ?>
+                                                       <a href="/CT1/portals/admin/face_verify.php?user_id=<?php echo $user['user_id']; ?>" 
+                                                            class="btn btn-sm btn-verify" title="Verify Face">
+                                                         <span class="material-symbols-outlined">verified</span>
+                                                        </a>
+                                                        <a href="?action=delete_face&user_id=<?php echo $user['user_id']; ?>" 
+                                                           class="btn btn-sm btn-delete" 
+                                                           onclick="return confirm('Are you sure you want to delete this face enrollment for <?php echo htmlspecialchars($user['first_name']); ?>?')" 
+                                                           title="Delete Face">
+                                                            <span class="material-symbols-outlined">delete</span>
+                                                        </a>
+                                                    <?php else: ?>
+                                                     <a href="/CT1/portals/admin/face_enroll.php?user_id=<?php echo $user['user_id']; ?>" 
+                                                        class="btn btn-sm btn-enroll" title="Enroll Face">
+                                                         <span class="material-symbols-outlined">add_photo_alternate</span>
+                                                                                  Enroll
+                                                       </a>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -2006,6 +2212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         });
 
         console.log('🔐 ISMERS Biometric Settings loaded successfully!');
+        console.log('👤 Face Enrollment Management: ' + <?php echo $totalEnrolled; ?> + ' users enrolled');
     </script>
 
 </body>

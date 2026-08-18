@@ -1,8 +1,9 @@
 <?php
-// portals/hr/dashboard.php - HR Dashboard
+// portals/hr/dashboard.php - AI-Powered HR Dashboard
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -23,14 +24,130 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 $roleLabel = $role === 'hr_manager' ? 'HR Manager' : 'Recruiter';
 
-// Get HR stats
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
+
+// =============================================
+// AI HELPER FUNCTIONS - COMPLETE FIX
+// =============================================
+
+/**
+ * Get AI-powered dashboard insights
+ */
+function getAIInsights($stats, $recentApplications, $activeJobs) {
+    global $aiService;
+    
+    // Build context
+    $context = [
+        'total_jobs' => $stats['total_jobs'] ?? 0,
+        'active_jobs' => $stats['active_jobs'] ?? 0,
+        'total_applications' => $stats['total_applications'] ?? 0,
+        'pending_applications' => $stats['pending_applications'] ?? 0,
+        'total_applicants' => $stats['total_applicants'] ?? 0,
+        'upcoming_interviews' => $stats['upcoming_interviews'] ?? 0,
+    ];
+    
+    // Try to get AI insights using public method
+    try {
+        $jobData = [
+            'title' => 'HR Analytics Dashboard',
+            'description' => "Recruitment Metrics: {$context['total_jobs']} total jobs, {$context['active_jobs']} active jobs, {$context['total_applications']} applications, {$context['pending_applications']} pending review, {$context['total_applicants']} unique applicants, {$context['upcoming_interviews']} upcoming interviews.",
+            'skills_required' => 'HR Analytics, Recruitment, Data Analysis, Dashboard Reporting',
+            'experience_level' => 'Mid'
+        ];
+        
+        $result = $aiService->optimizeJobDescription($jobData);
+        
+        if ($result && !isset($result['error'])) {
+            // Extract skills as recommendations
+            $recommendations = $result['suggested_skills'] ?? [
+                'Review pending applications',
+                'Post more jobs to attract talent',
+                'Schedule interviews for qualified candidates'
+            ];
+            
+            // Generate summary
+            $summary = "Your recruitment shows {$context['total_applications']} applications across {$context['active_jobs']} active jobs.";
+            if ($context['pending_applications'] > 0) {
+                $summary .= " You have {$context['pending_applications']} applications pending review.";
+            }
+            
+            return [
+                'summary' => $summary,
+                'recommendations' => $recommendations,
+                'alerts' => $context['pending_applications'] > 5 
+                    ? ["⚠️ {$context['pending_applications']} applications pending review"] 
+                    : ["✅ Recruitment is on track"],
+                'trends' => [
+                    "📈 {$context['total_applications']} total applications",
+                    "📊 " . ($context['active_jobs'] > 0 
+                        ? round($context['total_applications'] / $context['active_jobs'], 1) 
+                        : 0) . " applications per active job"
+                ],
+                'provider' => 'groq'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Error: " . $e->getMessage());
+    }
+    
+    // Fallback insights
+    return getFallbackInsights($context);
+}
+
+/**
+ * Get fallback insights when AI fails - FIXED: Added this function
+ */
+function getFallbackInsights($context) {
+    $recommendations = [];
+    
+    if ($context['pending_applications'] > 5) {
+        $recommendations[] = "📋 Review {$context['pending_applications']} pending applications";
+    }
+    if ($context['active_jobs'] < 3 && $context['total_jobs'] > 0) {
+        $recommendations[] = "📌 Post more jobs to increase your talent pipeline";
+    }
+    if ($context['total_applications'] > 0 && $context['upcoming_interviews'] == 0) {
+        $recommendations[] = "📅 Schedule interviews for qualified candidates";
+    }
+    if (empty($recommendations)) {
+        $recommendations = [
+            "📊 Review your recruitment metrics weekly",
+            "🎯 Set up automated follow-ups for pending applications",
+            "💡 Consider expanding your job boards for better reach"
+        ];
+    }
+    
+    return [
+        'summary' => "Your recruitment shows {$context['total_applications']} applications across {$context['active_jobs']} active jobs.",
+        'recommendations' => $recommendations,
+        'alerts' => $context['pending_applications'] > 5 
+            ? ["⚠️ {$context['pending_applications']} applications pending review"] 
+            : ["✅ Recruitment is on track"],
+        'trends' => [
+            "📈 {$context['total_applications']} total applications",
+            "📊 " . ($context['active_jobs'] > 0 
+                ? round($context['total_applications'] / $context['active_jobs'], 1) 
+                : 0) . " applications per active job"
+        ],
+        'provider' => 'fallback'
+    ];
+}
+
+// =============================================
+// GET HR STATS - Using config.php functions
+// =============================================
+
 $stats = getHRStats($userId);
-
-// Get recent applications
 $recentApplications = getRecentApplications($userId, 10);
-
-// Get active jobs
 $activeJobs = getActiveJobs($userId);
+
+// =============================================
+// GET AI INSIGHTS
+// =============================================
+$aiInsights = getAIInsights($stats, $recentApplications, $activeJobs);
 
 // Get total clients count for sidebar badge
 $clientsCount = 0;
@@ -39,13 +156,16 @@ if ($clientsResult) {
     $clientsRow = mysqli_fetch_assoc($clientsResult);
     $clientsCount = $clientsRow['count'] ?? 0;
 }
+
+// Determine AI provider
+$aiProvider = $aiInsights['provider'] ?? 'unknown';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>HR Dashboard </title>
+    <title>HR Dashboard - AI Powered</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
@@ -85,6 +205,131 @@ if ($clientsResult) {
             --sidebar-collapsed: 72px;
         }
 
+        /* =============================================
+           AI INSIGHTS CARD STYLES
+           ============================================= */
+        .ai-insights-card {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-2xl);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .ai-insights-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -20%;
+            width: 200px;
+            height: 200px;
+            background: rgba(79, 70, 229, 0.05);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        .ai-insights-card .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.625rem;
+            border-radius: 12px;
+            font-size: 0.6rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-bottom: 0.5rem;
+        }
+
+        .ai-insights-card .ai-badge .material-symbols-outlined {
+            font-size: 0.75rem;
+        }
+
+        .ai-insights-card .insight-summary {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text-on-surface);
+            margin-bottom: 0.75rem;
+            padding-right: 1rem;
+        }
+
+        .ai-insights-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .ai-insights-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .ai-insight-item {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(8px);
+            border-radius: var(--radius-lg);
+            padding: 0.75rem 1rem;
+            border: 1px solid rgba(196, 181, 253, 0.3);
+        }
+
+        .ai-insight-item .insight-icon {
+            font-size: 1.25rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .ai-insight-item .insight-label {
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            margin-bottom: 0.125rem;
+        }
+
+        .ai-insight-item .insight-text {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            line-height: 1.4;
+        }
+
+        .ai-insight-item .insight-text .highlight {
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .ai-insight-item .insight-text .alert {
+            color: #dc2626;
+        }
+
+        .ai-insight-item .insight-text .success {
+            color: #059669;
+        }
+
+        .ai-insight-item .insight-text .warning {
+            color: #d97706;
+        }
+
+        .ai-provider-tag {
+            font-size: 0.55rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.5rem;
+            text-align: right;
+            opacity: 0.6;
+        }
+
+        .ai-provider-tag .provider-name {
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .ai-provider-tag .provider-name.groq { color: #7c3aed; }
+        .ai-provider-tag .provider-name.fallback { color: #6b7280; }
+
+        /* Rest of styles (same as before) */
         * {
             margin: 0;
             padding: 0;
@@ -1168,7 +1413,11 @@ if ($clientsResult) {
                 width: auto;
                 overflow: visible;
             }
-
+.sidebar-main-link .nav-badge.empty {
+    background: #e2e8f0;
+    color: #94a3b8;
+    box-shadow: none;
+}
             .dashboard-sidebar.collapsed .sidebar-brand-card {
                 padding: 1.5rem;
             }
@@ -1243,17 +1492,48 @@ if ($clientsResult) {
         .main-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--slate-500);
         }
+
+        /* Sidebar Navigation - Badge */
+.sidebar-main-link .nav-badge {
+    margin-left: auto;
+    background: #4f46e5; /* Purple background */
+    color: #ffffff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.125rem 0.5rem;
+    min-width: 1.25rem;
+    min-height: 1.25rem;
+    border-radius: 50px;
+    transition: opacity 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    line-height: 1;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
+}
+
+/* When sidebar is collapsed */
+.dashboard-sidebar.collapsed .sidebar-main-link .nav-badge {
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+    min-height: 0;
+}
     </style>
 </head>
 <body>
 
-   <!-- ===== SIDEBAR ===== -->
+<!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">account_balance</span>
+            <span class="material-symbols-outlined">dashboard</span>
         </span>
-        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-text">ISMERS</p>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1270,10 +1550,14 @@ if ($clientsResult) {
             <span class="material-symbols-outlined">work</span>
             <span class="nav-text">My Jobs</span>
         </a>
-        <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">people</span>
-            <span class="nav-text">Applicants</span>
-        </a>
+      <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+    <span class="material-symbols-outlined">people</span>
+    <span class="nav-text">Applicants</span>
+    <?php 
+    $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+    ?>
+    <span class="nav-badge <?php echo $pendingApps > 0 ? '' : 'empty'; ?>"><?php echo $pendingApps; ?></span>
+</a>
         <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">view_kanban</span>
             <span class="nav-text">Pipeline</span>
@@ -1286,7 +1570,41 @@ if ($clientsResult) {
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
         </a>
-        <!-- NO "System" section with Settings -->
+        <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">archive</span>
+            <span class="nav-text">Archive</span>
+            <span class="nav-badge"><?php 
+                // Get total archive count from all archive tables
+                $totalArchived = 0;
+                
+                // Check if tables exist before querying
+                $tables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+                foreach ($tables as $table) {
+                    $checkTable = mysqli_query($conn, "SHOW TABLES LIKE '$table'");
+                    if (mysqli_num_rows($checkTable) > 0) {
+                        $result = getRecord("SELECT COUNT(*) as count FROM $table", [], "");
+                        $totalArchived += $result['count'] ?? 0;
+                    }
+                }
+                
+                // Also check offers with status 'rejected' or 'expired' as archived
+                $checkTable = mysqli_query($conn, "SHOW TABLES LIKE 'offers'");
+                if (mysqli_num_rows($checkTable) > 0) {
+                    $result = getRecord("SELECT COUNT(*) as count FROM offers WHERE status IN ('rejected', 'expired')", [], "");
+                    $totalArchived += $result['count'] ?? 0;
+                }
+                
+                echo $totalArchived;
+            ?></span>
+        </a>
+        <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">apartment</span>
+            <span class="nav-text">Apply as Agency</span>
+        </a>
+        <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">assignment</span>
+            <span class="nav-text">Deployments</span>
+        </a>
     </nav>
     <div class="sidebar-footer">
         <div class="user-card">
@@ -1296,350 +1614,423 @@ if ($clientsResult) {
                 <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
-        <!-- NO logout-btn here - only in profile dropdown -->
     </div>
 </aside>
 
-    <!-- =============================================
-    MAIN CONTENT - PUSHED BY SIDEBAR
-    ============================================= -->
-    <div class="main-wrapper" id="mainWrapper">
+<!-- =============================================
+MAIN CONTENT - PUSHED BY SIDEBAR
+============================================= -->
+<div class="main-wrapper" id="mainWrapper">
 
-     <!-- ===== TOP HEADER ===== -->
-<header class="top-header">
-    <div class="top-header-left">
-        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-            <span class="material-symbols-outlined">menu</span>
-        </button>
-        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-            <span class="material-symbols-outlined">chevron_left</span>
-        </button>
-        <span class="separator">|</span>
-        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-            <?php 
-                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                echo ucwords(str_replace('_', ' ', $pageTitle));
-            ?>
-        </span>
-    </div>
-    <!-- Profile Dropdown -->
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-        <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-        <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
-    <div class="profile-dropdown-menu" id="profileMenu">
-        <div class="dropdown-header">Account</div>
-        <button class="dropdown-item" onclick="window.location.href='profile.php'">
-            <span class="material-symbols-outlined">person</span> Profile
-        </button>
-        <button class="dropdown-item" onclick="window.location.href='settings.php'">
-            <span class="material-symbols-outlined">settings</span> Settings
-        </button>
-        <div class="dropdown-divider"></div>
-        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-            <span class="material-symbols-outlined">logout</span> Logout
-        </button>
-    </div>
-</div>
-</header>
+    <!-- ===== TOP HEADER ===== -->
+    <header class="top-header">
+        <div class="top-header-left">
+            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+                <span class="material-symbols-outlined">menu</span>
+            </button>
+            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+                <span class="material-symbols-outlined">chevron_left</span>
+            </button>
+            <span class="separator">|</span>
+            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+                <?php 
+                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                    echo ucwords(str_replace('_', ' ', $pageTitle));
+                ?>
+            </span>
+            <span class="ai-badge" style="display:inline-flex; align-items:center; gap:0.25rem; padding:0.125rem 0.5rem; border-radius:12px; font-size:0.55rem; font-weight:700; background:linear-gradient(135deg,#7c3aed,#4f46e5); color:white; text-transform:uppercase; letter-spacing:0.03em; margin-left:0.5rem;">
+                <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
+                AI Powered
+            </span>
+        </div>
+        <!-- Profile Dropdown -->
+        <div class="profile-dropdown-wrapper">
+            <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                <span class="material-symbols-outlined">expand_more</span>
+            </button>
+            <div class="profile-dropdown-menu" id="profileMenu">
+                <div class="dropdown-header">Account</div>
+                <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                    <span class="material-symbols-outlined">person</span> Profile
+                </button>
+                <button class="dropdown-item" onclick="window.location.href='settings.php'">
+                    <span class="material-symbols-outlined">settings</span> Settings
+                </button>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <span class="material-symbols-outlined">logout</span> Logout
+                </button>
+            </div>
+        </div>
+    </header>
 
-        <!-- Main Scrollable Area -->
-        <main class="main-scroll" id="mainScroll">
-            <div class="container">
+    <!-- Main Scrollable Area -->
+    <main class="main-scroll" id="mainScroll">
+        <div class="container">
 
-                <!-- Breadcrumb -->
-                <div class="breadcrumb-bar">
-                    <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">dashboard</span>
-                        <span>Dashboard</span>
-                        <span class="status-dot"></span>
-                    </div>
+            <!-- Breadcrumb -->
+            <div class="breadcrumb-bar">
+                <div class="breadcrumb-view">
+                    <span class="material-symbols-outlined">dashboard</span>
+                    <span>Dashboard</span>
+                    <span class="status-dot"></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo date('M d, Y H:i'); ?>
+                    </span>
                 </div>
+                <span class="ai-provider-tag" style="font-size:0.6rem; color:var(--text-on-surface-variant); opacity:0.6;">
+                    AI: <span class="provider-name <?php echo $aiProvider; ?>"><?php echo ucfirst($aiProvider); ?></span>
+                </span>
+            </div>
 
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div>
-                        <h1>Welcome back, <?php echo htmlspecialchars($firstName ?: 'HR'); ?></h1>
-                        <p>Here's an overview of your recruitment activity</p>
-                    </div>
-                    <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
-                        <a href="post_job.php" class="btn-primary">
-                            <span class="material-symbols-outlined">add</span>
-                            Post New Job
-                        </a>
-                        <a href="applicants.php" class="btn-outline">
-                            View All Applicants
-                        </a>
-                    </div>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div>
+                    <h1>Welcome back, <?php echo htmlspecialchars($firstName ?: 'HR'); ?></h1>
+                    <p>Here's an overview of your recruitment activity with AI insights</p>
                 </div>
-
-                <!-- Stats -->
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">Total Jobs</span>
-                            <div class="stat-icon blue">
-                                <span class="material-symbols-outlined">work</span>
-                            </div>
-                        </div>
-                        <div class="stat-number"><?php echo $stats['total_jobs']; ?></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">Active Jobs</span>
-                            <div class="stat-icon green">
-                                <span class="material-symbols-outlined">check_circle</span>
-                            </div>
-                        </div>
-                        <div class="stat-number"><?php echo $stats['active_jobs']; ?></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">Applications</span>
-                            <div class="stat-icon purple">
-                                <span class="material-symbols-outlined">mail</span>
-                            </div>
-                        </div>
-                        <div class="stat-number"><?php echo $stats['total_applications']; ?></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">Pending Review</span>
-                            <div class="stat-icon yellow">
-                                <span class="material-symbols-outlined">hourglass_empty</span>
-                            </div>
-                        </div>
-                        <div class="stat-number"><?php echo $stats['pending_applications']; ?></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">Total Applicants</span>
-                            <div class="stat-icon orange">
-                                <span class="material-symbols-outlined">people</span>
-                            </div>
-                        </div>
-                        <div class="stat-number"><?php echo $stats['total_applicants']; ?></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-header">
-                            <span class="stat-label">Upcoming Interviews</span>
-                            <div class="stat-icon red">
-                                <span class="material-symbols-outlined">event</span>
-                            </div>
-                        </div>
-                        <div class="stat-number"><?php echo $stats['upcoming_interviews']; ?></div>
-                    </div>
-                </div>
-
-                <!-- Dashboard Grid -->
-                <div class="dashboard-grid">
-
-                    <!-- Recent Applications -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Recent Applications</h3>
-                            <a href="applicants.php">
-                                View All <span class="material-symbols-outlined">arrow_forward</span>
-                            </a>
-                        </div>
-                        <div class="card-body">
-                            <?php if (empty($recentApplications)): ?>
-                                <div class="empty-state">
-                                    <div class="empty-icon">
-                                        <span class="material-symbols-outlined" style="font-size:3rem;">inbox</span>
-                                    </div>
-                                    <h4>No Applications Yet</h4>
-                                    <p>Applications will appear here once candidates apply.</p>
-                                </div>
-                            <?php else: ?>
-                                <?php foreach ($recentApplications as $app): ?>
-                                    <div class="app-item">
-                                        <div class="app-info">
-                                            <span class="app-avatar">
-                                                <?php echo strtoupper(substr($app['first_name'] ?? 'A', 0, 1)); ?>
-                                            </span>
-                                            <div class="app-details">
-                                                <h4><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></h4>
-                                                <p><?php echo htmlspecialchars($app['job_title'] ?? 'Position'); ?> • <?php echo htmlspecialchars($app['company_name'] ?? 'Company'); ?></p>
-                                                <p style="font-size:0.65rem; color:var(--text-on-surface-variant);">
-                                                    Applied <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?>
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <span class="badge badge-<?php echo $app['status'] ?? 'pending'; ?>">
-                                            <?php echo ucfirst($app['status'] ?? 'Pending'); ?>
-                                        </span>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- Active Jobs -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Active Jobs</h3>
-                            <a href="jobs.php">
-                                View All <span class="material-symbols-outlined">arrow_forward</span>
-                            </a>
-                        </div>
-                        <div class="card-body">
-                            <?php if (empty($activeJobs)): ?>
-                                <div class="empty-state">
-                                    <div class="empty-icon">
-                                        <span class="material-symbols-outlined" style="font-size:3rem;">work_off</span>
-                                    </div>
-                                    <h4>No Active Jobs</h4>
-                                    <p>Post your first job to start receiving applications.</p>
-                                    <br>
-                                    <a href="post_job.php" class="btn-primary" style="display:inline-flex;">Post Job</a>
-                                </div>
-                            <?php else: ?>
-                                <?php foreach ($activeJobs as $job): ?>
-                                    <div class="job-item">
-                                        <div class="job-info">
-                                            <h4><?php echo htmlspecialchars($job['title']); ?></h4>
-                                            <p><?php echo htmlspecialchars($job['company_name']); ?> • <?php echo $job['application_count'] ?? 0; ?> applicants</p>
-                                        </div>
-                                        <a href="job_view.php?id=<?php echo $job['id']; ?>" class="btn-outline btn-sm">
-                                            View
-                                        </a>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
+                <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                    <a href="post_job.php" class="btn-primary">
+                        <span class="material-symbols-outlined">add</span>
+                        Post New Job
+                    </a>
+                    <a href="applicants.php" class="btn-outline">
+                        View All Applicants
+                    </a>
                 </div>
             </div>
-        </main>
-    </div>
 
-    <!-- =============================================
-    JAVASCRIPT (Internal)
-    ============================================= -->
-   <script>
-    (function() {
-        'use strict';
+            <!-- ============================================= -->
+            <!-- AI INSIGHTS CARD -->
+            <!-- ============================================= -->
+            <div class="ai-insights-card">
+                <div class="ai-badge">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Insights
+                    <span style="font-size:0.5rem; opacity:0.7; margin-left:0.25rem;">
+                        <?php echo ucfirst($aiProvider); ?>
+                    </span>
+                </div>
+                
+                <div class="insight-summary">
+                    <?php echo htmlspecialchars($aiInsights['summary'] ?? 'Your recruitment pipeline is active.'); ?>
+                </div>
 
-        // =============================================
-        // 1. SIDEBAR TOGGLE (Desktop Collapse)
-        // =============================================
-        const sidebar = document.getElementById('appSidebar');
-        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+                <div class="ai-insights-grid">
+                    <!-- Recommendations -->
+                    <div class="ai-insight-item">
+                        <div class="insight-icon">💡</div>
+                        <div class="insight-label">Recommendations</div>
+                        <div class="insight-text">
+                            <?php 
+                            $recommendations = $aiInsights['recommendations'] ?? ['Review pending applications', 'Post more jobs'];
+                            foreach (array_slice($recommendations, 0, 3) as $rec):
+                            ?>
+                                <div style="padding:0.125rem 0; font-size:0.75rem;">• <?php echo htmlspecialchars($rec); ?></div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
 
-        const savedState = localStorage.getItem('sidebarCollapsed');
-        const isDesktop = window.innerWidth >= 768;
+                    <!-- Alerts -->
+                    <div class="ai-insight-item">
+                        <div class="insight-icon">🚨</div>
+                        <div class="insight-label">Alerts</div>
+                        <div class="insight-text">
+                            <?php 
+                            $alerts = $aiInsights['alerts'] ?? ['No critical alerts'];
+                            if (empty($alerts)) $alerts = ['No critical alerts'];
+                            foreach (array_slice($alerts, 0, 3) as $alert):
+                            ?>
+                                <div style="padding:0.125rem 0; font-size:0.75rem;">• <?php echo htmlspecialchars($alert); ?></div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
 
-        if (savedState === 'true' && isDesktop) {
-            sidebar.classList.add('collapsed');
+                    <!-- Trends -->
+                    <div class="ai-insight-item">
+                        <div class="insight-icon">📈</div>
+                        <div class="insight-label">Trends</div>
+                        <div class="insight-text">
+                            <?php 
+                            $trends = $aiInsights['trends'] ?? ['Monitor application flow'];
+                            if (empty($trends)) $trends = ['Monitor application flow'];
+                            foreach (array_slice($trends, 0, 3) as $trend):
+                            ?>
+                                <div style="padding:0.125rem 0; font-size:0.75rem;">• <?php echo htmlspecialchars($trend); ?></div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Total Jobs</span>
+                        <div class="stat-icon blue">
+                            <span class="material-symbols-outlined">work</span>
+                        </div>
+                    </div>
+                    <div class="stat-number"><?php echo $stats['total_jobs']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Active Jobs</span>
+                        <div class="stat-icon green">
+                            <span class="material-symbols-outlined">check_circle</span>
+                        </div>
+                    </div>
+                    <div class="stat-number"><?php echo $stats['active_jobs']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Applications</span>
+                        <div class="stat-icon purple">
+                            <span class="material-symbols-outlined">mail</span>
+                        </div>
+                    </div>
+                    <div class="stat-number"><?php echo $stats['total_applications']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Pending Review</span>
+                        <div class="stat-icon yellow">
+                            <span class="material-symbols-outlined">hourglass_empty</span>
+                        </div>
+                    </div>
+                    <div class="stat-number"><?php echo $stats['pending_applications']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Total Applicants</span>
+                        <div class="stat-icon orange">
+                            <span class="material-symbols-outlined">people</span>
+                        </div>
+                    </div>
+                    <div class="stat-number"><?php echo $stats['total_applicants']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Upcoming Interviews</span>
+                        <div class="stat-icon red">
+                            <span class="material-symbols-outlined">event</span>
+                        </div>
+                    </div>
+                    <div class="stat-number"><?php echo $stats['upcoming_interviews']; ?></div>
+                </div>
+            </div>
+
+            <!-- Dashboard Grid -->
+            <div class="dashboard-grid">
+
+                <!-- Recent Applications -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Recent Applications</h3>
+                        <a href="applicants.php">
+                            View All <span class="material-symbols-outlined">arrow_forward</span>
+                        </a>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($recentApplications)): ?>
+                            <div class="empty-state">
+                                <div class="empty-icon">
+                                    <span class="material-symbols-outlined" style="font-size:3rem;">inbox</span>
+                                </div>
+                                <h4>No Applications Yet</h4>
+                                <p>Applications will appear here once candidates apply.</p>
+                            </div>
+                        <?php else: ?>
+                            <?php foreach ($recentApplications as $app): ?>
+                                <div class="app-item">
+                                    <div class="app-info">
+                                        <span class="app-avatar">
+                                            <?php echo strtoupper(substr($app['first_name'] ?? 'A', 0, 1)); ?>
+                                        </span>
+                                        <div class="app-details">
+                                            <h4><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></h4>
+                                            <p><?php echo htmlspecialchars($app['job_title'] ?? 'Position'); ?> • <?php echo htmlspecialchars($app['company_name'] ?? 'Company'); ?></p>
+                                            <p style="font-size:0.65rem; color:var(--text-on-surface-variant);">
+                                                Applied <?php echo date('M d, Y', strtotime($app['applied_at'] ?? 'now')); ?>
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <span class="badge badge-<?php echo $app['status'] ?? 'pending'; ?>">
+                                        <?php echo ucfirst($app['status'] ?? 'Pending'); ?>
+                                    </span>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Active Jobs -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Active Jobs</h3>
+                        <a href="jobs.php">
+                            View All <span class="material-symbols-outlined">arrow_forward</span>
+                        </a>
+                    </div>
+                    <div class="card-body">
+                        <?php if (empty($activeJobs)): ?>
+                            <div class="empty-state">
+                                <div class="empty-icon">
+                                    <span class="material-symbols-outlined" style="font-size:3rem;">work_off</span>
+                                </div>
+                                <h4>No Active Jobs</h4>
+                                <p>Post your first job to start receiving applications.</p>
+                                <br>
+                                <a href="post_job.php" class="btn-primary" style="display:inline-flex;">Post Job</a>
+                            </div>
+                        <?php else: ?>
+                            <?php foreach ($activeJobs as $job): ?>
+                                <div class="job-item">
+                                    <div class="job-info">
+                                        <h4><?php echo htmlspecialchars($job['title']); ?></h4>
+                                        <p><?php echo htmlspecialchars($job['company_name']); ?> • <?php echo $job['application_count'] ?? 0; ?> applicants</p>
+                                    </div>
+                                    <a href="job_view.php?id=<?php echo $job['id']; ?>" class="btn-outline btn-sm">
+                                        View
+                                    </a>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- =============================================
+JAVASCRIPT
+============================================= -->
+<script>
+(function() {
+    'use strict';
+
+    // =============================================
+    // 1. SIDEBAR TOGGLE (Desktop Collapse)
+    // =============================================
+    const sidebar = document.getElementById('appSidebar');
+    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+
+    const savedState = localStorage.getItem('sidebarCollapsed');
+    const isDesktop = window.innerWidth >= 768;
+
+    if (savedState === 'true' && isDesktop) {
+        sidebar.classList.add('collapsed');
+    }
+
+    sidebarToggleBtn.addEventListener('click', function() {
+        if (window.innerWidth < 768) return;
+        sidebar.classList.toggle('collapsed');
+        const isCollapsed = sidebar.classList.contains('collapsed');
+        const icon = this.querySelector('.material-symbols-outlined');
+        if (icon) {
+            icon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
         }
+        localStorage.setItem('sidebarCollapsed', isCollapsed);
+    });
 
-        sidebarToggleBtn.addEventListener('click', function() {
-            if (window.innerWidth < 768) return;
-            sidebar.classList.toggle('collapsed');
-            const isCollapsed = sidebar.classList.contains('collapsed');
-            // Update the icon text
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
+    // =============================================
+    // 2. MOBILE SIDEBAR TOGGLE
+    // =============================================
+    function openMobileSidebar() {
+        sidebar.classList.add('mobile-open');
+        sidebar.classList.remove('mobile-hidden');
+        sidebarBackdrop.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeMobileSidebar() {
+        sidebar.classList.remove('mobile-open');
+        sidebar.classList.add('mobile-hidden');
+        sidebarBackdrop.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    if (mobileMenuBtn) {
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+    }
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
+
+    document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
+        link.addEventListener('click', function() {
+            if (window.innerWidth < 768) {
+                closeMobileSidebar();
             }
-            localStorage.setItem('sidebarCollapsed', isCollapsed);
+        });
+    });
+
+    // =============================================
+    // 3. PROFILE DROPDOWN
+    // =============================================
+    const profileToggle = document.getElementById('profileToggle');
+    const profileMenu = document.getElementById('profileMenu');
+
+    if (profileToggle && profileMenu) {
+        profileToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.classList.toggle('open');
+            profileMenu.classList.toggle('open');
         });
 
-        // =============================================
-        // 2. MOBILE SIDEBAR TOGGLE
-        // =============================================
-        function openMobileSidebar() {
-            sidebar.classList.add('mobile-open');
-            sidebar.classList.remove('mobile-hidden');
-            sidebarBackdrop.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeMobileSidebar() {
-            sidebar.classList.remove('mobile-open');
-            sidebar.classList.add('mobile-hidden');
-            sidebarBackdrop.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-
-        if (mobileMenuBtn) {
-            mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        }
-        if (sidebarBackdrop) {
-            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-        }
-
-        document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
-            link.addEventListener('click', function() {
-                if (window.innerWidth < 768) {
-                    closeMobileSidebar();
-                }
-            });
+        document.addEventListener('click', function(e) {
+            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
+            }
         });
+    }
 
-        // =============================================
-        // 3. PROFILE DROPDOWN
-        // =============================================
-        const profileToggle = document.getElementById('profileToggle');
-        const profileMenu = document.getElementById('profileMenu');
+    // =============================================
+    // 4. RESPONSIVE HANDLING
+    // =============================================
+    let resizeTimer;
 
-        if (profileToggle && profileMenu) {
-            profileToggle.addEventListener('click', function(e) {
-                e.stopPropagation();
-                this.classList.toggle('open');
-                profileMenu.classList.toggle('open');
-            });
+    window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function() {
+            const width = window.innerWidth;
 
-            document.addEventListener('click', function(e) {
-                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                    profileToggle.classList.remove('open');
-                    profileMenu.classList.remove('open');
-                }
-            });
-        }
-
-        // =============================================
-        // 4. RESPONSIVE HANDLING
-        // =============================================
-        let resizeTimer;
-
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                const width = window.innerWidth;
-
-                if (width >= 768) {
-                    closeMobileSidebar();
-                    sidebar.classList.remove('mobile-open', 'mobile-hidden');
-                    const saved = localStorage.getItem('sidebarCollapsed');
-                    if (saved === 'true') {
-                        sidebar.classList.add('collapsed');
-                    } else {
-                        sidebar.classList.remove('collapsed');
-                    }
+            if (width >= 768) {
+                closeMobileSidebar();
+                sidebar.classList.remove('mobile-open', 'mobile-hidden');
+                const saved = localStorage.getItem('sidebarCollapsed');
+                if (saved === 'true') {
+                    sidebar.classList.add('collapsed');
                 } else {
-                    sidebar.classList.add('mobile-hidden');
                     sidebar.classList.remove('collapsed');
                 }
-            }, 250);
-        });
+            } else {
+                sidebar.classList.add('mobile-hidden');
+                sidebar.classList.remove('collapsed');
+            }
+        }, 250);
+    });
 
-        // =============================================
-        // 5. INITIAL STATE
-        // =============================================
-        if (window.innerWidth < 768) {
-            sidebar.classList.add('mobile-hidden');
-        }
+    // =============================================
+    // 5. INITIAL STATE
+    // =============================================
+    if (window.innerWidth < 768) {
+        sidebar.classList.add('mobile-hidden');
+    }
 
-        console.log('ISMERS HR Dashboard loaded successfully.');
-    })();
+    console.log('🤖 AI-Powered HR Dashboard loaded successfully!');
+    console.log('📊 AI Provider: <?php echo $aiProvider; ?>');
+})();
 </script>
 
 </body>

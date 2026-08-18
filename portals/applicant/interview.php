@@ -31,6 +31,27 @@ if ($applicantId <= 0) {
 }
 
 // =============================================
+// GET APPLICATIONS COUNT FOR SIDEBAR BADGE
+// =============================================
+$totalApplications = 0;
+$appResult = getRecord("
+    SELECT COUNT(*) as count FROM applications 
+    WHERE applicant_id = ?
+", [$applicantId], "i");
+$totalApplications = $appResult['count'] ?? 0;
+
+// =============================================
+// GET OFFERS COUNT FOR SIDEBAR BADGE
+// =============================================
+$pendingOffers = 0;
+$offersResult = getRecord("
+    SELECT COUNT(*) as count FROM offers o
+    JOIN applications a ON o.application_id = a.id
+    WHERE a.applicant_id = ? AND o.status = 'sent'
+", [$applicantId], "i");
+$pendingOffers = $offersResult['count'] ?? 0;
+
+// =============================================
 // GET INTERVIEW COUNT FOR SIDEBAR BADGE
 // =============================================
 $interviewCount = 0;
@@ -40,10 +61,11 @@ $interviewResult = getRecord("
 ", [$applicantId], "i");
 $interviewCount = $interviewResult['count'] ?? 0;
 
-// Get all interviews for this applicant
+// Get all interviews for this applicant - UPDATED with location and interviewer
 $interviews = getRecords("
     SELECT a.id as application_id, a.status, a.applied_at, a.cover_letter,
            a.interview_date, a.interview_notes,
+           i.location, i.interviewer_name, i.interviewer_email,
            jo.id as job_id, jo.title as job_title, jo.description as job_description,
            jo.location as job_location, jo.job_type, jo.salary_range,
            c.company_name, c.id as company_id,
@@ -52,23 +74,61 @@ $interviews = getRecords("
     JOIN job_orders jo ON a.job_order_id = jo.id
     JOIN clients c ON jo.client_id = c.id
     JOIN users u ON jo.created_by = u.id
+    LEFT JOIN interviews i ON i.application_id = a.id
     WHERE a.applicant_id = ? 
       AND a.interview_date IS NOT NULL
-      AND a.status IN ('interviewed', 'shortlisted')
     ORDER BY a.interview_date ASC
 ", [$applicantId], "i");
 
-// Get upcoming interviews (future dates)
-$upcomingInterviews = array_filter($interviews, function($interview) {
-    return strtotime($interview['interview_date']) > time();
+// =============================================
+// CATEGORIZE INTERVIEWS
+// =============================================
+$now = time();
+$upcomingInterviews = [];
+$todayInterviews = [];
+$pastInterviews = [];
+$today = date('Y-m-d');
+
+foreach ($interviews as $interview) {
+    $interviewDate = strtotime($interview['interview_date']);
+    $interviewDateStr = date('Y-m-d', $interviewDate);
+    
+    if ($interviewDateStr === $today && $interviewDate >= $now) {
+        $todayInterviews[] = $interview;
+    } elseif ($interviewDate > $now) {
+        $upcomingInterviews[] = $interview;
+    } else {
+        $pastInterviews[] = $interview;
+    }
+}
+
+// Sort upcoming by date (closest first)
+usort($upcomingInterviews, function($a, $b) {
+    return strtotime($a['interview_date']) - strtotime($b['interview_date']);
 });
 
-// Get past interviews
-$pastInterviews = array_filter($interviews, function($interview) {
-    return strtotime($interview['interview_date']) <= time();
+// Sort today by time (earliest first)
+usort($todayInterviews, function($a, $b) {
+    return strtotime($a['interview_date']) - strtotime($b['interview_date']);
 });
 
-// Check if there are any new interview notifications
+// Sort past by date (most recent first)
+usort($pastInterviews, function($a, $b) {
+    return strtotime($b['interview_date']) - strtotime($a['interview_date']);
+});
+
+// =============================================
+// GET FILTER PARAMETER
+// =============================================
+$filter = isset($_GET['filter']) ? $_GET['filter'] : 'upcoming';
+$validFilters = ['upcoming', 'today', 'past', 'all'];
+if (!in_array($filter, $validFilters)) {
+    $filter = 'upcoming';
+}
+
+// =============================================
+// NOTIFICATIONS
+// =============================================
 $notificationCheck = getRecord("
     SELECT COUNT(*) as count FROM notifications 
     WHERE user_id = ? 
@@ -78,7 +138,6 @@ $notificationCheck = getRecord("
 
 $hasNewNotifications = ($notificationCheck['count'] ?? 0) > 0;
 
-// Mark notifications as read when viewing
 if ($hasNewNotifications) {
     updateRecord("
         UPDATE notifications 
@@ -87,7 +146,6 @@ if ($hasNewNotifications) {
     ", [$userId], "i");
 }
 
-// Get notification count for badge
 $notificationCount = getRecord("
     SELECT COUNT(*) as count FROM notifications 
     WHERE user_id = ? AND is_read = 0
@@ -1002,6 +1060,11 @@ $roleLabels = [
             background: var(--bg-surface-low);
         }
 
+        .btn-outline.active {
+            background: var(--primary);
+            color: white;
+        }
+
         .btn-success {
             background: var(--success-color);
             color: white;
@@ -1040,6 +1103,18 @@ $roleLabels = [
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             transition: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .stat-card.active {
+            border-color: var(--primary);
+            background: rgba(79, 70, 229, 0.04);
         }
 
         .stat-card .stat-number {
@@ -1073,6 +1148,71 @@ $roleLabels = [
         }
 
         /* =============================================
+           FILTER TABS
+        ============================================= */
+        .filter-tabs {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.5rem;
+            padding: 0.25rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+            padding: 0.5rem;
+        }
+
+        .filter-tab {
+            padding: 0.5rem 1.25rem;
+            border-radius: 0.75rem;
+            border: none;
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            font-weight: 600;
+            font-size: 0.8125rem;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .filter-tab:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .filter-tab.active {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+        }
+
+        .filter-tab .tab-count {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 1.25rem;
+            height: 1.25rem;
+            padding: 0 0.375rem;
+            border-radius: 50px;
+            font-size: 0.625rem;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.2);
+            color: inherit;
+        }
+
+        .filter-tab.active .tab-count {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        .filter-tab:not(.active) .tab-count {
+            background: var(--slate-100);
+            color: var(--text-on-surface-variant);
+        }
+
+        /* =============================================
            INTERVIEW CARDS
         ============================================= */
         .interview-card {
@@ -1082,16 +1222,27 @@ $roleLabels = [
             box-shadow: var(--shadow-sm);
             overflow: hidden;
             margin-bottom: 1.5rem;
-            transition: none;
+            transition: all 0.3s ease;
+            animation: fadeInUp 0.4s ease;
+        }
+
+        .interview-card:hover {
+            box-shadow: var(--shadow-md);
+            transform: translateY(-2px);
         }
 
         .interview-card.upcoming {
             border-left: 4px solid var(--primary);
         }
 
+        .interview-card.today {
+            border-left: 4px solid var(--warning-color);
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.05), transparent);
+        }
+
         .interview-card.past {
             border-left: 4px solid var(--slate-500);
-            opacity: 0.7;
+            opacity: 0.75;
         }
 
         .interview-card .interview-header {
@@ -1201,6 +1352,11 @@ $roleLabels = [
             flex-wrap: wrap;
         }
 
+        .interview-card .interview-actions .btn {
+            font-size: 0.75rem;
+            padding: 0.375rem 0.75rem;
+        }
+
         /* =============================================
            EMPTY STATE
         ============================================= */
@@ -1226,6 +1382,20 @@ $roleLabels = [
         .empty-state p {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
+        }
+
+        /* =============================================
+           ANIMATIONS
+        ============================================= */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         /* =============================================
@@ -1360,6 +1530,20 @@ $roleLabels = [
                 right: -2rem;
             }
 
+            .filter-tabs {
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                -webkit-overflow-scrolling: touch;
+                padding: 0.5rem;
+                gap: 0.25rem;
+            }
+
+            .filter-tab {
+                padding: 0.375rem 0.75rem;
+                font-size: 0.75rem;
+                white-space: nowrap;
+            }
+
             .dashboard-sidebar.collapsed .sidebar-brand-text,
             .dashboard-sidebar.collapsed .sidebar-brand-category,
             .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
@@ -1436,6 +1620,11 @@ $roleLabels = [
                 padding: 0.75rem 1.25rem;
             }
 
+            .interview-card .interview-actions .btn {
+                font-size: 0.6875rem;
+                padding: 0.25rem 0.5rem;
+            }
+
             .notification-dropdown {
                 width: 16rem;
                 right: -1rem;
@@ -1476,14 +1665,12 @@ $roleLabels = [
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">calendar_month</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Applicant Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1502,6 +1689,13 @@ $roleLabels = [
             <a href="applications.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">description</span>
                 <span class="nav-text">Applications</span>
+                <span class="nav-badge"><?php echo $totalApplications; ?></span>
+            </a>
+
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
             </a>
 
             <a href="interview.php" class="sidebar-main-link active">
@@ -1515,7 +1709,6 @@ $roleLabels = [
                 <span class="nav-text">Job Search</span>
             </a>
 
-
         </nav>
 
         <div class="sidebar-footer">
@@ -1526,7 +1719,6 @@ $roleLabels = [
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            
         </div>
     </aside>
 
@@ -1541,9 +1733,9 @@ $roleLabels = [
                     <span class="material-symbols-outlined">menu</span>
                 </button>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
+                    <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
                 </button>
-                <span class="separator">/</span>
+                <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.875rem;">My Interviews</span>
             </div>
 
@@ -1564,7 +1756,6 @@ $roleLabels = [
                             <?php endif; ?>
                         </div>
                         <div class="notification-list" id="notificationList">
-                            <!-- Notifications loaded via AJAX -->
                             <div style="text-align:center; padding:1rem; color:var(--text-on-surface-variant);">
                                 Loading...
                             </div>
@@ -1626,49 +1817,93 @@ $roleLabels = [
 
                 <!-- Stats -->
                 <div class="stats-grid">
-                    <div class="stat-card">
+                    <div class="stat-card <?php echo $filter === 'all' ? 'active' : ''; ?>" onclick="setFilter('all')">
                         <span class="stat-icon">
                             <span class="material-symbols-outlined">calendar_month</span>
                         </span>
                         <div class="stat-number"><?php echo $interviewCount; ?></div>
                         <div class="stat-label">Total Interviews</div>
                     </div>
-                    <div class="stat-card" style="border-left:4px solid var(--primary);">
+                    <div class="stat-card <?php echo $filter === 'upcoming' ? 'active' : ''; ?>" style="border-left:4px solid var(--primary);" onclick="setFilter('upcoming')">
                         <span class="stat-icon" style="background:rgba(79,70,229,0.1); color:var(--primary);">
                             <span class="material-symbols-outlined">upcoming</span>
                         </span>
                         <div class="stat-number" style="color:var(--primary);"><?php echo count($upcomingInterviews); ?></div>
                         <div class="stat-label">Upcoming</div>
                     </div>
-                    <div class="stat-card" style="border-left:4px solid var(--slate-500);">
+                    <div class="stat-card <?php echo $filter === 'today' ? 'active' : ''; ?>" style="border-left:4px solid var(--warning-color);" onclick="setFilter('today')">
+                        <span class="stat-icon" style="background:rgba(245,158,11,0.1); color:var(--warning-color);">
+                            <span class="material-symbols-outlined">today</span>
+                        </span>
+                        <div class="stat-number" style="color:var(--warning-color);"><?php echo count($todayInterviews); ?></div>
+                        <div class="stat-label">Today</div>
+                    </div>
+                    <div class="stat-card <?php echo $filter === 'past' ? 'active' : ''; ?>" style="border-left:4px solid var(--slate-500);" onclick="setFilter('past')">
                         <span class="stat-icon" style="background:rgba(100,116,139,0.1); color:var(--slate-500);">
                             <span class="material-symbols-outlined">history</span>
                         </span>
                         <div class="stat-number" style="color:var(--slate-500);"><?php echo count($pastInterviews); ?></div>
                         <div class="stat-label">Past</div>
                     </div>
-                    <div class="stat-card" style="border-left:4px solid #22c55e;">
-                        <span class="stat-icon" style="background:rgba(34,197,94,0.1); color:#22c55e;">
-                            <span class="material-symbols-outlined">check_circle</span>
-                        </span>
-                        <div class="stat-number" style="color:#22c55e;">
-                            <?php 
-                            $completed = array_filter($interviews, function($i) { 
-                                return strtotime($i['interview_date']) <= time() && $i['status'] === 'interviewed';
-                            });
-                            echo count($completed);
-                            ?>
-                        </div>
-                        <div class="stat-label">Completed</div>
-                    </div>
+                </div>
+
+                <!-- Filter Tabs -->
+                <div class="filter-tabs">
+                    <button class="filter-tab <?php echo $filter === 'all' ? 'active' : ''; ?>" onclick="setFilter('all')">
+                        All
+                        <span class="tab-count"><?php echo $interviewCount; ?></span>
+                    </button>
+                    <button class="filter-tab <?php echo $filter === 'upcoming' ? 'active' : ''; ?>" onclick="setFilter('upcoming')">
+                        <span class="material-symbols-outlined" style="font-size:1rem;">upcoming</span>
+                        Upcoming
+                        <span class="tab-count"><?php echo count($upcomingInterviews); ?></span>
+                    </button>
+                    <button class="filter-tab <?php echo $filter === 'today' ? 'active' : ''; ?>" onclick="setFilter('today')">
+                        <span class="material-symbols-outlined" style="font-size:1rem;">today</span>
+                        Today
+                        <span class="tab-count"><?php echo count($todayInterviews); ?></span>
+                    </button>
+                    <button class="filter-tab <?php echo $filter === 'past' ? 'active' : ''; ?>" onclick="setFilter('past')">
+                        <span class="material-symbols-outlined" style="font-size:1rem;">history</span>
+                        Past
+                        <span class="tab-count"><?php echo count($pastInterviews); ?></span>
+                    </button>
                 </div>
 
                 <!-- Interviews List -->
-                <?php if (empty($interviews)): ?>
+                <?php 
+                // Get the filtered interviews based on current filter
+                $displayInterviews = [];
+                if ($filter === 'all') {
+                    $displayInterviews = array_merge($todayInterviews, $upcomingInterviews, $pastInterviews);
+                } elseif ($filter === 'today') {
+                    $displayInterviews = $todayInterviews;
+                } elseif ($filter === 'upcoming') {
+                    $displayInterviews = $upcomingInterviews;
+                } elseif ($filter === 'past') {
+                    $displayInterviews = $pastInterviews;
+                }
+                ?>
+                
+                <?php if (empty($displayInterviews)): ?>
                     <div class="empty-state">
-                        <span class="material-symbols-outlined">event_busy</span>
-                        <h4>No Interviews Scheduled</h4>
-                        <p>You don't have any interviews scheduled yet. Keep applying to jobs!</p>
+                        <?php if ($filter === 'upcoming'): ?>
+                            <span class="material-symbols-outlined">event_available</span>
+                            <h4>No Upcoming Interviews</h4>
+                            <p>You don't have any upcoming interviews scheduled. Keep applying to jobs!</p>
+                        <?php elseif ($filter === 'today'): ?>
+                            <span class="material-symbols-outlined">today</span>
+                            <h4>No Interviews Today</h4>
+                            <p>You don't have any interviews scheduled for today.</p>
+                        <?php elseif ($filter === 'past'): ?>
+                            <span class="material-symbols-outlined">history</span>
+                            <h4>No Past Interviews</h4>
+                            <p>You haven't completed any interviews yet.</p>
+                        <?php else: ?>
+                            <span class="material-symbols-outlined">event_busy</span>
+                            <h4>No Interviews Scheduled</h4>
+                            <p>You don't have any interviews scheduled yet. Keep applying to jobs!</p>
+                        <?php endif; ?>
                         <br>
                         <a href="job_search.php" class="btn btn-primary">
                             <span class="material-symbols-outlined">search</span>
@@ -1676,7 +1911,7 @@ $roleLabels = [
                         </a>
                     </div>
                 <?php else: ?>
-                    <?php foreach ($interviews as $interview): ?>
+                    <?php foreach ($displayInterviews as $interview): ?>
                         <?php
                         $isUpcoming = strtotime($interview['interview_date']) > time();
                         $isToday = date('Y-m-d', strtotime($interview['interview_date'])) === date('Y-m-d');
@@ -1687,7 +1922,7 @@ $roleLabels = [
                             $statusLabel = 'Today';
                         }
                         ?>
-                        <div class="interview-card <?php echo $isUpcoming ? 'upcoming' : 'past'; ?>">
+                        <div class="interview-card <?php echo $statusClass; ?>">
                             <div class="interview-header">
                                 <div>
                                     <div class="job-title"><?php echo htmlspecialchars($interview['job_title']); ?></div>
@@ -1713,9 +1948,39 @@ $roleLabels = [
                                         <span class="material-symbols-outlined">person</span>
                                         <div>
                                             <div class="detail-label">Interviewer</div>
-                                            <div class="detail-value"><?php echo htmlspecialchars($interview['hr_first_name'] . ' ' . $interview['hr_last_name']); ?></div>
+                                            <div class="detail-value">
+                                                <?php 
+                                                // Show the interviewer name from the interviews table if available
+                                                if (!empty($interview['interviewer_name'])) {
+                                                    echo htmlspecialchars($interview['interviewer_name']);
+                                                } else {
+                                                    echo htmlspecialchars($interview['hr_first_name'] . ' ' . $interview['hr_last_name']);
+                                                }
+                                                ?>
+                                            </div>
                                             <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                                <?php echo htmlspecialchars($interview['hr_email']); ?>
+                                                <?php 
+                                                if (!empty($interview['interviewer_email'])) {
+                                                    echo htmlspecialchars($interview['interviewer_email']);
+                                                } else {
+                                                    echo htmlspecialchars($interview['hr_email']);
+                                                }
+                                                ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <span class="material-symbols-outlined">location_on</span>
+                                        <div>
+                                            <div class="detail-label">Location</div>
+                                            <div class="detail-value">
+                                                <?php 
+                                                if (!empty($interview['location'])) {
+                                                    echo htmlspecialchars($interview['location']);
+                                                } else {
+                                                    echo htmlspecialchars($interview['job_location'] ?? 'Remote');
+                                                }
+                                                ?>
                                             </div>
                                         </div>
                                     </div>
@@ -1729,19 +1994,12 @@ $roleLabels = [
                                             </div>
                                         </div>
                                     </div>
-                                    <div class="detail-item">
-                                        <span class="material-symbols-outlined">location_on</span>
-                                        <div>
-                                            <div class="detail-label">Location</div>
-                                            <div class="detail-value"><?php echo htmlspecialchars($interview['job_location'] ?? 'Remote'); ?></div>
-                                        </div>
-                                    </div>
                                 </div>
                             </div>
 
                             <?php if (!empty($interview['interview_notes'])): ?>
                                 <div class="interview-notes">
-                                    <div class="notes-label">Interview Notes</div>
+                                    <div class="notes-label">Additional Notes</div>
                                     <div class="notes-text"><?php echo nl2br(htmlspecialchars($interview['interview_notes'])); ?></div>
                                 </div>
                             <?php endif; ?>
@@ -1779,40 +2037,39 @@ $roleLabels = [
         // =============================================
         const sidebar = document.getElementById('appSidebar');
         const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+        const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
+        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         const mainWrapper = document.getElementById('mainWrapper');
         const isMobile = window.innerWidth <= 768;
         const savedState = localStorage.getItem('sidebarCollapsed');
 
         if (savedState === 'true' && !isMobile) {
             sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+            sidebarToggleIcon.textContent = 'chevron_right';
         }
 
         sidebarToggleBtn.addEventListener('click', function() {
             if (window.innerWidth <= 768) return;
             sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            }
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            sidebarToggleIcon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
         });
 
         // =============================================
         // 2. MOBILE SIDEBAR
         // =============================================
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
-
         function openMobileSidebar() {
             sidebar.classList.add('mobile-open');
+            sidebar.classList.remove('mobile-hidden');
             sidebarBackdrop.classList.add('active');
             document.body.style.overflow = 'hidden';
         }
 
         function closeMobileSidebar() {
             sidebar.classList.remove('mobile-open');
+            sidebar.classList.add('mobile-hidden');
             sidebarBackdrop.classList.remove('active');
             document.body.style.overflow = '';
         }
@@ -1820,9 +2077,9 @@ $roleLabels = [
         mobileMenuBtn.addEventListener('click', openMobileSidebar);
         sidebarBackdrop.addEventListener('click', closeMobileSidebar);
 
-        document.querySelectorAll('.sidebar-main-link').forEach(link => {
+        document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
             link.addEventListener('click', function() {
-                if (window.innerWidth <= 768) {
+                if (window.innerWidth < 768) {
                     closeMobileSidebar();
                 }
             });
@@ -1848,7 +2105,16 @@ $roleLabels = [
         });
 
         // =============================================
-        // 4. NOTIFICATIONS
+        // 4. FILTER FUNCTION
+        // =============================================
+        function setFilter(filter) {
+            const currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.set('filter', filter);
+            window.location.href = currentUrl.toString();
+        }
+
+        // =============================================
+        // 5. NOTIFICATIONS
         // =============================================
         const notificationBtn = document.getElementById('notificationBtn');
         const notificationDropdown = document.getElementById('notificationDropdown');
@@ -1947,19 +2213,17 @@ $roleLabels = [
         }
 
         // =============================================
-        // 5. REAL-TIME NOTIFICATION CHECK (Polling) - 1 SECOND
+        // 6. REAL-TIME NOTIFICATION CHECK (Polling) - 30 SECONDS
         // =============================================
         function checkNewNotifications() {
             fetch('check_notifications.php')
                 .then(response => response.json())
                 .then(data => {
                     if (data.success && data.has_new) {
-                        // Update badge
                         const badge = document.getElementById('notifBadge');
                         badge.textContent = data.unread_count;
                         badge.classList.remove('hidden');
                         
-                        // Show toast for new interview notification
                         if (data.latest && data.latest.type === 'interview_scheduled') {
                             showToast('New interview scheduled for ' + data.latest.job_title, 'info');
                         }
@@ -1970,10 +2234,8 @@ $roleLabels = [
                 });
         }
 
-        // Check for new notifications every 1 second (1000ms)
-        setInterval(checkNewNotifications, 1000);
+        setInterval(checkNewNotifications, 30000);
 
-        // Initial load of notifications
         document.addEventListener('DOMContentLoaded', function() {
             <?php if ($hasNewNotifications): ?>
             setTimeout(function() {
@@ -1983,43 +2245,32 @@ $roleLabels = [
         });
 
         // =============================================
-        // 6. ADD TO CALENDAR
+        // 7. ADD TO CALENDAR
         // =============================================
         function addToCalendar(jobTitle, interviewDate, notes) {
             const date = new Date(interviewDate);
-            const formattedDate = date.toLocaleDateString('en-US', {
-                weekday: 'long',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-            
-            // Create Google Calendar link
             const start = date.toISOString().replace(/-|:|\.\d+/g, '');
             const end = new Date(date.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '');
             const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Interview: ${encodeURIComponent(jobTitle)}&dates=${start}/${end}&details=${encodeURIComponent('Interview Notes: ' + notes)}`;
-            
             window.open(url, '_blank');
         }
 
         // =============================================
-        // 7. VIEW JOB DETAILS
+        // 8. VIEW JOB DETAILS
         // =============================================
         function viewJobDetails(jobId) {
             window.location.href = 'job_details.php?id=' + jobId;
         }
 
         // =============================================
-        // 8. CONTACT HR
+        // 9. CONTACT HR
         // =============================================
         function contactHR(hrEmail, jobTitle) {
             window.location.href = 'mailto:' + hrEmail + '?subject=Interview for ' + encodeURIComponent(jobTitle);
         }
 
         // =============================================
-        // 9. UTILITY FUNCTIONS
+        // 10. UTILITY FUNCTIONS
         // =============================================
         function escapeHtml(text) {
             if (!text) return '';
@@ -2041,7 +2292,7 @@ $roleLabels = [
         }
 
         // =============================================
-        // 10. TOAST SYSTEM
+        // 11. TOAST SYSTEM
         // =============================================
         function showToast(message, type = 'info') {
             const existingToast = document.querySelector('.toast');
@@ -2061,7 +2312,7 @@ $roleLabels = [
         }
 
         // =============================================
-        // 11. RESPONSIVE HANDLING
+        // 12. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
         window.addEventListener('resize', function() {
@@ -2070,6 +2321,7 @@ $roleLabels = [
                 const width = window.innerWidth;
                 if (width <= 768) {
                     sidebar.classList.remove('collapsed');
+                    sidebarToggleIcon.textContent = 'chevron_left';
                 } else {
                     sidebar.classList.remove('mobile-open');
                     sidebarBackdrop.classList.remove('active');
@@ -2077,15 +2329,17 @@ $roleLabels = [
                     const saved = localStorage.getItem('sidebarCollapsed');
                     if (saved === 'true') {
                         sidebar.classList.add('collapsed');
+                        sidebarToggleIcon.textContent = 'chevron_right';
                     } else {
                         sidebar.classList.remove('collapsed');
+                        sidebarToggleIcon.textContent = 'chevron_left';
                     }
                 }
             }, 250);
         });
 
         // =============================================
-        // 12. KEYBOARD ACCESSIBILITY
+        // 13. KEYBOARD ACCESSIBILITY
         // =============================================
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
