@@ -2,6 +2,39 @@
 // app/config.php - Main Configuration File
 
 // =============================================
+// LOAD ENVIRONMENT VARIABLES FROM .env
+// =============================================
+
+// Force load .env file
+$envFile = __DIR__ . '/../.env';
+if (file_exists($envFile)) {
+    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        // Skip comments
+        if (strpos($line, '#') === 0) {
+            continue;
+        }
+        
+        // Parse key=value
+        if (strpos($line, '=') !== false) {
+            list($key, $value) = explode('=', $line, 2);
+            $key = trim($key);
+            $value = trim($value);
+            
+            // Remove quotes if present
+            if (strpos($value, '"') === 0 || strpos($value, "'") === 0) {
+                $value = substr($value, 1, -1);
+            }
+            
+            // Set in all possible places
+            putenv("$key=$value");
+            $_ENV[$key] = $value;
+            $_SERVER[$key] = $value;
+        }
+    }
+}
+
+// =============================================
 // DATABASE CONFIGURATION
 // =============================================
 define('DB_HOST', 'localhost');
@@ -54,22 +87,44 @@ date_default_timezone_set(APP_TIMEZONE);
 /**
  * Execute a prepared statement query
  */
+/**
+ * Execute a prepared statement query
+ */
 function executeQuery($sql, $params = [], $types = "") {
     global $conn;
     $stmt = mysqli_prepare($conn, $sql);
     
     if (!$stmt) {
-        die("Query preparation failed: " . mysqli_error($conn));
+        error_log("Query preparation failed: " . mysqli_error($conn));
+        error_log("SQL: " . $sql);
+        return false;
     }
     
     if (!empty($params)) {
         if (empty($types)) {
             $types = str_repeat("s", count($params));
         }
+        
+        // Convert null values to empty string for binding
+        foreach ($params as $key => $value) {
+            if ($value === null) {
+                $params[$key] = '';
+            }
+        }
+        
         mysqli_stmt_bind_param($stmt, $types, ...$params);
     }
     
-    mysqli_stmt_execute($stmt);
+    $executed = mysqli_stmt_execute($stmt);
+    
+    if (!$executed) {
+        error_log("Execute failed: " . mysqli_stmt_error($stmt));
+        error_log("SQL: " . $sql);
+        error_log("Params: " . json_encode($params));
+        mysqli_stmt_close($stmt);
+        return false;
+    }
+    
     $result = mysqli_stmt_get_result($stmt);
     mysqli_stmt_close($stmt);
     return $result;
@@ -108,19 +163,43 @@ function insertRecord($sql, $params = [], $types = "") {
     $stmt = mysqli_prepare($conn, $sql);
     
     if (!$stmt) {
-        die("Query preparation failed: " . mysqli_error($conn));
+        error_log("Insert prepare failed: " . mysqli_error($conn));
+        error_log("SQL: " . $sql);
+        return false;
     }
     
     if (!empty($params)) {
         if (empty($types)) {
             $types = str_repeat("s", count($params));
         }
+        
+        // Convert null values to empty string for binding
+        foreach ($params as $key => $value) {
+            if ($value === null) {
+                $params[$key] = '';
+            }
+        }
+        
+        error_log("Insert binding params: " . json_encode($params));
+        error_log("Insert types: " . $types);
+        
         mysqli_stmt_bind_param($stmt, $types, ...$params);
     }
     
-    mysqli_stmt_execute($stmt);
+    $executed = mysqli_stmt_execute($stmt);
+    
+    if (!$executed) {
+        error_log("Insert execute failed: " . mysqli_stmt_error($stmt));
+        error_log("SQL: " . $sql);
+        error_log("Params: " . json_encode($params));
+        mysqli_stmt_close($stmt);
+        return false;
+    }
+    
     $id = mysqli_insert_id($conn);
     mysqli_stmt_close($stmt);
+    
+    error_log("Insert successful. ID: " . $id);
     return $id;
 }
 
@@ -132,17 +211,36 @@ function updateRecord($sql, $params = [], $types = "") {
     $stmt = mysqli_prepare($conn, $sql);
     
     if (!$stmt) {
-        die("Query preparation failed: " . mysqli_error($conn));
+        error_log("Update prepare failed: " . mysqli_error($conn));
+        error_log("SQL: " . $sql);
+        return false;
     }
     
     if (!empty($params)) {
         if (empty($types)) {
             $types = str_repeat("s", count($params));
         }
+        
+        // Convert null values to empty string for binding
+        foreach ($params as $key => $value) {
+            if ($value === null) {
+                $params[$key] = '';
+            }
+        }
+        
         mysqli_stmt_bind_param($stmt, $types, ...$params);
     }
     
-    $result = mysqli_stmt_execute($stmt);
+    $executed = mysqli_stmt_execute($stmt);
+    
+    if (!$executed) {
+        error_log("Update execute failed: " . mysqli_stmt_error($stmt));
+        error_log("SQL: " . $sql);
+        error_log("Params: " . json_encode($params));
+        mysqli_stmt_close($stmt);
+        return false;
+    }
+    
     $affected = mysqli_stmt_affected_rows($stmt);
     mysqli_stmt_close($stmt);
     return $affected > 0;
@@ -156,22 +254,40 @@ function deleteRecord($sql, $params = [], $types = "") {
     $stmt = mysqli_prepare($conn, $sql);
     
     if (!$stmt) {
-        die("Query preparation failed: " . mysqli_error($conn));
+        error_log("Delete prepare failed: " . mysqli_error($conn));
+        error_log("SQL: " . $sql);
+        return false;
     }
     
     if (!empty($params)) {
         if (empty($types)) {
             $types = str_repeat("s", count($params));
         }
+        
+        // Convert null values to empty string for binding
+        foreach ($params as $key => $value) {
+            if ($value === null) {
+                $params[$key] = '';
+            }
+        }
+        
         mysqli_stmt_bind_param($stmt, $types, ...$params);
     }
     
-    $result = mysqli_stmt_execute($stmt);
+    $executed = mysqli_stmt_execute($stmt);
+    
+    if (!$executed) {
+        error_log("Delete execute failed: " . mysqli_stmt_error($stmt));
+        error_log("SQL: " . $sql);
+        error_log("Params: " . json_encode($params));
+        mysqli_stmt_close($stmt);
+        return false;
+    }
+    
     $affected = mysqli_stmt_affected_rows($stmt);
     mysqli_stmt_close($stmt);
     return $affected > 0;
 }
-
 /**
  * Check if a record exists
  */
@@ -935,28 +1051,77 @@ function getEmployees($filters = []) {
 /**
  * Create employee record
  */
+/**
+ * Create employee record
+ */
 function createEmployee($userId, $data) {
     global $conn;
-    $sql = "INSERT INTO employees (user_id, first_name, last_name, email, phone, position, department, hire_date, status, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+    
+    // Prepare data with proper null handling
+    $applicationId = isset($data['application_id']) ? (int)$data['application_id'] : null;
+    $firstName = $data['first_name'] ?? '';
+    $lastName = $data['last_name'] ?? '';
+    $email = $data['email'] ?? '';
+    $phone = $data['phone'] ?? null;
+    $position = $data['position'] ?? null;
+    $department = $data['department'] ?? null;
+    $hireDate = $data['hire_date'] ?? date('Y-m-d');
+    $status = $data['status'] ?? 'active';
+    
+    $sql = "INSERT INTO employees (
+        user_id, 
+        application_id, 
+        first_name, 
+        last_name, 
+        email, 
+        phone, 
+        position, 
+        department, 
+        hire_date, 
+        status, 
+        created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+    
     $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "issssssss", 
-        $userId,
-        $data['first_name'],
-        $data['last_name'],
-        $data['email'],
-        $data['phone'] ?? null,
-        $data['position'] ?? null,
-        $data['department'] ?? null,
-        $data['hire_date'] ?? date('Y-m-d'),
-        $data['status'] ?? 'active'
+    
+    if (!$stmt) {
+        error_log("Create employee prepare failed: " . mysqli_error($conn));
+        return false;
+    }
+    
+    // Bind parameters - all as strings except user_id and application_id which are integers
+    // Using 'i' for integers, 's' for strings
+    mysqli_stmt_bind_param($stmt, "iissssssss", 
+        $userId,           // i - integer
+        $applicationId,    // i - integer (can be null but we pass 0 or null)
+        $firstName,        // s - string
+        $lastName,         // s - string
+        $email,            // s - string
+        $phone,            // s - string (null becomes empty string)
+        $position,         // s - string (null becomes empty string)
+        $department,       // s - string (null becomes empty string)
+        $hireDate,         // s - string
+        $status            // s - string
     );
-    mysqli_stmt_execute($stmt);
+    
+    $executed = mysqli_stmt_execute($stmt);
+    
+    if (!$executed) {
+        error_log("Create employee execute failed: " . mysqli_stmt_error($stmt));
+        mysqli_stmt_close($stmt);
+        return false;
+    }
+    
     $id = mysqli_insert_id($conn);
     mysqli_stmt_close($stmt);
+    
+    error_log("Employee created with ID: " . $id);
     return $id;
 }
 
+/**
+ * Update employee record
+ */
 /**
  * Update employee record
  */
@@ -970,7 +1135,7 @@ function updateEmployee($employeeId, $data) {
     foreach ($allowedFields as $field) {
         if (isset($data[$field])) {
             $fields[] = "$field = ?";
-            $params[] = $data[$field];
+            $params[] = $data[$field] ?? '';
             $types .= "s";
         }
     }
@@ -984,6 +1149,12 @@ function updateEmployee($employeeId, $data) {
     
     $sql = "UPDATE employees SET " . implode(", ", $fields) . " WHERE id = ?";
     $stmt = mysqli_prepare($conn, $sql);
+    
+    if (!$stmt) {
+        error_log("Update employee prepare failed: " . mysqli_error($conn));
+        return false;
+    }
+    
     mysqli_stmt_bind_param($stmt, $types, ...$params);
     $result = mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
@@ -1249,5 +1420,86 @@ function time_elapsed_string($datetime, $full = false) {
     
     if (!$full) $string = array_slice($string, 0, 1);
     return $string ? implode(', ', $string) . ' ago' : 'Just now';
+}
+// Include permission functions
+require_once __DIR__ . '/permissions.php';
+// =============================================
+// GEMINI AI CONFIGURATION (FREE)
+// =============================================
+
+// Debug: Check if .env is loaded
+error_log("🔍 Loading Gemini configuration...");
+
+// Get Gemini API key from environment
+$geminiKey = getenv('GEMINI_API_KEY') ?: '';
+
+// If getenv didn't work, try $_ENV
+if (empty($geminiKey)) {
+    $geminiKey = $_ENV['GEMINI_API_KEY'] ?? '';
+}
+
+// If still empty, try $_SERVER
+if (empty($geminiKey)) {
+    $geminiKey = $_SERVER['GEMINI_API_KEY'] ?? '';
+}
+
+// Debug logging
+error_log("🔑 Gemini key loaded: " . (empty($geminiKey) ? 'NOT FOUND' : substr($geminiKey, 0, 20) . '...'));
+
+// Define constants
+define('GEMINI_API_KEY', $geminiKey);
+define('USE_GEMINI', !empty($geminiKey));
+
+// Debug: Log the final status
+error_log("⚙️ USE_GEMINI: " . (USE_GEMINI ? 'true' : 'false'));
+
+// =============================================
+// GROQ AI CONFIGURATION (FREE & FAST!)
+// =============================================
+
+// Debug: Check if .env is loaded for Groq
+error_log("🔍 Loading Groq configuration...");
+
+// Get Groq API key from environment
+$groqKey = getenv('GROQ_API_KEY') ?: '';
+
+// If getenv didn't work, try $_ENV
+if (empty($groqKey)) {
+    $groqKey = $_ENV['GROQ_API_KEY'] ?? '';
+}
+
+// If still empty, try $_SERVER
+if (empty($groqKey)) {
+    $groqKey = $_SERVER['GROQ_API_KEY'] ?? '';
+}
+
+// Debug logging
+error_log("🔑 Groq key loaded: " . (empty($groqKey) ? 'NOT FOUND' : substr($groqKey, 0, 20) . '...'));
+
+// Define constants
+define('GROQ_API_KEY', $groqKey);
+define('USE_GROQ', !empty($groqKey));
+
+// Debug: Log the final status
+error_log("⚙️ USE_GROQ: " . (USE_GROQ ? 'true' : 'false'));
+
+// =============================================
+// FINAL AI STATUS
+// =============================================
+
+error_log("📊 AI Configuration Summary:");
+error_log("  - GROQ: " . (USE_GROQ ? '✅ ENABLED' : '❌ DISABLED'));
+error_log("  - GEMINI: " . (USE_GEMINI ? '✅ ENABLED' : '❌ DISABLED'));
+
+/**
+ * Update applicant hired status
+ */
+function updateApplicantHiredStatus($applicantId, $isHired = true) {
+    $sql = "UPDATE applicants SET is_hired = ?, hired_at = ? WHERE id = ?";
+    return updateRecord($sql, [
+        $isHired ? 1 : 0,
+        $isHired ? date('Y-m-d H:i:s') : null,
+        $applicantId
+    ], "isi");
 }
 ?>
