@@ -1,5 +1,5 @@
 <?php
-// portals/admin/users.php - User Management with Modal System
+// portals/admin/roles.php - Role-Based Access Control Management
 session_start();
 
 require_once '../../app/config.php';
@@ -15,174 +15,280 @@ $fullName = $_SESSION['full_name'] ?? 'Admin User';
 $firstName = $_SESSION['first_name'] ?? 'Admin';
 $email = $_SESSION['email'] ?? '';
 
-// Get filter parameters
-$roleFilter = $_GET['role'] ?? 'all';
-$statusFilter = $_GET['status'] ?? 'all';
-$searchQuery = $_GET['search'] ?? '';
+// =============================================
+// PERMISSION DEFINITIONS
+// =============================================
+$permissionGroups = [
+    'dashboard' => [
+        'label' => 'Dashboard',
+        'icon' => 'dashboard',
+        'permissions' => [
+            'view_dashboard' => 'View Dashboard',
+            'view_stats' => 'View Statistics',
+        ]
+    ],
+    'users' => [
+        'label' => 'User Management',
+        'icon' => 'people',
+        'permissions' => [
+            'view_users' => 'View Users',
+            'create_users' => 'Create Users',
+            'edit_users' => 'Edit Users',
+            'delete_users' => 'Delete Users',
+            'manage_roles' => 'Manage Roles',
+        ]
+    ],
+    'clients' => [
+        'label' => 'Client Management',
+        'icon' => 'business',
+        'permissions' => [
+            'view_clients' => 'View Clients',
+            'create_clients' => 'Create Clients',
+            'edit_clients' => 'Edit Clients',
+            'delete_clients' => 'Delete Clients',
+        ]
+    ],
+    'employees' => [
+        'label' => 'Employee Management',
+        'icon' => 'badge',
+        'permissions' => [
+            'view_employees' => 'View Employees',
+            'create_employees' => 'Create Employees',
+            'edit_employees' => 'Edit Employees',
+            'delete_employees' => 'Delete Employees',
+        ]
+    ],
+    'jobs' => [
+        'label' => 'Job Management',
+        'icon' => 'work',
+        'permissions' => [
+            'view_jobs' => 'View Jobs',
+            'create_jobs' => 'Create Jobs',
+            'edit_jobs' => 'Edit Jobs',
+            'delete_jobs' => 'Delete Jobs',
+            'manage_applications' => 'Manage Applications',
+        ]
+    ],
+    'applications' => [
+        'label' => 'Applications',
+        'icon' => 'description',
+        'permissions' => [
+            'view_applications' => 'View Applications',
+            'review_applications' => 'Review Applications',
+            'schedule_interviews' => 'Schedule Interviews',
+        ]
+    ],
+    'agencies' => [
+        'label' => 'Agency Management',
+        'icon' => 'apartment',
+        'permissions' => [
+            'view_agencies' => 'View Agencies',
+            'create_agencies' => 'Create Agencies',
+            'edit_agencies' => 'Edit Agencies',
+            'delete_agencies' => 'Delete Agencies',
+        ]
+    ],
+    'settings' => [
+        'label' => 'System Settings',
+        'icon' => 'settings',
+        'permissions' => [
+            'view_settings' => 'View Settings',
+            'edit_settings' => 'Edit Settings',
+            'manage_biometric' => 'Manage Biometric',
+            'view_logs' => 'View Audit Logs',
+        ]
+    ],
+    'profile' => [
+        'label' => 'Profile',
+        'icon' => 'person',
+        'permissions' => [
+            'view_profile' => 'View Profile',
+            'edit_profile' => 'Edit Profile',
+            'change_password' => 'Change Password',
+        ]
+    ],
+    'reports' => [
+        'label' => 'Reports & Analytics',
+        'icon' => 'analytics',
+        'permissions' => [
+            'view_reports' => 'View Reports',
+            'export_reports' => 'Export Reports',
+        ]
+    ]
+];
 
-// Build query conditions
-$conditions = [];
-$params = [];
-$types = "";
-
-if ($roleFilter !== 'all') {
-    $conditions[] = "role = ?";
-    $params[] = $roleFilter;
-    $types .= "s";
+// Default role permissions (each role gets a set of permissions)
+// FIXED: Properly collect all permission keys without using spread operator with named parameters
+$allPermissionKeys = [];
+foreach ($permissionGroups as $group) {
+    $allPermissionKeys = array_merge($allPermissionKeys, array_keys($group['permissions']));
 }
 
-if ($statusFilter !== 'all') {
-    $conditions[] = "is_active = ?";
-    $params[] = $statusFilter === 'active' ? 1 : 0;
-    $types .= "i";
+$defaultRolePermissions = [
+    'admin' => $allPermissionKeys,
+    'hr_manager' => [
+        'view_dashboard', 'view_stats',
+        'view_users', 'create_users', 'edit_users',
+        'view_clients', 'create_clients', 'edit_clients',
+        'view_employees', 'create_employees', 'edit_employees',
+        'view_jobs', 'create_jobs', 'edit_jobs', 'manage_applications',
+        'view_applications', 'review_applications', 'schedule_interviews',
+        'view_agencies',
+        'view_profile', 'edit_profile', 'change_password',
+        'view_reports'
+    ],
+    'recruiter' => [
+        'view_dashboard', 'view_stats',
+        'view_users',
+        'view_clients',
+        'view_employees',
+        'view_jobs', 'create_jobs', 'edit_jobs', 'manage_applications',
+        'view_applications', 'review_applications', 'schedule_interviews',
+        'view_agencies',
+        'view_profile', 'edit_profile', 'change_password',
+        'view_reports'
+    ],
+    'client' => [
+        'view_dashboard', 'view_stats',
+        'view_jobs', 'create_jobs', 'edit_jobs',
+        'view_applications', 'review_applications',
+        'view_profile', 'edit_profile', 'change_password'
+    ],
+    'applicant' => [
+        'view_dashboard', 'view_stats',
+        'view_profile', 'edit_profile', 'change_password'
+    ],
+    'employee' => [
+        'view_dashboard', 'view_stats',
+        'view_profile', 'edit_profile', 'change_password'
+    ],
+    'supervisor' => [
+        'view_dashboard', 'view_stats',
+        'view_employees', 'edit_employees',
+        'view_jobs',
+        'view_applications', 'review_applications',
+        'view_profile', 'edit_profile', 'change_password'
+    ]
+];
+
+// Get all roles from database or use default
+$sql = "SELECT * FROM roles ORDER BY role_name";
+$roles = getRecords($sql);
+
+// If no roles in database, create default roles
+if (empty($roles)) {
+    foreach ($defaultRolePermissions as $roleName => $permissions) {
+        $permissionJson = json_encode($permissions);
+        $insertSql = "INSERT INTO roles (role_name, permissions, created_at) VALUES (?, ?, NOW())";
+        insertRecord($insertSql, [$roleName, $permissionJson], "ss");
+    }
+    $roles = getRecords($sql);
 }
 
-if (!empty($searchQuery)) {
-    $conditions[] = "(first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)";
-    $searchParam = "%$searchQuery%";
-    $params[] = $searchParam;
-    $params[] = $searchParam;
-    $params[] = $searchParam;
-    $types .= "sss";
-}
-
-$whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
-
-// Get users
-$sql = "SELECT id, first_name, last_name, email, role, is_active, created_at, last_activity 
-        FROM users 
-        $whereClause
-        ORDER BY created_at DESC";
-
-$users = getRecords($sql, $params, $types);
-
-// Get role counts for filter
+// Get role counts for each role
 $roleCounts = [];
-$roles = ['admin', 'hr_manager', 'recruiter', 'client', 'applicant', 'employee', 'supervisor'];
 foreach ($roles as $role) {
-    $count = getRecord("SELECT COUNT(*) as count FROM users WHERE role = ?", [$role], "s")['count'] ?? 0;
-    $roleCounts[$role] = $count;
+    $count = getRecord("SELECT COUNT(*) as count FROM users WHERE role = ?", [$role['role_name']], "s")['count'] ?? 0;
+    $roleCounts[$role['role_name']] = $count;
 }
 
-$totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
-$activeUsers = getRecord("SELECT COUNT(*) as count FROM users WHERE is_active = 1")['count'] ?? 0;
-$inactiveUsers = getRecord("SELECT COUNT(*) as count FROM users WHERE is_active = 0")['count'] ?? 0;
+$totalRoles = count($roles);
 
-// Handle AJAX POST actions (for modal operations)
+// Handle AJAX POST actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
     
     $action = $_POST['action'] ?? '';
-    $userId = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
+    $roleId = isset($_POST['role_id']) ? (int)$_POST['role_id'] : 0;
     
-    // Toggle status
-    if ($action === 'toggle_status' && $userId > 0) {
-        $user = getUserById($userId);
-        if ($user) {
-            $newStatus = $user['is_active'] == 1 ? 0 : 1;
-            $updateSql = "UPDATE users SET is_active = ? WHERE id = ?";
-            $result = updateRecord($updateSql, [$newStatus, $userId], "ii");
-            
-            if ($result) {
-                logActivity($_SESSION['user_id'], 'User Status Toggled', 'users', $userId, 'User ' . $user['email'] . ' status changed to ' . ($newStatus ? 'Active' : 'Inactive'));
-                echo json_encode(['success' => true, 'message' => 'User status updated successfully!']);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Failed to update user status.']);
-            }
+    // Get role by ID
+    if ($action === 'get_role' && $roleId > 0) {
+        $role = getRecord("SELECT * FROM roles WHERE id = ?", [$roleId], "i");
+        if ($role) {
+            $role['permissions'] = json_decode($role['permissions'], true) ?: [];
+            echo json_encode(['success' => true, 'role' => $role]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'User not found.']);
+            echo json_encode(['success' => false, 'error' => 'Role not found.']);
         }
         exit;
     }
     
-    // Delete user
-    if ($action === 'delete_user' && $userId > 0) {
-        if ($userId == $_SESSION['user_id']) {
-            echo json_encode(['success' => false, 'error' => 'You cannot delete your own account.']);
+    // Update role permissions
+    if ($action === 'update_permissions' && $roleId > 0) {
+        $permissions = isset($_POST['permissions']) ? json_decode($_POST['permissions'], true) : [];
+        $roleName = $_POST['role_name'] ?? '';
+        
+        if (empty($roleName)) {
+            echo json_encode(['success' => false, 'error' => 'Role name is required.']);
             exit;
         }
         
-        $user = getUserById($userId);
-        if ($user) {
-            $sql = "DELETE FROM users WHERE id = ?";
-            $result = deleteRecord($sql, [$userId], "i");
-            if ($result) {
-                logActivity($_SESSION['user_id'], 'User Deleted', 'users', $userId, 'Deleted user: ' . $user['email']);
-                echo json_encode(['success' => true, 'message' => 'User deleted successfully!']);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Failed to delete user.']);
-            }
+        $permissionJson = json_encode($permissions);
+        $updateSql = "UPDATE roles SET role_name = ?, permissions = ? WHERE id = ?";
+        $result = updateRecord($updateSql, [$roleName, $permissionJson, $roleId], "ssi");
+        
+        if ($result) {
+            logActivity($_SESSION['user_id'], 'Role Permissions Updated', 'roles', $roleId, 'Updated permissions for role: ' . $roleName);
+            echo json_encode(['success' => true, 'message' => 'Role permissions updated successfully!']);
         } else {
-            echo json_encode(['success' => false, 'error' => 'User not found.']);
+            echo json_encode(['success' => false, 'error' => 'Failed to update role permissions.']);
         }
         exit;
     }
     
-    // Update role
-    if ($action === 'update_role' && $userId > 0) {
-        $newRole = $_POST['role'] ?? '';
-        if (!in_array($newRole, $roles)) {
-            echo json_encode(['success' => false, 'error' => 'Invalid role.']);
+    // Create new role
+    if ($action === 'create_role') {
+        $roleName = $_POST['role_name'] ?? '';
+        $permissions = isset($_POST['permissions']) ? json_decode($_POST['permissions'], true) : [];
+        
+        if (empty($roleName)) {
+            echo json_encode(['success' => false, 'error' => 'Role name is required.']);
             exit;
         }
         
-        $user = getUserById($userId);
-        if ($user) {
-            $updateSql = "UPDATE users SET role = ? WHERE id = ?";
-            $result = updateRecord($updateSql, [$newRole, $userId], "si");
-            if ($result) {
-                logActivity($_SESSION['user_id'], 'User Role Updated', 'users', $userId, 'User ' . $user['email'] . ' role changed to ' . $newRole);
-                echo json_encode(['success' => true, 'message' => 'User role updated successfully!']);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Failed to update user role.']);
-            }
-        } else {
-            echo json_encode(['success' => false, 'error' => 'User not found.']);
-        }
-        exit;
-    }
-    
-    // Update user details
-    if ($action === 'update_user' && $userId > 0) {
-        $firstName = $_POST['first_name'] ?? '';
-        $lastName = $_POST['last_name'] ?? '';
-        $email = $_POST['email'] ?? '';
-        $role = $_POST['role'] ?? '';
-        
-        if (empty($firstName) || empty($lastName) || empty($email) || empty($role)) {
-            echo json_encode(['success' => false, 'error' => 'All fields are required.']);
-            exit;
-        }
-        
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            echo json_encode(['success' => false, 'error' => 'Invalid email format.']);
-            exit;
-        }
-        
-        if (!in_array($role, $roles)) {
-            echo json_encode(['success' => false, 'error' => 'Invalid role.']);
-            exit;
-        }
-        
-        // Check if email exists for other users
-        $existing = getRecord("SELECT id FROM users WHERE email = ? AND id != ?", [$email, $userId], "si");
+        // Check if role exists
+        $existing = getRecord("SELECT id FROM roles WHERE role_name = ?", [$roleName], "s");
         if ($existing) {
-            echo json_encode(['success' => false, 'error' => 'Email already in use by another user.']);
+            echo json_encode(['success' => false, 'error' => 'Role already exists.']);
             exit;
         }
         
-        $user = getUserById($userId);
-        if ($user) {
-            $updateSql = "UPDATE users SET first_name = ?, last_name = ?, email = ?, role = ? WHERE id = ?";
-            $result = updateRecord($updateSql, [$firstName, $lastName, $email, $role, $userId], "ssssi");
-            if ($result) {
-                logActivity($_SESSION['user_id'], 'User Updated', 'users', $userId, 'Updated user: ' . $email);
-                echo json_encode(['success' => true, 'message' => 'User updated successfully!']);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Failed to update user.']);
-            }
+        $permissionJson = json_encode($permissions);
+        $insertSql = "INSERT INTO roles (role_name, permissions, created_at) VALUES (?, ?, NOW())";
+        $newId = insertRecord($insertSql, [$roleName, $permissionJson], "ss");
+        
+        if ($newId) {
+            logActivity($_SESSION['user_id'], 'Role Created', 'roles', $newId, 'Created new role: ' . $roleName);
+            echo json_encode(['success' => true, 'message' => 'Role created successfully!', 'role_id' => $newId]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'User not found.']);
+            echo json_encode(['success' => false, 'error' => 'Failed to create role.']);
+        }
+        exit;
+    }
+    
+    // Delete role
+    if ($action === 'delete_role' && $roleId > 0) {
+        $role = getRecord("SELECT * FROM roles WHERE id = ?", [$roleId], "i");
+        if (!$role) {
+            echo json_encode(['success' => false, 'error' => 'Role not found.']);
+            exit;
+        }
+        
+        // Check if role is in use
+        $usersWithRole = getRecord("SELECT COUNT(*) as count FROM users WHERE role = ?", [$role['role_name']], "s")['count'] ?? 0;
+        if ($usersWithRole > 0) {
+            echo json_encode(['success' => false, 'error' => 'Cannot delete role that is assigned to ' . $usersWithRole . ' users.']);
+            exit;
+        }
+        
+        $deleteSql = "DELETE FROM roles WHERE id = ?";
+        $result = deleteRecord($deleteSql, [$roleId], "i");
+        
+        if ($result) {
+            logActivity($_SESSION['user_id'], 'Role Deleted', 'roles', $roleId, 'Deleted role: ' . $role['role_name']);
+            echo json_encode(['success' => true, 'message' => 'Role deleted successfully!']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to delete role.']);
         }
         exit;
     }
@@ -191,38 +297,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     exit;
 }
 
-// Status badge mapping
-$roleLabels = [
-    'admin' => 'Admin',
-    'hr_manager' => 'HR Manager',
-    'recruiter' => 'Recruiter',
-    'client' => 'Client',
-    'applicant' => 'Applicant',
-    'employee' => 'Employee',
-    'supervisor' => 'Supervisor'
-];
+// Get greeting
+$currentHour = date('H');
+$greeting = 'Good Evening';
+if ($currentHour < 12) {
+    $greeting = 'Good Morning';
+} elseif ($currentHour < 18) {
+    $greeting = 'Good Afternoon';
+}
 
-$roleBadges = [
-    'admin' => 'badge-admin',
-    'hr_manager' => 'badge-hr',
-    'recruiter' => 'badge-recruiter',
-    'client' => 'badge-client',
-    'applicant' => 'badge-applicant',
-    'employee' => 'badge-employee',
-    'supervisor' => 'badge-supervisor'
-];
+// Get online users count
+$onlineThreshold = date('Y-m-d H:i:s', strtotime('-5 minutes'));
+$onlineUsers = getRecord("SELECT COUNT(*) as count FROM users WHERE last_activity >= ?", [$onlineThreshold], "s")['count'] ?? 0;
+$totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
+
+// Get user profile data for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>User Management - ISMERS</title>
+    <title>Role Management - ISMERS</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - USER MANAGEMENT
+           MATERIAL 3 DESIGN SYSTEM - ROLE MANAGEMENT
            ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
@@ -255,8 +357,10 @@ $roleBadges = [
             --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
-            --online-color: #22c55e;
-            --offline-color: #9ca3af;
+            --success-color: #22c55e;
+            --error-color: #dc2626;
+            --warning-color: #f59e0b;
+            --info-color: #2563eb;
         }
 
         * {
@@ -283,8 +387,8 @@ $roleBadges = [
         }
 
         /* =============================================
-                   SIDEBAR - FIXED
-                ============================================= */
+           SIDEBAR - FIXED
+        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -509,9 +613,136 @@ $roleBadges = [
             text-overflow: ellipsis;
         }
 
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
+
+        .sidebar-backdrop.active {
+            display: block;
+            opacity: 1;
+        }
+
         /* =============================================
-                   PROFILE DROPDOWN
-                ============================================= */
+           MAIN CONTENT
+        ============================================= */
+        .main-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            margin-left: var(--sidebar-width);
+            transition: margin-left 0.3s ease;
+        }
+
+        .dashboard-sidebar.collapsed ~ .main-wrapper {
+            margin-left: var(--sidebar-collapsed);
+        }
+
+        /* =============================================
+           TOP HEADER
+        ============================================= */
+        .top-header {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 4rem;
+            padding: 0 1.5rem;
+            flex-shrink: 0;
+            z-index: 30;
+            width: 100%;
+        }
+
+        .top-header-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .top-header-left .logo {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.5rem;
+            background: var(--slate-100);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.875rem;
+            color: var(--primary);
+            border: 1px solid rgba(199, 196, 216, 0.3);
+        }
+
+        .top-header-left .separator {
+            color: var(--outline-variant);
+            font-weight: 300;
+            user-select: none;
+        }
+
+        .sidebar-toggle-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .sidebar-toggle-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .sidebar-toggle-btn .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .mobile-menu-btn {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .mobile-menu-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .mobile-menu-btn .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        /* =============================================
+           PROFILE DROPDOWN
+        ============================================= */
         .profile-dropdown-wrapper {
             position: relative;
         }
@@ -653,136 +884,9 @@ $roleBadges = [
             margin: 0.25rem 0.5rem;
         }
 
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
-        }
-
         /* =============================================
-                   MAIN CONTENT - PUSHED BY SIDEBAR
-                ============================================= */
-        .main-wrapper {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            overflow: hidden;
-            margin-left: var(--sidebar-width);
-            transition: margin-left 0.3s ease;
-        }
-
-        .dashboard-sidebar.collapsed ~ .main-wrapper {
-            margin-left: var(--sidebar-collapsed);
-        }
-
-        /* =============================================
-                   TOP HEADER
-                ============================================= */
-        .top-header {
-            background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            height: 4rem;
-            padding: 0 1.5rem;
-            flex-shrink: 0;
-            z-index: 30;
-            width: 100%;
-        }
-
-        .top-header-left {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .top-header-left .logo {
-            width: 2rem;
-            height: 2rem;
-            border-radius: 0.5rem;
-            background: var(--slate-100);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 0.875rem;
-            color: var(--primary);
-            border: 1px solid rgba(199, 196, 216, 0.3);
-        }
-
-        .top-header-left .separator {
-            color: var(--outline-variant);
-            font-weight: 300;
-            user-select: none;
-        }
-
-        .sidebar-toggle-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border-radius: 0.75rem;
-            border: 1px solid rgba(199, 196, 216, 0.3);
-            background: transparent;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            min-width: 2.5rem;
-            min-height: 2.5rem;
-        }
-
-        .sidebar-toggle-btn:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .sidebar-toggle-btn .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
-        .mobile-menu-btn {
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border-radius: 0.75rem;
-            border: 1px solid rgba(199, 196, 216, 0.3);
-            background: transparent;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            min-width: 2.5rem;
-            min-height: 2.5rem;
-        }
-
-        .mobile-menu-btn:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .mobile-menu-btn .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
-        /* =============================================
-                   MAIN SCROLLABLE AREA
-                ============================================= */
+           MAIN SCROLLABLE AREA
+        ============================================= */
         .main-scroll {
             flex: 1;
             overflow-y: auto;
@@ -795,8 +899,8 @@ $roleBadges = [
         }
 
         /* =============================================
-                   BREADCRUMB
-                ============================================= */
+           BREADCRUMB
+        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface-container-lowest);
             border-radius: var(--radius-xl);
@@ -838,7 +942,7 @@ $roleBadges = [
             width: 0.5rem;
             height: 0.5rem;
             border-radius: 50%;
-            background: #22c55e;
+            background: var(--success-color);
             animation: pulse 2s infinite;
         }
 
@@ -848,8 +952,8 @@ $roleBadges = [
         }
 
         /* =============================================
-                   PAGE HEADER
-                ============================================= */
+           PAGE HEADER
+        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -878,23 +982,38 @@ $roleBadges = [
             margin-top: 0.25rem;
         }
 
-        .btn-primary {
+        .page-header .header-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        /* =============================================
+           BUTTONS
+        ============================================= */
+        .btn {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
             padding: 0.625rem 1.25rem;
             border-radius: 0.75rem;
-            background: var(--primary);
-            color: var(--on-primary);
             font-weight: 600;
             font-size: 0.875rem;
             border: none;
             cursor: pointer;
             transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: var(--on-primary);
             box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
         }
 
         .btn-primary:hover {
+            background: var(--on-primary-fixed-variant);
             transform: translateY(-2px);
             box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35);
         }
@@ -903,9 +1022,61 @@ $roleBadges = [
             font-size: 1.125rem;
         }
 
+        .btn-outline {
+            background: transparent;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+        }
+
+        .btn-outline:hover {
+            background: var(--primary);
+            color: var(--on-primary);
+        }
+
+        .btn-outline .material-symbols-outlined {
+            font-size: 1.125rem;
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #16a34a;
+        }
+
+        .btn-danger {
+            background: var(--error-color);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+        }
+
+        .btn-warning {
+            background: var(--warning-color);
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d97706;
+        }
+
+        .btn-sm {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: 0.5rem;
+        }
+
+        .btn-sm .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
         /* =============================================
-                   STATS ROW
-                ============================================= */
+           STATS ROW
+        ============================================= */
         .stats-row {
             display: grid;
             grid-template-columns: 1fr;
@@ -915,7 +1086,7 @@ $roleBadges = [
 
         @media (min-width: 640px) {
             .stats-row {
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(4, 1fr);
             }
         }
 
@@ -926,6 +1097,12 @@ $roleBadges = [
             box-shadow: var(--shadow-sm);
             border: 1px solid var(--slate-200);
             text-align: center;
+            transition: all var(--transition-fast);
+        }
+
+        .stat-item:hover {
+            box-shadow: var(--shadow-md);
+            transform: translateY(-2px);
         }
 
         .stat-item .number {
@@ -941,229 +1118,75 @@ $roleBadges = [
             font-weight: 500;
         }
 
-        /* =============================================
-                   SEARCH & FILTERS
-                ============================================= */
-        .search-bar {
-            display: flex;
-            gap: 0.75rem;
-            margin-bottom: 1.25rem;
-            flex-wrap: wrap;
-        }
-
-        .search-input-wrapper {
-            flex: 1;
-            min-width: 200px;
-            position: relative;
-        }
-
-        .search-input-wrapper input {
-            width: 100%;
-            padding: 0.625rem 1rem 0.625rem 2.75rem;
-            border: 2px solid var(--slate-200);
+        .stat-item .stat-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.25rem;
+            height: 2.25rem;
             border-radius: 0.75rem;
-            font-size: 0.875rem;
-            font-family: inherit;
-            background: var(--bg-surface);
-            transition: all var(--transition-fast);
-            color: var(--text-on-surface);
-        }
-
-        .search-input-wrapper input:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
-        }
-
-        .search-input-wrapper .search-icon {
-            position: absolute;
-            left: 0.75rem;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-on-surface-variant);
-        }
-
-        .search-input-wrapper .search-icon .material-symbols-outlined {
+            margin-bottom: 0.5rem;
             font-size: 1.25rem;
         }
 
-        .btn-outline {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.625rem 1.25rem;
-            border-radius: 0.75rem;
-            background: transparent;
-            color: var(--primary);
-            font-weight: 600;
-            font-size: 0.875rem;
-            border: 2px solid var(--primary);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-        }
-
-        .btn-outline:hover {
-            background: var(--primary);
-            color: var(--on-primary);
-        }
-
-        .btn-outline .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
-
-        .filters {
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-            margin-bottom: 1.25rem;
-        }
-
-        .filters select {
-            padding: 0.625rem 0.875rem;
-            border: 2px solid var(--slate-200);
-            border-radius: 0.625rem;
-            font-size: 0.8125rem;
-            font-family: inherit;
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-            transition: all var(--transition-fast);
-            cursor: pointer;
-            min-width: 140px;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L1 3h10z' fill='%235a6a7a'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 0.75rem center;
-            padding-right: 2.25rem;
-        }
-
-        .filters select:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
-        }
+        .stat-item .stat-icon.blue { background: #eff6ff; color: #2563eb; }
+        .stat-item .stat-icon.green { background: #d1fae5; color: #059669; }
+        .stat-item .stat-icon.purple { background: #ede9fe; color: #7c3aed; }
+        .stat-item .stat-icon.orange { background: #fef3c7; color: #d97706; }
 
         /* =============================================
-                   USERS TABLE
-                ============================================= */
-        .card {
+           ROLES GRID
+        ============================================= */
+        .roles-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (min-width: 768px) {
+            .roles-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .roles-grid {
+                grid-template-columns: 1fr 1fr 1fr;
+            }
+        }
+
+        .role-card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
             box-shadow: var(--shadow-sm);
             overflow: hidden;
+            transition: all var(--transition-fast);
         }
 
-        .card-header {
-            padding: 1rem 1.5rem;
+        .role-card:hover {
+            box-shadow: var(--shadow-md);
+            transform: translateY(-4px);
+        }
+
+        .role-card .role-header {
+            padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        .card-header h3 {
-            font-size: 0.9375rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .card-header .result-count {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .card-body {
-            padding: 0;
-            overflow-x: auto;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.875rem;
-            min-width: 700px;
-        }
-
-        table thead {
-            background: var(--bg-surface-low);
-        }
-
-        table th {
-            padding: 0.75rem 1.25rem;
-            text-align: left;
-            font-weight: 600;
-            color: var(--text-on-surface-variant);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            border-bottom: 2px solid var(--slate-200);
-        }
-
-        table td {
-            padding: 0.75rem 1.25rem;
-            border-bottom: 1px solid var(--slate-200);
-            vertical-align: middle;
-        }
-
-        table tbody tr:hover {
-            background: var(--bg-surface-low);
-        }
-
-        table tbody tr:last-child td {
-            border-bottom: none;
-        }
-
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .user-info .avatar {
-            width: 2.25rem;
-            height: 2.25rem;
-            border-radius: 50%;
-            background: var(--primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
+        .role-card .role-header .role-name {
+            font-size: 1.125rem;
             font-weight: 700;
-            font-size: 0.75rem;
-            flex-shrink: 0;
-            position: relative;
-        }
-
-        .user-info .avatar .status-dot {
-            position: absolute;
-            bottom: -2px;
-            right: -2px;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            border: 2px solid var(--bg-surface);
-        }
-
-        .status-dot.online {
-            background: var(--online-color);
-        }
-
-        .status-dot.offline {
-            background: var(--offline-color);
-        }
-
-        .user-info .details .name {
-            font-size: 0.875rem;
-            font-weight: 600;
             color: var(--text-on-surface);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
-        .user-info .details .email {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .status-badge {
+        .role-card .role-header .role-badge {
             display: inline-block;
             padding: 0.125rem 0.625rem;
             border-radius: var(--radius-full);
@@ -1171,41 +1194,176 @@ $roleBadges = [
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.03em;
+            background: var(--primary);
+            color: white;
         }
 
-        .status-badge.active {
-            background: #d1fae5;
-            color: #059669;
+        .role-card .role-body {
+            padding: 1.25rem 1.5rem;
         }
 
-        .status-badge.inactive {
-            background: #fecaca;
-            color: #dc2626;
+        .role-card .role-body .permission-count {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-bottom: 0.75rem;
         }
 
-        .role-badge {
+        .role-card .role-body .permission-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.375rem;
+        }
+
+        .role-card .role-body .permission-pill {
             display: inline-block;
             padding: 0.125rem 0.5rem;
             border-radius: var(--radius-full);
             font-size: 0.625rem;
+            font-weight: 500;
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface-variant);
+            border: 1px solid var(--slate-200);
+        }
+
+        .role-card .role-body .permission-pill.has-permission {
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            border-color: rgba(79, 70, 229, 0.2);
+        }
+
+        .role-card .role-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--slate-200);
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+            background: var(--bg-surface-low);
+        }
+
+        .role-card .role-footer .btn {
+            font-size: 0.75rem;
+            padding: 0.375rem 0.875rem;
+        }
+
+        .role-card .role-footer .btn .material-symbols-outlined {
+            font-size: 1rem;
+        }
+
+        /* =============================================
+           PERMISSION EDITOR MODAL
+        ============================================= */
+        .permission-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+            margin-top: 0.5rem;
+        }
+
+        @media (min-width: 640px) {
+            .permission-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        .permission-group {
+            border: 1px solid var(--slate-200);
+            border-radius: 0.75rem;
+            overflow: hidden;
+        }
+
+        .permission-group .group-header {
+            padding: 0.625rem 1rem;
+            background: var(--bg-surface-low);
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-            white-space: nowrap;
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+        }
+
+        .permission-group .group-header .material-symbols-outlined {
+            font-size: 1.125rem;
+            color: var(--primary);
+        }
+
+        .permission-group .group-body {
+            padding: 0.5rem 0.75rem;
+        }
+
+        .permission-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.375rem 0.5rem;
+            border-radius: 0.375rem;
+            transition: background var(--transition-fast);
+        }
+
+        .permission-item:hover {
+            background: var(--bg-surface-low);
+        }
+
+        .permission-item .permission-label {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+        }
+
+        /* Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            width: 40px;
+            height: 22px;
             flex-shrink: 0;
         }
 
-        .role-badge.badge-admin { background: #fef3c7; color: #d97706; }
-        .role-badge.badge-hr { background: #dbeafe; color: #2563eb; }
-        .role-badge.badge-recruiter { background: #d1fae5; color: #059669; }
-        .role-badge.badge-client { background: #e0e7ff; color: #4f46e5; }
-        .role-badge.badge-applicant { background: #fce7f3; color: #db2777; }
-        .role-badge.badge-employee { background: #cffafe; color: #0891b2; }
-        .role-badge.badge-supervisor { background: #ede9fe; color: #7c3aed; }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: var(--transition-fast);
+            border-radius: 34px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: var(--transition-fast);
+            border-radius: 50%;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background-color: var(--primary);
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(18px);
+        }
+
+        .toggle-switch input:disabled + .toggle-slider {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
 
         /* =============================================
-                   EMPTY STATE
-                ============================================= */
+           EMPTY STATE
+        ============================================= */
         .empty-state {
             text-align: center;
             padding: 3rem 1.5rem;
@@ -1229,8 +1387,8 @@ $roleBadges = [
         }
 
         /* =============================================
-                   MODAL SYSTEM
-                ============================================= */
+           MODAL SYSTEM
+        ============================================= */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -1253,7 +1411,7 @@ $roleBadges = [
         .modal {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
-            max-width: 560px;
+            max-width: 800px;
             width: 100%;
             max-height: 90vh;
             overflow-y: auto;
@@ -1297,6 +1455,10 @@ $roleBadges = [
             gap: 0.625rem;
         }
 
+        .modal-header h2 .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+
         .btn-close-modal {
             background: none;
             border: none;
@@ -1328,6 +1490,7 @@ $roleBadges = [
             background: var(--bg-surface-low);
             border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
             flex-shrink: 0;
+            flex-wrap: wrap;
         }
 
         .modal-footer .btn {
@@ -1335,56 +1498,14 @@ $roleBadges = [
             border-radius: 0.5rem;
             font-size: 0.875rem;
             font-weight: 600;
-            border: none;
-            cursor: pointer;
-            transition: all var(--transition-fast);
         }
 
-        .modal-footer .btn-primary {
-            background: var(--primary);
-            color: var(--on-primary);
-        }
-
-        .modal-footer .btn-primary:hover {
-            background: var(--on-primary-fixed-variant);
-        }
-
-        .modal-footer .btn-outline {
-            background: transparent;
-            color: var(--primary);
-            border: 2px solid var(--primary);
-        }
-
-        .modal-footer .btn-outline:hover {
-            background: var(--primary);
-            color: var(--on-primary);
-        }
-
-        .modal-footer .btn-danger {
-            background: #dc2626;
-            color: white;
-        }
-
-        .modal-footer .btn-danger:hover {
-            background: #b91c1c;
-        }
-
-        .modal-footer .btn-warning {
-            background: #f59e0b;
-            color: white;
-        }
-
-        .modal-footer .btn-warning:hover {
-            background: #d97706;
-        }
-
-        .btn-sm {
-            padding: 0.25rem 0.75rem;
-            font-size: 0.75rem;
+        .modal-footer .btn .material-symbols-outlined {
+            font-size: 1.125rem;
         }
 
         .form-group {
-            margin-bottom: 1rem;
+            margin-bottom: 1.25rem;
         }
 
         .form-group label {
@@ -1415,73 +1536,15 @@ $roleBadges = [
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
         }
 
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }
-
-        .form-group input:disabled {
-            background: var(--bg-surface-low);
-            cursor: not-allowed;
-            opacity: 0.7;
-        }
-
-        /* Countdown */
-        .countdown-container {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.75rem;
-            padding: 0.75rem 1rem;
-            background: #fef3c7;
-            border-radius: 0.625rem;
-            margin: 0.75rem 0 0.25rem;
-            border: 1px solid #fcd34d;
-        }
-
-        .countdown-container .countdown-number {
-            font-size: 2rem;
-            font-weight: 800;
-            color: #d97706;
-            min-width: 2.5rem;
-            text-align: center;
-        }
-
-        .countdown-container .countdown-label {
-            font-size: 0.875rem;
-            color: #92400e;
-            font-weight: 500;
-        }
-
-        .countdown-container.danger {
-            background: #fecaca;
-            border-color: #f87171;
-        }
-
-        .countdown-container.danger .countdown-number {
-            color: #dc2626;
-        }
-
-        .countdown-container.danger .countdown-label {
-            color: #991b1b;
-        }
-
-        .modal-body .warning-text {
-            color: #dc2626;
-            font-weight: 600;
-            font-size: 0.875rem;
-        }
-
-        .modal-body .info-text {
+        .form-group .helper-text {
+            font-size: 0.75rem;
             color: var(--text-on-surface-variant);
-            font-size: 0.875rem;
-            line-height: 1.6;
+            margin-top: 0.25rem;
         }
 
         /* =============================================
-                   TOAST
-                ============================================= */
+           TOAST
+        ============================================= */
         .toast {
             position: fixed;
             bottom: 1.5rem;
@@ -1495,23 +1558,58 @@ $roleBadges = [
             z-index: 10000;
             animation: slideUp 0.4s ease-out;
             max-width: 400px;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .toast .material-symbols-outlined {
+            font-size: 1.25rem;
         }
 
         .toast.success {
-            background: #22c55e;
+            background: var(--success-color);
         }
 
         .toast.error {
-            background: #dc2626;
+            background: var(--error-color);
         }
 
         .toast.info {
             background: var(--primary);
         }
 
+        .toast.warning {
+            background: var(--warning-color);
+        }
+
         /* =============================================
-                   RESPONSIVE
-                ============================================= */
+           LOADER
+        ============================================= */
+        .loader {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--slate-200);
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto;
+        }
+
+        .loader-sm {
+            width: 16px;
+            height: 16px;
+            border-width: 2px;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* =============================================
+           RESPONSIVE
+        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop {
                 display: none !important;
@@ -1594,32 +1692,14 @@ $roleBadges = [
             }
 
             .stats-row {
-                grid-template-columns: 1fr 1fr;
+                grid-template-columns: repeat(2, 1fr);
             }
 
-            .search-bar {
-                flex-direction: column;
+            .roles-grid {
+                grid-template-columns: 1fr;
             }
 
-            .filters {
-                flex-direction: column;
-            }
-
-            .filters select {
-                width: 100%;
-            }
-
-            table {
-                font-size: 0.8125rem;
-                min-width: 600px;
-            }
-
-            table th,
-            table td {
-                padding: 0.625rem 0.875rem;
-            }
-
-            .form-row {
+            .permission-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -1635,6 +1715,15 @@ $roleBadges = [
 
             .modal-body {
                 padding: 1rem;
+            }
+
+            .role-card .role-footer {
+                flex-wrap: wrap;
+            }
+
+            .role-card .role-footer .btn {
+                flex: 1;
+                justify-content: center;
             }
 
             .dashboard-sidebar.collapsed .sidebar-brand-text,
@@ -1692,28 +1781,10 @@ $roleBadges = [
                 font-size: 1.5rem;
             }
 
-            .card-header {
-                padding: 0.75rem 1rem;
-            }
-
-            .card-header h3 {
-                font-size: 0.875rem;
-            }
-
-            table {
-                font-size: 0.75rem;
-                min-width: 500px;
-            }
-
-            table th,
-            table td {
-                padding: 0.5rem 0.625rem;
-            }
-
-            .user-info .avatar {
-                width: 2rem;
-                height: 2rem;
-                font-size: 0.625rem;
+            .role-card .role-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
             }
 
             .modal-footer {
@@ -1725,8 +1796,9 @@ $roleBadges = [
                 justify-content: center;
             }
 
-            .countdown-container .countdown-number {
-                font-size: 1.5rem;
+            .permission-item {
+                flex-wrap: wrap;
+                gap: 0.25rem;
             }
         }
 
@@ -1748,20 +1820,21 @@ $roleBadges = [
             background: var(--slate-500);
         }
 
-        /* Loader */
-        .loader {
-            width: 40px;
-            height: 40px;
-            border: 4px solid var(--slate-200);
-            border-top: 4px solid var(--primary);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto;
+        /* Permission editor modal specific */
+        .select-all-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.5rem;
         }
 
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
+        .select-all-row .select-all-label {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
         }
     </style>
 </head>
@@ -1774,14 +1847,12 @@ $roleBadges = [
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">admin_panel_settings</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Admin Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">admin_panel_settings</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Admin Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1792,15 +1863,21 @@ $roleBadges = [
                 <span class="nav-text">Dashboard</span>
             </a>
 
-            <a href="users.php" class="sidebar-main-link active">
+            <a href="users.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Users</span>
                 <span class="nav-badge"><?php echo $totalUsers; ?></span>
             </a>
 
-            <a href="roles.php" class="sidebar-main-link">
+            <a href="roles.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">shield</span>
                 <span class="nav-text">Roles</span>
+                <span class="nav-badge"><?php echo $totalRoles; ?></span>
+            </a>
+
+            <a href="reports.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
             </a>
 
             <a href="biometric_settings.php" class="sidebar-main-link">
@@ -1809,12 +1886,17 @@ $roleBadges = [
             </a>
 
 
-
         </nav>
 
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
@@ -1824,28 +1906,27 @@ $roleBadges = [
     </aside>
 
     <!-- =============================================
-    MAIN CONTENT - PUSHED BY SIDEBAR
+    MAIN CONTENT
     ============================================= -->
     <div class="main-wrapper" id="mainWrapper">
 
         <!-- Top Header -->
         <header class="top-header">
             <div class="top-header-left">
-                <div class="logo">I</div>
-                <span class="separator">|</span>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
-                    <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
-                </button>
                 <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" title="Open Menu">
                     <span class="material-symbols-outlined">menu</span>
                 </button>
-                <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
+                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
+                    <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
+                </button>
+                <span class="separator">|</span>
+                <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">Role Management</span>
             </div>
 
             <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
-                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
+                    <div class="avatar-small"><?php echo $userProfile['initials']; ?></div>
                     <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
                     <span class="profile-role">Administrator</span>
                     <span class="material-symbols-outlined">expand_more</span>
@@ -1855,6 +1936,10 @@ $roleBadges = [
                 <div class="profile-dropdown-menu" id="profileDropdownMenu">
                     <div class="dropdown-header">Account</div>
                     
+                    <a href="profile.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">person</span>
+                        My Profile
+                    </a>
                     <a href="settings.php" class="dropdown-item">
                         <span class="material-symbols-outlined">settings</span>
                         Settings
@@ -1875,293 +1960,207 @@ $roleBadges = [
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">people</span>
-                        <span>User Management</span>
+                        <span class="material-symbols-outlined">shield</span>
+                        <span>Role Management</span>
                         <span class="status-dot"></span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:0.5rem; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                        <span class="material-symbols-outlined" style="font-size:1rem;">online_prediction</span>
+                        <span><?php echo $onlineUsers; ?> online now</span>
                     </div>
                 </div>
 
                 <!-- Page Header -->
                 <div class="page-header">
                     <div>
-                        <h1>User Management</h1>
-                        <p>Manage all users and their roles</p>
+                        <h1><?php echo $greeting; ?>, <?php echo htmlspecialchars($firstName); ?></h1>
+                        <p>Define and manage user roles and their permissions</p>
                     </div>
-                    <a href="add_user.php" class="btn-primary">
-                        <span class="material-symbols-outlined">person_add</span>
-                        Add New User
-                    </a>
+                    <div class="header-actions">
+                        <button class="btn btn-primary" onclick="openCreateRoleModal()">
+                            <span class="material-symbols-outlined">add</span>
+                            Create Role
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Stats -->
                 <div class="stats-row">
                     <div class="stat-item">
+                        <div class="stat-icon blue"><span class="material-symbols-outlined">shield</span></div>
+                        <div class="number"><?php echo $totalRoles; ?></div>
+                        <div class="label">Total Roles</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-icon green"><span class="material-symbols-outlined">people</span></div>
                         <div class="number"><?php echo $totalUsers; ?></div>
                         <div class="label">Total Users</div>
                     </div>
                     <div class="stat-item">
-                        <div class="number"><?php echo $activeUsers; ?></div>
-                        <div class="label">Active</div>
+                        <div class="stat-icon purple"><span class="material-symbols-outlined">lock</span></div>
+                        <div class="number"><?php echo count($permissionGroups); ?></div>
+                        <div class="label">Permission Groups</div>
                     </div>
                     <div class="stat-item">
-                        <div class="number"><?php echo $inactiveUsers; ?></div>
-                        <div class="label">Inactive</div>
+                        <div class="stat-icon orange"><span class="material-symbols-outlined">online_prediction</span></div>
+                        <div class="number"><?php echo $onlineUsers; ?></div>
+                        <div class="label">Online Now</div>
                     </div>
                 </div>
 
-                <!-- Search Bar -->
-                <div class="search-bar">
-                    <div class="search-input-wrapper">
-                        <span class="search-icon">
-                            <span class="material-symbols-outlined">search</span>
-                        </span>
-                        <input type="text" id="searchInput" placeholder="Search by name or email..." 
-                               value="<?php echo htmlspecialchars($searchQuery); ?>">
-                    </div>
-                    <button class="btn-primary" onclick="applyFilters()">Search</button>
-                    <?php if (!empty($searchQuery) || $roleFilter !== 'all' || $statusFilter !== 'all'): ?>
-                        <a href="users.php" class="btn-outline">
-                            <span class="material-symbols-outlined">close</span>
-                            Clear Filters
-                        </a>
-                    <?php endif; ?>
-                </div>
-
-                <!-- Filters -->
-                <div class="filters">
-                    <select id="roleFilter" onchange="applyFilters()">
-                        <option value="all" <?php echo $roleFilter === 'all' ? 'selected' : ''; ?>>All Roles</option>
-                        <?php foreach ($roleLabels as $key => $label): ?>
-                            <option value="<?php echo $key; ?>" <?php echo $roleFilter === $key ? 'selected' : ''; ?>>
-                                <?php echo $label; ?> (<?php echo $roleCounts[$key] ?? 0; ?>)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-
-                    <select id="statusFilter" onchange="applyFilters()">
-                        <option value="all" <?php echo $statusFilter === 'all' ? 'selected' : ''; ?>>All Status</option>
-                        <option value="active" <?php echo $statusFilter === 'active' ? 'selected' : ''; ?>>Active</option>
-                        <option value="inactive" <?php echo $statusFilter === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
-                    </select>
-                </div>
-
-                <!-- Users Table -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3>All Users</h3>
-                        <span class="result-count"><?php echo count($users); ?> users found</span>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($users)): ?>
-                            <div class="empty-state">
-                                <div class="empty-icon">
-                                    <span class="material-symbols-outlined" style="font-size:3rem;">people_outline</span>
+                <!-- Roles Grid -->
+                <div class="roles-grid">
+                    <?php foreach ($roles as $role): 
+                        $permissions = json_decode($role['permissions'], true) ?: [];
+                        $userCount = $roleCounts[$role['role_name']] ?? 0;
+                        $isDefault = array_key_exists($role['role_name'], $defaultRolePermissions);
+                    ?>
+                        <div class="role-card">
+                            <div class="role-header">
+                                <div class="role-name">
+                                    <span class="material-symbols-outlined" style="font-size:1.25rem; color:var(--primary);">
+                                        <?php echo $role['role_name'] === 'admin' ? 'admin_panel_settings' : 'shield'; ?>
+                                    </span>
+                                    <?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $role['role_name']))); ?>
                                 </div>
-                                <h4>No Users Found</h4>
-                                <p>Try adjusting your search or filters.</p>
+                                <span class="role-badge"><?php echo $userCount; ?> users</span>
                             </div>
-                        <?php else: ?>
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>User</th>
-                                        <th>Role</th>
-                                        <th>Status</th>
-                                        <th>Joined</th>
-                                        <th style="text-align:center;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($users as $user): 
-                                        $isOnline = !empty($user['last_activity']) && strtotime($user['last_activity']) > strtotime('-5 minutes');
-                                        $statusClass = $isOnline ? 'online' : 'offline';
+                            <div class="role-body">
+                                <div class="permission-count">
+                                    <?php echo count($permissions); ?> permissions assigned
+                                </div>
+                                <div class="permission-pills">
+                                    <?php 
+                                    $displayPermissions = array_slice($permissions, 0, 6);
+                                    foreach ($displayPermissions as $perm): 
+                                        $permLabel = '';
+                                        foreach ($permissionGroups as $group) {
+                                            if (isset($group['permissions'][$perm])) {
+                                                $permLabel = $group['permissions'][$perm];
+                                                break;
+                                            }
+                                        }
+                                        if ($permLabel):
                                     ?>
-                                        <tr>
-                                            <td>
-                                                <div class="user-info">
-                                                    <span class="avatar">
-                                                        <?php echo strtoupper(substr($user['first_name'] ?? 'U', 0, 1)); ?>
-                                                        <span class="status-dot <?php echo $statusClass; ?>"></span>
-                                                    </span>
-                                                    <div class="details">
-                                                        <div class="name">
-                                                            <?php echo htmlspecialchars($user['first_name'] . ' ' . $user['last_name']); ?>
-                                                        </div>
-                                                        <div class="email"><?php echo htmlspecialchars($user['email']); ?></div>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <span class="role-badge <?php echo $roleBadges[$user['role']] ?? 'badge-applicant'; ?>">
-                                                    <?php echo $roleLabels[$user['role']] ?? ucfirst($user['role']); ?>
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <span class="status-badge <?php echo $user['is_active'] ? 'active' : 'inactive'; ?>">
-                                                    <?php echo $user['is_active'] ? 'Active' : 'Inactive'; ?>
-                                                </span>
-                                            </td>
-                                            <td style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
-                                                <?php echo date('M d, Y', strtotime($user['created_at'])); ?>
-                                            </td>
-                                            <td style="text-align:center;">
-                                                <div style="display:flex; gap:0.375rem; justify-content:center; flex-wrap:wrap;">
-                                                    <button class="btn-primary btn-sm" onclick="openEditModal(<?php echo $user['id']; ?>)">
-                                                        <span class="material-symbols-outlined" style="font-size:1rem;">edit</span>
-                                                        Edit
-                                                    </button>
-                                                    <button class="btn-warning btn-sm" onclick="openStatusModal(<?php echo $user['id']; ?>, <?php echo $user['is_active']; ?>)">
-                                                        <?php if ($user['is_active']): ?>
-                                                            <span class="material-symbols-outlined" style="font-size:1rem;">block</span>
-                                                            Deactivate
-                                                        <?php else: ?>
-                                                            <span class="material-symbols-outlined" style="font-size:1rem;">check_circle</span>
-                                                            Activate
-                                                        <?php endif; ?>
-                                                    </button>
-                                                    <?php if ($user['id'] != $_SESSION['user_id']): ?>
-                                                        <button class="btn-danger btn-sm" onclick="openDeleteModal(<?php echo $user['id']; ?>)">
-                                                            <span class="material-symbols-outlined" style="font-size:1rem;">delete</span>
-                                                            Delete
-                                                        </button>
-                                                    <?php endif; ?>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        <?php endif; ?>
-                    </div>
+                                        <span class="permission-pill has-permission"><?php echo htmlspecialchars($permLabel); ?></span>
+                                    <?php 
+                                        endif;
+                                    endforeach; 
+                                    if (count($permissions) > 6): 
+                                    ?>
+                                        <span class="permission-pill">+<?php echo count($permissions) - 6; ?> more</span>
+                                    <?php endif; ?>
+                                    <?php if (empty($permissions)): ?>
+                                        <span class="permission-pill" style="color:var(--text-on-surface-variant);">No permissions assigned</span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="role-footer">
+                                <?php if ($isDefault): ?>
+                                    <span style="font-size:0.65rem; color:var(--text-on-surface-variant); padding:0.25rem 0.5rem; border-radius:var(--radius-full); background:var(--bg-surface);">
+                                        Default Role
+                                    </span>
+                                <?php endif; ?>
+                                <button class="btn btn-primary btn-sm" onclick="openEditRoleModal(<?php echo $role['id']; ?>)">
+                                    <span class="material-symbols-outlined">edit</span>
+                                    Edit Permissions
+                                </button>
+                                <?php if (!$isDefault && $userCount == 0): ?>
+                                    <button class="btn btn-danger btn-sm" onclick="deleteRole(<?php echo $role['id']; ?>, '<?php echo htmlspecialchars($role['role_name']); ?>')">
+                                        <span class="material-symbols-outlined">delete</span>
+                                        Delete
+                                    </button>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
+
+                <?php if (empty($roles)): ?>
+                    <div class="empty-state">
+                        <div class="empty-icon">
+                            <span class="material-symbols-outlined" style="font-size:3rem;">shield_off</span>
+                        </div>
+                        <h4>No Roles Found</h4>
+                        <p>Create your first role to start managing permissions.</p>
+                        <button class="btn btn-primary" onclick="openCreateRoleModal()" style="margin-top:1rem;">
+                            <span class="material-symbols-outlined">add</span>
+                            Create Role
+                        </button>
+                    </div>
+                <?php endif; ?>
 
             </div>
         </main>
     </div>
 
     <!-- =============================================
-    MODAL: EDIT USER
+    MODAL: EDIT/CREATE ROLE PERMISSIONS
     ============================================= -->
-    <div class="modal-overlay" id="editModal">
+    <div class="modal-overlay" id="roleModal">
         <div class="modal">
             <div class="modal-header">
-                <h2>
+                <h2 id="roleModalTitle">
                     <span class="material-symbols-outlined">edit</span>
-                    Edit User
+                    Edit Role Permissions
                 </h2>
-                <button class="btn-close-modal" onclick="closeModal('editModal')">&times;</button>
+                <button class="btn-close-modal" onclick="closeModal('roleModal')">&times;</button>
             </div>
             <div class="modal-body">
-                <form id="editForm">
-                    <input type="hidden" name="user_id" id="edit_user_id">
-                    <input type="hidden" name="action" value="update_user">
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="edit_first_name">First Name</label>
-                            <input type="text" id="edit_first_name" name="first_name" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="edit_last_name">Last Name</label>
-                            <input type="text" id="edit_last_name" name="last_name" required>
-                        </div>
-                    </div>
+                <form id="roleForm">
+                    <input type="hidden" name="role_id" id="role_id">
+                    <input type="hidden" name="action" id="roleAction" value="update_permissions">
+                    <input type="hidden" name="permissions" id="permissionsInput">
                     
                     <div class="form-group">
-                        <label for="edit_email">Email Address</label>
-                        <input type="email" id="edit_email" name="email" required>
+                        <label for="role_name">Role Name</label>
+                        <input type="text" id="role_name" name="role_name" required 
+                               placeholder="Enter role name (e.g., department_head)">
+                        <div class="helper-text">Use lowercase with underscores (e.g., hr_manager)</div>
                     </div>
-                    
-                    <div class="form-group">
-                        <label for="edit_role">Role</label>
-                        <select id="edit_role" name="role" required>
-                            <?php foreach ($roleLabels as $key => $label): ?>
-                                <option value="<?php echo $key; ?>"><?php echo $label; ?></option>
+
+                    <div style="margin-top:1.5rem;">
+                        <div class="select-all-row">
+                            <span class="select-all-label">Permissions</span>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="toggleAllPermissions(true)">
+                                Select All
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="toggleAllPermissions(false)">
+                                Deselect All
+                            </button>
+                        </div>
+
+                        <div class="permission-grid" id="permissionGrid">
+                            <?php foreach ($permissionGroups as $groupKey => $group): ?>
+                                <div class="permission-group">
+                                    <div class="group-header">
+                                        <span class="material-symbols-outlined"><?php echo $group['icon']; ?></span>
+                                        <?php echo $group['label']; ?>
+                                    </div>
+                                    <div class="group-body">
+                                        <?php foreach ($group['permissions'] as $permKey => $permLabel): ?>
+                                            <div class="permission-item">
+                                                <span class="permission-label"><?php echo $permLabel; ?></span>
+                                                <label class="toggle-switch">
+                                                    <input type="checkbox" class="permission-checkbox" 
+                                                           value="<?php echo $permKey; ?>"
+                                                           data-permission="<?php echo $permKey; ?>">
+                                                    <span class="toggle-slider"></span>
+                                                </label>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
                             <?php endforeach; ?>
-                        </select>
+                        </div>
                     </div>
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="btn-outline" onclick="closeModal('editModal')">Cancel</button>
-                <button class="btn-primary" onclick="submitEditForm()">
+                <button class="btn btn-outline" onclick="closeModal('roleModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveRolePermissions()">
                     <span class="material-symbols-outlined">save</span>
-                    Save Changes
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- =============================================
-    MODAL: CONFIRM STATUS CHANGE (with 5s countdown)
-    ============================================= -->
-    <div class="modal-overlay" id="statusModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2 id="statusModalTitle">
-                    <span class="material-symbols-outlined">warning</span>
-                    Confirm Status Change
-                </h2>
-                <button class="btn-close-modal" onclick="closeModal('statusModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <input type="hidden" id="status_user_id">
-                <input type="hidden" id="status_new_status">
-                
-                <p class="info-text" id="statusMessage">
-                    Are you sure you want to <strong id="statusActionText">deactivate</strong> this user?
-                </p>
-                <p class="warning-text" id="statusWarning" style="display:none;">
-                    This user will lose access to the system immediately!
-                </p>
-                
-                <div class="countdown-container" id="statusCountdown">
-                    <span class="countdown-number" id="statusCountdownNumber">5</span>
-                    <span class="countdown-label">seconds remaining to confirm...</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-outline" onclick="closeModal('statusModal')">Cancel</button>
-                <button class="btn-warning" id="statusConfirmBtn" disabled onclick="confirmStatusChange()">
-                    <span class="material-symbols-outlined">check</span>
-                    Confirm <span id="statusConfirmLabel">(5s)</span>
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- =============================================
-    MODAL: CONFIRM DELETE (with 5s countdown)
-    ============================================= -->
-    <div class="modal-overlay" id="deleteModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined" style="color:#dc2626;">delete_forever</span>
-                    Delete User
-                </h2>
-                <button class="btn-close-modal" onclick="closeModal('deleteModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <input type="hidden" id="delete_user_id">
-                
-                <p class="info-text">
-                    Are you sure you want to <strong style="color:#dc2626;">permanently delete</strong> this user?
-                </p>
-                <p class="warning-text">
-                    This action <strong>cannot be undone</strong>! All user data will be lost.
-                </p>
-                
-                <div class="countdown-container danger" id="deleteCountdown">
-                    <span class="countdown-number" id="deleteCountdownNumber">5</span>
-                    <span class="countdown-label">seconds remaining to confirm...</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn-outline" onclick="closeModal('deleteModal')">Cancel</button>
-                <button class="btn-danger" id="deleteConfirmBtn" disabled onclick="confirmDelete()">
-                    <span class="material-symbols-outlined">delete</span>
-                    Confirm Delete <span id="deleteConfirmLabel">(5s)</span>
+                    Save Permissions
                 </button>
             </div>
         </div>
@@ -2286,46 +2285,17 @@ $roleBadges = [
             });
 
             // =============================================
-            // 5. FILTERS
+            // 5. MODAL SYSTEM
             // =============================================
-            window.applyFilters = function() {
-                const search = document.getElementById('searchInput').value;
-                const role = document.getElementById('roleFilter').value;
-                const status = document.getElementById('statusFilter').value;
-                
-                let url = 'users.php?';
-                if (role !== 'all') url += 'role=' + role + '&';
-                if (status !== 'all') url += 'status=' + status + '&';
-                if (search) url += 'search=' + encodeURIComponent(search);
-                
-                window.location.href = url;
-            };
-
-            document.getElementById('searchInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    applyFilters();
-                }
-            });
-
-            // =============================================
-            // 6. MODAL SYSTEM
-            // =============================================
-            let countdownInterval = null;
-            let currentCountdown = 5;
-
-            function openModal(id) {
+            window.openModal = function(id) {
                 document.getElementById(id).classList.add('active');
                 document.body.style.overflow = 'hidden';
-            }
+            };
 
-            function closeModal(id) {
+            window.closeModal = function(id) {
                 document.getElementById(id).classList.remove('active');
                 document.body.style.overflow = '';
-                if (countdownInterval) {
-                    clearInterval(countdownInterval);
-                    countdownInterval = null;
-                }
-            }
+            };
 
             document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
                 overlay.addEventListener('click', function(e) {
@@ -2344,37 +2314,27 @@ $roleBadges = [
             });
 
             // =============================================
-            // 7. EDIT MODAL
+            // 6. ROLE PERMISSION EDITOR
             // =============================================
-            window.openEditModal = function(userId) {
-                fetch('get_user.php?id=' + userId)
-                    .then(function(response) { return response.json(); })
-                    .then(function(data) {
-                        if (data.success) {
-                            document.getElementById('edit_user_id').value = data.user.id;
-                            document.getElementById('edit_first_name').value = data.user.first_name;
-                            document.getElementById('edit_last_name').value = data.user.last_name;
-                            document.getElementById('edit_email').value = data.user.email;
-                            document.getElementById('edit_role').value = data.user.role;
-                            openModal('editModal');
-                        } else {
-                            showToast('Error loading user data.', 'error');
-                        }
-                    })
-                    .catch(function() {
-                        showToast('Error loading user data.', 'error');
-                    });
-            };
+            let currentRolePermissions = [];
 
-            window.submitEditForm = function() {
-                const form = document.getElementById('editForm');
-                const formData = new FormData(form);
-                
-                const btn = document.querySelector('#editModal .modal-footer .btn-primary');
-                btn.disabled = true;
-                btn.innerHTML = '<span class="loader" style="width:16px;height:16px;border-width:2px;margin:0 auto;"></span>';
-                
-                fetch('users.php', {
+            window.openEditRoleModal = function(roleId) {
+                document.getElementById('role_id').value = roleId;
+                document.getElementById('roleAction').value = 'update_permissions';
+                document.getElementById('roleModalTitle').innerHTML = 
+                    '<span class="material-symbols-outlined">edit</span> Edit Role Permissions';
+
+                // Reset all checkboxes
+                document.querySelectorAll('.permission-checkbox').forEach(function(cb) {
+                    cb.checked = false;
+                });
+
+                // Fetch role data
+                const formData = new FormData();
+                formData.append('action', 'get_role');
+                formData.append('role_id', roleId);
+
+                fetch('roles.php', {
                     method: 'POST',
                     body: formData,
                     headers: {
@@ -2384,82 +2344,78 @@ $roleBadges = [
                 .then(function(response) { return response.json(); })
                 .then(function(data) {
                     if (data.success) {
-                        showToast(data.message, 'success');
-                        closeModal('editModal');
-                        setTimeout(function() { location.reload(); }, 1000);
+                        document.getElementById('role_name').value = data.role.role_name;
+                        currentRolePermissions = data.role.permissions || [];
+                        
+                        // Check the boxes for this role's permissions
+                        document.querySelectorAll('.permission-checkbox').forEach(function(cb) {
+                            if (currentRolePermissions.includes(cb.value)) {
+                                cb.checked = true;
+                            }
+                        });
+                        
+                        openModal('roleModal');
                     } else {
-                        showToast(data.error || 'Failed to update user.', 'error');
-                        btn.disabled = false;
-                        btn.innerHTML = '<span class="material-symbols-outlined">save</span> Save Changes';
+                        showToast(data.error || 'Failed to load role.', 'error');
                     }
                 })
                 .catch(function() {
-                    showToast('Error updating user.', 'error');
-                    btn.disabled = false;
-                    btn.innerHTML = '<span class="material-symbols-outlined">save</span> Save Changes';
+                    showToast('Error loading role data.', 'error');
                 });
             };
 
-            // =============================================
-            // 8. STATUS MODAL (with 5s countdown)
-            // =============================================
-            window.openStatusModal = function(userId, currentStatus) {
-                const newStatus = currentStatus ? 0 : 1;
-                const action = currentStatus ? 'deactivate' : 'activate';
-                const actionText = currentStatus ? 'Deactivate' : 'Activate';
-                
-                document.getElementById('status_user_id').value = userId;
-                document.getElementById('status_new_status').value = newStatus;
-                document.getElementById('statusActionText').textContent = action;
-                document.getElementById('statusModalTitle').innerHTML = '<span class="material-symbols-outlined">warning</span> Confirm ' + actionText;
-                document.getElementById('statusMessage').innerHTML = 
-                    'Are you sure you want to <strong>' + action + '</strong> this user?';
-                
-                const warning = document.getElementById('statusWarning');
-                if (action === 'deactivate') {
-                    warning.style.display = 'block';
-                } else {
-                    warning.style.display = 'none';
+            window.openCreateRoleModal = function() {
+                document.getElementById('role_id').value = '';
+                document.getElementById('role_name').value = '';
+                document.getElementById('roleAction').value = 'create_role';
+                document.getElementById('roleModalTitle').innerHTML = 
+                    '<span class="material-symbols-outlined">add</span> Create New Role';
+
+                // Reset all checkboxes
+                document.querySelectorAll('.permission-checkbox').forEach(function(cb) {
+                    cb.checked = false;
+                });
+                currentRolePermissions = [];
+
+                openModal('roleModal');
+            };
+
+            window.toggleAllPermissions = function(state) {
+                document.querySelectorAll('.permission-checkbox').forEach(function(cb) {
+                    cb.checked = state;
+                });
+            };
+
+            window.saveRolePermissions = function() {
+                const roleId = document.getElementById('role_id').value;
+                const roleName = document.getElementById('role_name').value.trim();
+                const action = document.getElementById('roleAction').value;
+
+                if (!roleName) {
+                    showToast('Please enter a role name.', 'warning');
+                    return;
                 }
-                
-                const confirmBtn = document.getElementById('statusConfirmBtn');
-                confirmBtn.disabled = true;
-                confirmBtn.className = 'btn btn-warning';
-                
-                if (countdownInterval) clearInterval(countdownInterval);
-                currentCountdown = 5;
-                document.getElementById('statusCountdownNumber').textContent = currentCountdown;
-                document.getElementById('statusConfirmLabel').textContent = '(' + currentCountdown + 's)';
-                
-                openModal('statusModal');
-                
-                countdownInterval = setInterval(function() {
-                    currentCountdown--;
-                    document.getElementById('statusCountdownNumber').textContent = currentCountdown;
-                    document.getElementById('statusConfirmLabel').textContent = '(' + currentCountdown + 's)';
-                    
-                    if (currentCountdown <= 0) {
-                        clearInterval(countdownInterval);
-                        countdownInterval = null;
-                        confirmBtn.disabled = false;
-                        document.getElementById('statusConfirmLabel').textContent = 'Confirm';
-                    }
-                }, 1000);
-            };
 
-            window.confirmStatusChange = function() {
-                const userId = document.getElementById('status_user_id').value;
-                const newStatus = document.getElementById('status_new_status').value;
-                
+                // Collect selected permissions
+                const selectedPermissions = [];
+                document.querySelectorAll('.permission-checkbox:checked').forEach(function(cb) {
+                    selectedPermissions.push(cb.value);
+                });
+
                 const formData = new FormData();
-                formData.append('action', 'toggle_status');
-                formData.append('user_id', userId);
+                formData.append('action', action);
+                formData.append('role_name', roleName);
+                formData.append('permissions', JSON.stringify(selectedPermissions));
                 
-                const btn = document.getElementById('statusConfirmBtn');
+                if (roleId) {
+                    formData.append('role_id', roleId);
+                }
+
+                const btn = document.querySelector('#roleModal .modal-footer .btn-primary');
                 btn.disabled = true;
-                btn.innerHTML = '<span class="loader" style="width:16px;height:16px;border-width:2px;margin:0 auto;"></span>';
-                
-                fetch('users.php', {
+                btn.innerHTML = '<span class="loader loader-sm" style="margin:0 auto;"></span>';
+
+                fetch('roles.php', {
                     method: 'POST',
                     body: formData,
                     headers: {
@@ -2470,64 +2426,34 @@ $roleBadges = [
                 .then(function(data) {
                     if (data.success) {
                         showToast(data.message, 'success');
-                        closeModal('statusModal');
+                        closeModal('roleModal');
                         setTimeout(function() { location.reload(); }, 1000);
                     } else {
-                        showToast(data.error || 'Failed to update status.', 'error');
+                        showToast(data.error || 'Failed to save role.', 'error');
                         btn.disabled = false;
-                        btn.innerHTML = '<span class="material-symbols-outlined">check</span> Confirm';
+                        btn.innerHTML = '<span class="material-symbols-outlined">save</span> Save Permissions';
                     }
                 })
                 .catch(function() {
-                    showToast('Error updating status.', 'error');
+                    showToast('Error saving role.', 'error');
                     btn.disabled = false;
-                    btn.innerHTML = '<span class="material-symbols-outlined">check</span> Confirm';
+                    btn.innerHTML = '<span class="material-symbols-outlined">save</span> Save Permissions';
                 });
             };
 
             // =============================================
-            // 9. DELETE MODAL (with 5s countdown)
+            // 7. DELETE ROLE
             // =============================================
-            window.openDeleteModal = function(userId) {
-                document.getElementById('delete_user_id').value = userId;
-                
-                const confirmBtn = document.getElementById('deleteConfirmBtn');
-                confirmBtn.disabled = true;
-                confirmBtn.className = 'btn btn-danger';
-                
-                if (countdownInterval) clearInterval(countdownInterval);
-                currentCountdown = 5;
-                document.getElementById('deleteCountdownNumber').textContent = currentCountdown;
-                document.getElementById('deleteConfirmLabel').textContent = '(' + currentCountdown + 's)';
-                
-                openModal('deleteModal');
-                
-                countdownInterval = setInterval(function() {
-                    currentCountdown--;
-                    document.getElementById('deleteCountdownNumber').textContent = currentCountdown;
-                    document.getElementById('deleteConfirmLabel').textContent = '(' + currentCountdown + 's)';
-                    
-                    if (currentCountdown <= 0) {
-                        clearInterval(countdownInterval);
-                        countdownInterval = null;
-                        confirmBtn.disabled = false;
-                        document.getElementById('deleteConfirmLabel').textContent = 'Confirm Delete';
-                    }
-                }, 1000);
-            };
+            window.deleteRole = function(roleId, roleName) {
+                if (!confirm('Are you sure you want to delete the role "' + roleName + '"? This action cannot be undone.')) {
+                    return;
+                }
 
-            window.confirmDelete = function() {
-                const userId = document.getElementById('delete_user_id').value;
-                
                 const formData = new FormData();
-                formData.append('action', 'delete_user');
-                formData.append('user_id', userId);
-                
-                const btn = document.getElementById('deleteConfirmBtn');
-                btn.disabled = true;
-                btn.innerHTML = '<span class="loader" style="width:16px;height:16px;border-width:2px;margin:0 auto;"></span>';
-                
-                fetch('users.php', {
+                formData.append('action', 'delete_role');
+                formData.append('role_id', roleId);
+
+                fetch('roles.php', {
                     method: 'POST',
                     body: formData,
                     headers: {
@@ -2538,32 +2464,35 @@ $roleBadges = [
                 .then(function(data) {
                     if (data.success) {
                         showToast(data.message, 'success');
-                        closeModal('deleteModal');
                         setTimeout(function() { location.reload(); }, 1000);
                     } else {
-                        showToast(data.error || 'Failed to delete user.', 'error');
-                        btn.disabled = false;
-                        btn.innerHTML = '<span class="material-symbols-outlined">delete</span> Confirm Delete';
+                        showToast(data.error || 'Failed to delete role.', 'error');
                     }
                 })
                 .catch(function() {
-                    showToast('Error deleting user.', 'error');
-                    btn.disabled = false;
-                    btn.innerHTML = '<span class="material-symbols-outlined">delete</span> Confirm Delete';
+                    showToast('Error deleting role.', 'error');
                 });
             };
 
             // =============================================
-            // 10. TOAST SYSTEM
+            // 8. TOAST SYSTEM
             // =============================================
-            function showToast(message, type) {
+            window.showToast = function(message, type) {
                 type = type || 'info';
                 const existingToast = document.querySelector('.toast');
                 if (existingToast) existingToast.remove();
 
                 const toast = document.createElement('div');
                 toast.className = 'toast ' + type;
-                toast.textContent = message;
+                
+                const iconMap = {
+                    'success': 'check_circle',
+                    'error': 'error',
+                    'warning': 'warning',
+                    'info': 'info'
+                };
+                
+                toast.innerHTML = '<span class="material-symbols-outlined">' + (iconMap[type] || 'info') + '</span> ' + message;
                 document.body.appendChild(toast);
 
                 setTimeout(function() {
@@ -2572,16 +2501,16 @@ $roleBadges = [
                     toast.style.transition = 'all 0.4s ease';
                     setTimeout(function() { toast.remove(); }, 400);
                 }, 4000);
-            }
+            };
 
             // =============================================
-            // 11. INITIAL STATE
+            // 9. INITIAL STATE
             // =============================================
             if (window.innerWidth < 768) {
                 sidebar.classList.add('mobile-hidden');
             }
 
-            console.log('ISMERS User Management loaded successfully.');
+            console.log('ISMERS Role Management loaded successfully.');
         })();
     </script>
 

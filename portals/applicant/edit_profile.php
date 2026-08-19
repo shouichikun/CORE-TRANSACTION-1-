@@ -1,9 +1,15 @@
 <?php
-// portals/applicant/edit_profile.php - Edit Profile
+// portals/applicant/edit_profile.php - Edit Profile with AI Resume Analysis
 session_start();
 
 // Include configuration file
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
+
+// Include PDF Parser
+require_once '../../vendor/autoload.php';
+
+use Smalot\PdfParser\Parser;
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -27,6 +33,19 @@ $email = $_SESSION['email'] ?? '';
 $applicant = getApplicantByUserId($userId);
 $applicantId = $applicant['id'] ?? 0;
 
+// =============================================
+// GET PENDING OFFERS COUNT FOR SIDEBAR BADGE
+// =============================================
+$pendingOffers = 0;
+if ($applicantId) {
+    $offersResult = getRecord("
+        SELECT COUNT(*) as count FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        WHERE a.applicant_id = ? AND o.status = 'sent'
+    ", [$applicantId], "i");
+    $pendingOffers = $offersResult['count'] ?? 0;
+}
+
 // Get applications count for the badge
 $applications = [];
 if ($applicantId) {
@@ -46,39 +65,493 @@ if ($applicantId) {
 // Initialize variables
 $successMessage = '';
 $errorMessage = '';
+$aiAnalysisResult = null;
+$aiError = '';
+$resumeAnalysisResult = null;
+$resumeUploadError = '';
+$showAIFilledData = false;
+$aiFilledData = [];
 
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    
-    if ($action === 'update_profile') {
-        // Get form data
-        $careerObjective = trim($_POST['career_objective'] ?? '');
-        $skills = trim($_POST['skills'] ?? '');
-        $experience = trim($_POST['experience'] ?? '');
-        $education = trim($_POST['education'] ?? '');
+// =============================================
+// AI RESUME ANALYSIS
+// =============================================
+function analyzeProfileWithAI($applicantData) {
+    try {
+        // Build resume text from all fields
+        $resumeText = "";
         
-        // Update applicant profile
-        $applicantData = [
-            'career_objective' => $careerObjective,
-            'skills' => $skills,
-            'experience' => $experience,
-            'education' => $education
+        if (!empty($applicantData['career_objective'])) {
+            $resumeText .= "CAREER OBJECTIVE: " . $applicantData['career_objective'] . "\n\n";
+        }
+        
+        if (!empty($applicantData['skills'])) {
+            $resumeText .= "SKILLS: " . $applicantData['skills'] . "\n\n";
+        }
+        
+        if (!empty($applicantData['experience'])) {
+            $resumeText .= "EXPERIENCE: " . $applicantData['experience'] . "\n\n";
+        }
+        
+        if (!empty($applicantData['education'])) {
+            $resumeText .= "EDUCATION: " . $applicantData['education'] . "\n\n";
+        }
+        
+        if (strlen(trim($resumeText)) < 50) {
+            return [
+                'success' => false,
+                'error' => 'Profile is too short for AI analysis. Add more details to get insights.'
+            ];
+        }
+        
+        $aiService = new AiService();
+        $analysis = $aiService->analyzeResume($resumeText);
+        
+        if (empty($analysis['skills']) && empty($analysis['summary'])) {
+            return [
+                'success' => false,
+                'error' => 'AI analysis returned no data. Please try again.'
+            ];
+        }
+        
+        return [
+            'success' => true,
+            'data' => $analysis,
+            'provider' => $analysis['provider'] ?? 'unknown'
         ];
         
-        $applicantUpdated = updateApplicant($applicantId, $applicantData);
+    } catch (Exception $e) {
+        error_log("AI Analysis Error: " . $e->getMessage());
+        return [
+            'success' => false,
+            'error' => 'AI analysis failed: ' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Extract text from uploaded resume file using smalot/pdfparser
+ */
+function extractResumeText($filePath) {
+    $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+    $text = '';
+    
+    try {
+        if ($extension === 'pdf') {
+            $parser = new Parser();
+            $pdf = $parser->parseFile($filePath);
+            $text = $pdf->getText();
+            $text = preg_replace('/\s+/', ' ', $text);
+            $text = trim($text);
+            return $text;
+        }
+        elseif ($extension === 'docx') {
+            $zip = new ZipArchive();
+            if ($zip->open($filePath) === true) {
+                $content = $zip->getFromName('word/document.xml');
+                $zip->close();
+                if ($content) {
+                    $text = strip_tags($content);
+                    $text = preg_replace('/\s+/', ' ', $text);
+                    $text = trim($text);
+                }
+            }
+            return $text;
+        }
+        elseif ($extension === 'doc') {
+            if (exec("which antiword")) {
+                $text = shell_exec("antiword " . escapeshellarg($filePath));
+            } else {
+                $text = file_get_contents($filePath);
+                $text = preg_replace('/[^\x20-\x7E\x0A\x0D]/', ' ', $text);
+                $text = preg_replace('/\s+/', ' ', $text);
+                $text = trim($text);
+            }
+            return $text;
+        }
+        elseif ($extension === 'txt') {
+            $text = file_get_contents($filePath);
+            return $text;
+        }
+    } catch (Exception $e) {
+        error_log("Text extraction error: " . $e->getMessage());
+        return null;
+    }
+    
+    return null;
+}
+
+/**
+ * Parse resume text and fill profile fields
+ */
+function parseResumeWithAI($resumeText) {
+    try {
+        if (strlen(trim($resumeText)) < 50) {
+            return [
+                'success' => false,
+                'error' => 'Resume text is too short. Please upload a complete resume.'
+            ];
+        }
         
-        if ($applicantUpdated) {
-            $successMessage = 'Profile updated successfully!';
-            // Refresh applicant data
-            $applicant = getApplicantByUserId($userId);
+        $aiService = new AiService();
+        $analysis = $aiService->analyzeResume($resumeText);
+        
+        if (empty($analysis['skills']) && empty($analysis['summary'])) {
+            return [
+                'success' => false,
+                'error' => 'AI could not parse the resume. Please try again.'
+            ];
+        }
+        
+        $profileData = [];
+        
+        if (!empty($analysis['skills'])) {
+            $profileData['skills'] = implode(', ', $analysis['skills']);
+        }
+        
+        if (!empty($analysis['summary'])) {
+            $profileData['career_objective'] = $analysis['summary'];
+        }
+        
+        if (!empty($analysis['keywords'])) {
+            $keywords = array_slice($analysis['keywords'], 0, 10);
+            $profileData['experience'] = "Key skills and experience: " . implode(', ', $keywords);
+        }
+        
+        if (!empty($analysis['education']) && $analysis['education'] !== 'Not specified') {
+            $profileData['education'] = $analysis['education'];
+        }
+        
+        return [
+            'success' => true,
+            'data' => $profileData,
+            'analysis' => $analysis,
+            'provider' => $analysis['provider'] ?? 'unknown'
+        ];
+        
+    } catch (Exception $e) {
+        error_log("Resume Parse Error: " . $e->getMessage());
+        return [
+            'success' => false,
+            'error' => 'Resume parsing failed: ' . $e->getMessage()
+        ];
+    }
+}
+
+// =============================================
+// HANDLE RESUME UPLOAD
+// =============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'upload_resume') {
+    if (isset($_FILES['resume_file']) && $_FILES['resume_file']['error'] === UPLOAD_ERR_OK) {
+        $file = $_FILES['resume_file'];
+        $allowedExtensions = ['pdf', 'doc', 'docx', 'txt'];
+        $maxSize = 5 * 1024 * 1024;
+        
+        $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        
+        if (!in_array($extension, $allowedExtensions)) {
+            $resumeUploadError = 'Invalid file type. Please upload PDF, DOC, DOCX, or TXT files.';
+        } elseif ($file['size'] > $maxSize) {
+            $resumeUploadError = 'File size must be less than 5MB.';
         } else {
-            $errorMessage = 'Failed to update profile. Please try again.';
+            $uploadDir = '../../uploads/resumes/';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0777, true);
+            }
+            
+            $filename = 'resume_' . $userId . '_' . time() . '.' . $extension;
+            $filepath = $uploadDir . $filename;
+            
+            if (move_uploaded_file($file['tmp_name'], $filepath)) {
+                $resumeText = extractResumeText($filepath);
+                
+                if ($resumeText && strlen(trim($resumeText)) > 50) {
+                    $parseResult = parseResumeWithAI($resumeText);
+                    
+                    if ($parseResult['success']) {
+                        $resumeAnalysisResult = $parseResult;
+                        $showAIFilledData = true;
+                        $aiFilledData = $parseResult['data'];
+                        
+                        $relativePath = 'uploads/resumes/' . $filename;
+                        updateApplicant($applicantId, ['resume_path' => $relativePath]);
+                        
+                        $successMessage = '✅ Resume uploaded and analyzed! Review the extracted data below.';
+                    } else {
+                        $resumeUploadError = $parseResult['error'];
+                        $relativePath = 'uploads/resumes/' . $filename;
+                        updateApplicant($applicantId, ['resume_path' => $relativePath]);
+                    }
+                } else {
+                    $resumeUploadError = 'Could not extract text from the resume. Please ensure the file contains readable text.';
+                    $relativePath = 'uploads/resumes/' . $filename;
+                    updateApplicant($applicantId, ['resume_path' => $relativePath]);
+                }
+            } else {
+                $resumeUploadError = 'Failed to upload file. Please try again.';
+            }
+        }
+    } else {
+        $resumeUploadError = 'Please select a file to upload.';
+    }
+}
+
+// =============================================
+// HANDLE SAVE PROFILE FROM AI DATA - UPDATED UX
+// =============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_from_ai') {
+    $careerObjective = trim($_POST['career_objective'] ?? '');
+    $skills = trim($_POST['skills'] ?? '');
+    $experience = trim($_POST['experience'] ?? '');
+    $education = trim($_POST['education'] ?? '');
+    
+    $_SESSION['ai_filled_data'] = [
+        'career_objective' => $careerObjective,
+        'skills' => $skills,
+        'experience' => $experience,
+        'education' => $education
+    ];
+    
+    header('Location: edit_profile.php?ai_filled=1');
+    exit;
+}
+
+// =============================================
+// HANDLE SAVE & ANALYZE (Final Save)
+// =============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_and_analyze') {
+    $careerObjective = trim($_POST['career_objective'] ?? '');
+    $skills = trim($_POST['skills'] ?? '');
+    $experience = trim($_POST['experience'] ?? '');
+    $education = trim($_POST['education'] ?? '');
+    
+    $applicantData = [
+        'career_objective' => $careerObjective,
+        'skills' => $skills,
+        'experience' => $experience,
+        'education' => $education
+    ];
+    
+    if (empty($careerObjective) && empty($skills) && empty($experience) && empty($education)) {
+        $errorMessage = 'No data to save. Please fill in at least one field.';
+    } else {
+        global $conn;
+        
+        $sql = "UPDATE applicants SET ";
+        $setParts = [];
+        $params = [];
+        $types = "";
+        
+        foreach ($applicantData as $key => $value) {
+            if (!empty($value)) {
+                $setParts[] = "$key = ?";
+                $params[] = $value;
+                $types .= "s";
+            }
+        }
+        
+        if (empty($setParts)) {
+            $errorMessage = 'No data to save.';
+        } else {
+            $sql .= implode(", ", $setParts);
+            $sql .= " WHERE id = ?";
+            $params[] = $applicantId;
+            $types .= "i";
+            
+            $stmt = mysqli_prepare($conn, $sql);
+            
+            if (!$stmt) {
+                $errorMessage = 'Database error: ' . mysqli_error($conn);
+            } else {
+                mysqli_stmt_bind_param($stmt, $types, ...$params);
+                $executed = mysqli_stmt_execute($stmt);
+                
+                if ($executed) {
+                    $aiResult = analyzeProfileWithAI($applicantData);
+                    
+                    if ($aiResult['success']) {
+                        $analysis = $aiResult['data'];
+                        
+                        $aiSql = "UPDATE applicants SET 
+                            ai_skills = ?,
+                            ai_years_experience = ?,
+                            ai_education = ?,
+                            ai_profile_strength = ?,
+                            ai_last_analysis = ?
+                        WHERE id = ?";
+                        
+                        $aiStmt = mysqli_prepare($conn, $aiSql);
+                        $aiSkills = json_encode($analysis['skills'] ?? []);
+                        $aiExperience = $analysis['years_experience'] ?? 0;
+                        $aiEducation = $analysis['education'] ?? '';
+                        $aiStrength = calculateProfileStrength($applicantData);
+                        $aiLastAnalysis = date('Y-m-d H:i:s');
+                        
+                        mysqli_stmt_bind_param($aiStmt, "sisisi", 
+                            $aiSkills,
+                            $aiExperience,
+                            $aiEducation,
+                            $aiStrength,
+                            $aiLastAnalysis,
+                            $applicantId
+                        );
+                        mysqli_stmt_execute($aiStmt);
+                        mysqli_stmt_close($aiStmt);
+                    }
+                    
+                    mysqli_stmt_close($stmt);
+                    
+                    $_SESSION['profile_update_success'] = true;
+                    header('Location: profile.php?updated=1');
+                    exit;
+                    
+                } else {
+                    $errorMessage = 'Failed to update profile: ' . mysqli_stmt_error($stmt);
+                    mysqli_stmt_close($stmt);
+                }
+            }
         }
     }
-
-    
 }
+
+// Check if AI data was filled from session
+if (isset($_GET['ai_filled']) && $_GET['ai_filled'] == 1 && isset($_SESSION['ai_filled_data'])) {
+    $showAIFilledData = true;
+    $aiFilledData = $_SESSION['ai_filled_data'];
+    $successMessage = '📋 AI data loaded into form. Review and click "Save & Analyze" to save.';
+}
+
+// Handle regular form submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_profile') {
+    $careerObjective = trim($_POST['career_objective'] ?? '');
+    $skills = trim($_POST['skills'] ?? '');
+    $experience = trim($_POST['experience'] ?? '');
+    $education = trim($_POST['education'] ?? '');
+    
+    $applicantData = [
+        'career_objective' => $careerObjective,
+        'skills' => $skills,
+        'experience' => $experience,
+        'education' => $education
+    ];
+    
+    $applicantUpdated = updateApplicant($applicantId, $applicantData);
+    
+    if ($applicantUpdated) {
+        $aiResult = analyzeProfileWithAI($applicantData);
+        
+        if ($aiResult['success']) {
+            $aiAnalysisResult = $aiResult['data'];
+            
+            try {
+                $columns = getTableColumns('applicants');
+                $aiData = [];
+                
+                if (in_array('ai_skills', $columns)) {
+                    $aiData['ai_skills'] = json_encode($aiAnalysisResult['skills'] ?? []);
+                }
+                if (in_array('ai_years_experience', $columns)) {
+                    $aiData['ai_years_experience'] = $aiAnalysisResult['years_experience'] ?? 0;
+                }
+                if (in_array('ai_education', $columns)) {
+                    $aiData['ai_education'] = $aiAnalysisResult['education'] ?? '';
+                }
+                if (in_array('ai_profile_strength', $columns)) {
+                    $aiData['ai_profile_strength'] = calculateProfileStrength($applicantData);
+                }
+                if (in_array('ai_last_analysis', $columns)) {
+                    $aiData['ai_last_analysis'] = date('Y-m-d H:i:s');
+                }
+                
+                if (!empty($aiData)) {
+                    updateApplicant($applicantId, $aiData);
+                }
+            } catch (Exception $e) {
+                error_log("AI data update failed (non-critical): " . $e->getMessage());
+            }
+            
+            $successMessage = 'Profile updated successfully! AI analysis completed.';
+        } else {
+            $successMessage = 'Profile updated successfully!';
+            $aiError = $aiResult['error'] ?? 'AI analysis could not be completed.';
+        }
+    } else {
+        $errorMessage = 'Failed to update profile. Please try again.';
+    }
+}
+
+// Handle manual AI analysis trigger
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'analyze_ai') {
+    $applicantData = [
+        'career_objective' => $applicant['career_objective'] ?? '',
+        'skills' => $applicant['skills'] ?? '',
+        'experience' => $applicant['experience'] ?? '',
+        'education' => $applicant['education'] ?? ''
+    ];
+    
+    $aiResult = analyzeProfileWithAI($applicantData);
+    
+    if ($aiResult['success']) {
+        $aiAnalysisResult = $aiResult['data'];
+        $successMessage = 'AI analysis completed! Check the results below.';
+    } else {
+        $aiError = $aiResult['error'] ?? 'AI analysis failed.';
+    }
+}
+
+/**
+ * Calculate profile strength based on filled fields
+ */
+function calculateProfileStrength($applicant) {
+    $score = 0;
+    $total = 0;
+    
+    $fields = [
+        'career_objective' => 20,
+        'skills' => 25,
+        'experience' => 25,
+        'education' => 20,
+        'phone' => 5,
+        'address' => 5,
+    ];
+    
+    foreach ($fields as $field => $weight) {
+        $total += $weight;
+        if (!empty($applicant[$field])) {
+            $score += $weight;
+        }
+    }
+    
+    return $total > 0 ? round(($score / $total) * 100) : 0;
+}
+
+/**
+ * Get table columns
+ */
+function getTableColumns($table) {
+    global $conn;
+    $sql = "SHOW COLUMNS FROM $table";
+    $result = mysqli_query($conn, $sql);
+    $columns = [];
+    while ($row = mysqli_fetch_assoc($result)) {
+        $columns[] = $row['Field'];
+    }
+    return $columns;
+}
+
+// Get stored AI analysis data from applicant record
+$storedAiSkills = [];
+$storedAiExperience = 0;
+$storedAiEducation = '';
+$profileStrength = 0;
+$hasResume = !empty($applicant['resume_path']);
+
+if ($applicant) {
+    $storedAiSkills = !empty($applicant['ai_skills']) ? json_decode($applicant['ai_skills'], true) : [];
+    $storedAiExperience = $applicant['ai_years_experience'] ?? 0;
+    $storedAiEducation = $applicant['ai_education'] ?? '';
+    $profileStrength = $applicant['ai_profile_strength'] ?? calculateProfileStrength($applicant);
+}
+
 $interviewCount = 0;
 if ($applicantId) {
     $interviewResult = getRecord("
@@ -88,6 +561,13 @@ if ($applicantId) {
     $interviewCount = $interviewResult['count'] ?? 0;
 }
 
+// Check if PDF parser is available
+$pdfParserAvailable = class_exists('Smalot\PdfParser\Parser');
+
+if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
+    unset($_SESSION['ai_filled_data']);
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -95,43 +575,65 @@ if ($applicantId) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title>Edit Profile - ISMERS</title>
-    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ===== RESET & BASE ===== */
+        /* ==========================================================================
+           MATERIAL 3 DESIGN SYSTEM - EDIT PROFILE
+           ========================================================================== */
+        :root {
+            --bg-background: #f8f7fc;
+            --bg-surface: #ffffff;
+            --bg-surface-low: #f5f3ff;
+            --bg-surface-container-low: #f5f3ff;
+            --bg-surface-container-lowest: #ffffff;
+            --bg-surface-container-high: #ede9fe;
+            --text-on-surface: #1b1b24;
+            --text-on-surface-variant: #464555;
+            --text-on-background: #1b1b24;
+            --outline-variant: #c7c4d8;
+            --primary: #4f46e5;
+            --primary-container: #4f46e5;
+            --on-primary: #ffffff;
+            --on-primary-fixed-variant: #4338ca;
+            --slate-100: #f1f5f9;
+            --slate-200: #e2e8f0;
+            --slate-500: #64748b;
+            --slate-900: #0f172a;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+            --radius-xl: 1rem;
+            --radius-2xl: 1.5rem;
+            --radius-full: 9999px;
+            --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-label: 'Public Sans', system-ui, -apple-system, sans-serif;
+            --transition-fast: 0.15s ease;
+            --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            --sidebar-width: 280px;
+            --sidebar-collapsed: 72px;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --error-color: #dc2626;
+            --info-color: #3b82f6;
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
 
-        :root {
-            --primary-dark: #0a2647;
-            --primary-blue: #1a3a5c;
-            --primary-medium: #2c5f8a;
-            --primary-light: #4a90d9;
-            --primary-lighter: #6db3f2;
-            --primary-gradient: linear-gradient(135deg, #1a3a5c 0%, #4a90d9 100%);
-            --white: #ffffff;
-            --gray-light: #f8f9fc;
-            --gray-border: #e8ecf1;
-            --text-dark: #1a2a3a;
-            --text-gray: #5a6a7a;
-            --shadow-sm: 0 2px 8px rgba(26, 58, 92, 0.08);
-            --shadow-md: 0 8px 30px rgba(26, 58, 92, 0.12);
-            --shadow-lg: 0 20px 60px rgba(26, 58, 92, 0.15);
-            --radius: 16px;
-            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            --sidebar-width: 260px;
-            --sidebar-collapsed: 72px;
-        }
-
         body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: var(--gray-light);
-            color: var(--text-dark);
+            font-family: var(--font-sans);
+            background: var(--bg-background);
+            color: var(--text-on-surface);
             line-height: 1.6;
             min-height: 100vh;
             display: flex;
+            flex-direction: row;
+            overflow: hidden;
+            height: 100vh;
         }
 
         a {
@@ -139,632 +641,1417 @@ if ($applicantId) {
             color: inherit;
         }
 
-        /* ===== BUTTONS ===== */
-        .btn {
-            padding: 10px 24px;
-            border: none;
-            border-radius: 50px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: var(--transition);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .btn-primary {
-            background: var(--primary-gradient);
-            color: white;
-            box-shadow: 0 4px 15px rgba(74, 144, 217, 0.35);
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(74, 144, 217, 0.45);
-        }
-
-        .btn-outline {
-            background: transparent;
-            color: var(--primary-blue);
-            border: 2px solid var(--primary-blue);
-        }
-
-        .btn-outline:hover {
-            background: var(--primary-blue);
-            color: white;
-        }
-
-        .btn-success {
-            background: #22c55e;
-            color: white;
-        }
-
-        .btn-success:hover {
-            background: #16a34a;
-            transform: translateY(-2px);
-        }
-
-        .btn-sm {
-            padding: 6px 14px;
-            font-size: 12px;
-        }
-
         /* =============================================
-                   SIDEBAR
-                ============================================= */
-        .sidebar {
+           SIDEBAR - FIXED
+        ============================================= */
+        .dashboard-sidebar {
             position: fixed;
             top: 0;
             left: 0;
-            height: 100vh;
-            width: var(--sidebar-width);
-            background: var(--white);
-            border-right: 1px solid var(--gray-border);
+            bottom: 0;
+            z-index: 50;
+            background: var(--bg-surface);
             display: flex;
             flex-direction: column;
-            transition: width 0.3s ease;
-            z-index: 1000;
+            height: 100vh;
+            width: var(--sidebar-width);
+            border-right: 1px solid var(--slate-200);
+            transition: width 0.3s ease, transform 0.3s ease;
             overflow: hidden;
-            box-shadow: 2px 0 12px rgba(0, 0, 0, 0.04);
+            box-shadow: var(--shadow-xl);
+            flex-shrink: 0;
         }
 
-        .sidebar.collapsed {
+        .dashboard-sidebar.collapsed {
             width: var(--sidebar-collapsed);
         }
 
-        .sidebar-brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 20px 16px;
-            border-bottom: 1px solid var(--gray-border);
-            min-height: 72px;
-            flex-shrink: 0;
+        .dashboard-sidebar.mobile-hidden {
+            transform: translateX(-100%);
         }
 
-        .sidebar-brand .brand-icon {
-            width: 38px;
-            height: 38px;
-            background: var(--primary-gradient);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 18px;
-            font-weight: 800;
-            flex-shrink: 0;
+        .dashboard-sidebar.mobile-open {
+            transform: translateX(0);
         }
 
-        .sidebar-brand .brand-text {
-            font-size: 20px;
-            font-weight: 700;
-            color: var(--primary-blue);
-            white-space: nowrap;
+        .dashboard-sidebar .sidebar-brand-text,
+        .dashboard-sidebar .sidebar-brand-category,
+        .dashboard-sidebar .sidebar-nav .nav-label,
+        .dashboard-sidebar .sidebar-nav .nav-text,
+        .dashboard-sidebar .sidebar-nav .nav-badge,
+        .dashboard-sidebar .sidebar-footer .user-info {
+            opacity: 1;
             transition: opacity 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
         }
 
-        .sidebar.collapsed .brand-text {
+        .dashboard-sidebar.collapsed .sidebar-brand-text,
+        .dashboard-sidebar.collapsed .sidebar-brand-category,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
             opacity: 0;
             width: 0;
             overflow: hidden;
+            margin: 0;
+            padding: 0;
         }
 
-        .sidebar-toggle {
-            margin-left: auto;
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 6px;
-            color: var(--text-gray);
-            transition: var(--transition);
+        .dashboard-sidebar.collapsed .sidebar-brand-card {
+            padding: 1rem 0.5rem;
+        }
+
+        .dashboard-sidebar.collapsed .sidebar-nav {
+            padding: 0.5rem 0.25rem;
+        }
+
+        .dashboard-sidebar.collapsed .sidebar-main-link {
+            justify-content: center;
+            padding: 0.75rem 0.5rem;
+        }
+
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
+            justify-content: center;
+            padding: 0.5rem;
+        }
+
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            font-size: 0.875rem;
+        }
+
+        .sidebar-brand-card {
+            border-radius: 2rem;
+            padding: 1.5rem;
             display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 0.75rem;
+        }
+
+        .sidebar-brand-icon {
+            display: inline-flex;
             align-items: center;
             justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background: var(--slate-100);
+            color: var(--primary);
+            font-size: 1.5rem;
             flex-shrink: 0;
         }
 
-        .sidebar-toggle:hover {
-            color: var(--primary-blue);
+        .sidebar-brand-icon .material-symbols-outlined {
+            font-size: 1.5rem;
         }
 
-        .sidebar-toggle svg {
-            width: 22px;
-            height: 22px;
-            stroke: currentColor;
-            fill: none;
-            stroke-width: 2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            transition: transform 0.3s ease;
+        .sidebar-brand-text {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--slate-900);
         }
 
-        .sidebar.collapsed .sidebar-toggle svg {
-            transform: rotate(180deg);
+        .sidebar-brand-category {
+            font-size: 0.75rem;
+            color: var(--slate-500);
+            margin-top: 0.25rem;
         }
 
         .sidebar-nav {
             flex: 1;
-            padding: 16px 12px;
             overflow-y: auto;
+            padding: 1.5rem 1.25rem;
         }
 
         .sidebar-nav .nav-label {
-            font-size: 11px;
+            font-size: 0.75rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
-            color: var(--text-gray);
-            padding: 12px 12px 8px;
-            opacity: 0.6;
-            transition: opacity 0.3s ease;
+            letter-spacing: 0.05em;
+            color: var(--slate-500);
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
         }
 
-        .sidebar.collapsed .nav-label {
-            opacity: 0;
-            height: 0;
-            padding: 0;
-            overflow: hidden;
-        }
-
-        .sidebar-nav a {
+        .sidebar-main-link {
             display: flex;
             align-items: center;
-            gap: 14px;
-            padding: 10px 14px;
-            border-radius: 10px;
-            font-size: 14px;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-label);
             font-weight: 500;
-            color: var(--text-gray);
-            transition: var(--transition);
-            margin-bottom: 2px;
-            position: relative;
-            white-space: nowrap;
+            font-size: 0.875rem;
         }
 
-        .sidebar-nav a:hover {
-            background: rgba(74, 144, 217, 0.06);
-            color: var(--primary-blue);
+        .sidebar-main-link:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
         }
 
-        .sidebar-nav a.active {
-            background: rgba(74, 144, 217, 0.1);
-            color: var(--primary-blue);
+        .sidebar-main-link.active {
+            background: var(--bg-surface-container-high);
+            color: var(--primary);
         }
 
-        .sidebar-nav a.active::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 3px;
-            height: 24px;
-            background: var(--primary-gradient);
-            border-radius: 0 4px 4px 0;
-        }
-
-        .sidebar-nav a .nav-icon {
-            width: 22px;
-            height: 22px;
+        .sidebar-main-link .material-symbols-outlined {
+            font-size: 1.25rem;
             flex-shrink: 0;
-            stroke: currentColor;
-            fill: none;
-            stroke-width: 2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
         }
 
-        .sidebar-nav a .nav-text {
+        .sidebar-main-link .nav-text {
             transition: opacity 0.3s ease;
         }
 
-        .sidebar.collapsed a .nav-text {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
-        }
-
-        .sidebar-nav a .nav-badge {
+        .sidebar-main-link .nav-badge {
             margin-left: auto;
-            background: var(--primary-light);
+            background: var(--primary);
             color: white;
-            font-size: 11px;
+            font-size: 0.7rem;
             font-weight: 700;
-            padding: 1px 10px;
+            padding: 0.125rem 0.5rem;
             border-radius: 50px;
             transition: opacity 0.3s ease;
         }
 
-        .sidebar.collapsed a .nav-badge {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
-        }
-
         .sidebar-footer {
-            padding: 16px 16px;
-            border-top: 1px solid var(--gray-border);
-            flex-shrink: 0;
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
         }
 
         .sidebar-footer .user-card {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 1rem;
+            background: var(--bg-surface-low);
         }
 
         .sidebar-footer .user-card .avatar {
-            width: 40px;
-            height: 40px;
+            width: 2.5rem;
+            height: 2.5rem;
             border-radius: 50%;
-            background: var(--primary-gradient);
+            background: var(--primary);
             display: flex;
             align-items: center;
             justify-content: center;
             color: white;
             font-weight: 700;
-            font-size: 16px;
+            font-size: 0.875rem;
             flex-shrink: 0;
         }
 
-        .sidebar-footer .user-card .user-info {
-            flex: 1;
-            min-width: 0;
-            transition: opacity 0.3s ease;
-        }
-
-        .sidebar.collapsed .user-info {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
-        }
-
         .sidebar-footer .user-card .user-info .user-name {
-            font-size: 14px;
+            font-size: 0.875rem;
             font-weight: 600;
-            color: var(--text-dark);
+            color: var(--text-on-surface);
         }
 
         .sidebar-footer .user-card .user-info .user-email {
-            font-size: 12px;
-            color: var(--text-gray);
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 14px;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 500;
-            color: #dc2626;
-            transition: var(--transition);
-            margin-top: 8px;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-
-        .sidebar-footer .logout-btn:hover {
-            background: rgba(220, 38, 38, 0.08);
-        }
-
-        .sidebar-footer .logout-btn svg {
-            width: 20px;
-            height: 20px;
-            stroke: currentColor;
-            fill: none;
-            stroke-width: 2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            flex-shrink: 0;
-        }
-
-        .sidebar-footer .logout-btn .logout-text {
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
             transition: opacity 0.3s ease;
+            opacity: 0;
         }
 
-        .sidebar.collapsed .logout-btn .logout-text {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
+        .sidebar-backdrop.active {
+            display: block;
+            opacity: 1;
         }
 
         /* =============================================
-                   MOBILE SIDEBAR
-                ============================================= */
-        .sidebar-overlay {
+           MAIN CONTENT
+        ============================================= */
+        .main-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            margin-left: var(--sidebar-width);
+            transition: margin-left 0.3s ease;
+        }
+
+        .dashboard-sidebar.collapsed ~ .main-wrapper {
+            margin-left: var(--sidebar-collapsed);
+        }
+
+        /* =============================================
+           TOP HEADER
+        ============================================= */
+        .top-header {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 4rem;
+            padding: 0 1.5rem;
+            flex-shrink: 0;
+            z-index: 30;
+            width: 100%;
+        }
+
+        .top-header-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .top-header-left .logo {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.5rem;
+            background: var(--slate-100);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.875rem;
+            color: var(--primary);
+            border: 1px solid rgba(199, 196, 216, 0.3);
+        }
+
+        .top-header-left .separator {
+            color: var(--outline-variant);
+            font-weight: 300;
+            user-select: none;
+        }
+
+        .sidebar-toggle-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .sidebar-toggle-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .sidebar-toggle-btn .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .mobile-menu-btn {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .mobile-menu-btn:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+
+        .mobile-menu-btn .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .profile-dropdown-wrapper {
+            position: relative;
+        }
+
+        .profile-dropdown-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.375rem 0.75rem 0.375rem 0.375rem;
+            border-radius: var(--radius-full);
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .profile-dropdown-toggle:hover {
+            background: var(--bg-surface-low);
+            border-color: rgba(199, 196, 216, 0.3);
+        }
+
+        .profile-dropdown-toggle .avatar-small {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
+
+        .profile-dropdown-toggle .profile-name {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+
+        .profile-dropdown-toggle .profile-role {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            font-weight: 400;
+        }
+
+        .profile-dropdown-toggle .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--text-on-surface-variant);
+            transition: transform var(--transition-fast);
+        }
+
+        .profile-dropdown-toggle.open .material-symbols-outlined:last-child {
+            transform: rotate(180deg);
+        }
+
+        .profile-dropdown-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            width: 14rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--slate-200);
+            padding: 0.5rem;
+            z-index: 50;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-0.5rem) scale(0.95);
+            transition: all var(--transition-smooth);
+            transform-origin: top right;
+        }
+
+        .profile-dropdown-menu.open {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0) scale(1);
+        }
+
+        .profile-dropdown-menu .dropdown-header {
+            padding: 0.5rem 0.875rem 0.25rem;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+
+        .profile-dropdown-menu .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.625rem 0.875rem;
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-on-surface);
+            transition: all var(--transition-fast);
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            font-family: var(--font-sans);
+        }
+
+        .profile-dropdown-menu .dropdown-item:hover {
+            background: var(--bg-surface-low);
+            color: var(--primary);
+        }
+
+        .profile-dropdown-menu .dropdown-item .material-symbols-outlined {
+            font-size: 1.125rem;
+            color: var(--text-on-surface-variant);
+        }
+
+        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
+            color: var(--primary);
+        }
+
+        .profile-dropdown-menu .dropdown-item.danger {
+            color: #dc2626;
+        }
+
+        .profile-dropdown-menu .dropdown-item.danger:hover {
+            background: #fef2f2;
+            color: #dc2626;
+        }
+
+        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
+            color: #dc2626;
+        }
+
+        .profile-dropdown-menu .dropdown-divider {
+            height: 1px;
+            background: var(--slate-200);
+            margin: 0.25rem 0.5rem;
+        }
+
+        /* =============================================
+           MAIN SCROLLABLE AREA
+        ============================================= */
+        .main-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 2rem;
+        }
+
+        .main-scroll .container {
+            max-width: 80rem;
+            margin: 0 auto;
+        }
+
+        /* =============================================
+           BREADCRUMB
+        ============================================= */
+        .breadcrumb-bar {
+            background: var(--bg-surface-container-lowest);
+            border-radius: var(--radius-xl);
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            padding: 1rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        @media (min-width: 640px) {
+            .breadcrumb-bar {
+                border-radius: var(--radius-2xl);
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+            }
+        }
+
+        .breadcrumb-view {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.875rem;
+            border-radius: 0.75rem;
+            background: rgba(79, 70, 229, 0.1);
+            color: var(--primary);
+            font-size: 0.75rem;
+            font-weight: 700;
+            border: 1px solid rgba(79, 70, 229, 0.2);
+        }
+
+        .breadcrumb-view .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
+        .breadcrumb-view .status-dot {
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            background: #22c55e;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* =============================================
+           PAGE HEADER
+        ============================================= */
+        .page-header {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        @media (min-width: 640px) {
+            .page-header {
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+            }
+        }
+
+        .page-header h1 {
+            font-size: 1.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+            letter-spacing: -0.025em;
+        }
+
+        .page-header p {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        /* =============================================
+           RESUME UPLOAD SECTION
+        ============================================= */
+        .resume-upload-section {
+            background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+            border-radius: var(--radius-xl);
+            border: 2px dashed #86efac;
+            padding: 1.5rem;
+            margin-bottom: 1.25rem;
+            text-align: center;
+            position: relative;
+            transition: all var(--transition-fast);
+        }
+
+        .resume-upload-section:hover {
+            border-color: var(--primary);
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+        }
+
+        .resume-upload-section .upload-icon {
+            font-size: 2.5rem;
+            color: var(--primary);
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        .resume-upload-section h4 {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+        }
+
+        .resume-upload-section p {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+            margin: 0.25rem 0 0.75rem;
+        }
+
+        .resume-upload-section .file-input-wrapper {
+            display: inline-block;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .resume-upload-section .file-input-wrapper input[type="file"] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .resume-upload-section .file-input-wrapper .btn {
+            pointer-events: none;
+        }
+
+        .resume-upload-section .file-name {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.5rem;
+            display: none;
+        }
+
+        .resume-upload-section .file-name.show {
+            display: block;
+        }
+
+        .resume-upload-section .parser-status {
+            font-size: 0.75rem;
+            margin-top: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 0.375rem;
+            display: inline-block;
+        }
+
+        .resume-upload-section .parser-status.available {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .resume-upload-section .parser-status.unavailable {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        /* =============================================
+           AI INSIGHTS BANNER
+        ============================================= */
+        .ai-insights-banner {
+            background: linear-gradient(135deg, #eef0ff, #e0e7ff);
+            border-radius: var(--radius-xl);
+            border: 1px solid rgba(79, 70, 229, 0.2);
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.25rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+
+        .ai-insights-banner .ai-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .ai-insights-banner .ai-left .ai-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .ai-insights-banner .ai-left .ai-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+        }
+
+        .ai-insights-banner .ai-left .ai-text strong {
+            color: var(--primary);
+        }
+
+        .ai-insights-banner .ai-right {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .ai-insights-banner .ai-right .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            background: var(--primary);
+            color: white;
+        }
+
+        .ai-insights-banner .ai-right .ai-badge .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+
+        .btn-ai-analyze {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.375rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.75rem;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-ai-analyze:hover {
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-ai-analyze .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+
+        /* =============================================
+           AI ANALYSIS RESULTS
+        ============================================= */
+        .ai-results-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+            margin-bottom: 1.5rem;
+            display: <?php echo ($aiAnalysisResult || $aiError || $resumeAnalysisResult || $showAIFilledData) ? 'block' : 'none'; ?>;
+        }
+
+        .ai-results-card .ai-results-header {
+            padding: 0.875rem 1.25rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: linear-gradient(135deg, #f8f7fc, #f0eeff);
+        }
+
+        .ai-results-card .ai-results-header h3 {
+            font-size: 0.9375rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .ai-results-card .ai-results-header h3 .material-symbols-outlined {
+            color: var(--primary);
+        }
+
+        .ai-results-card .ai-results-header .ai-provider {
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface);
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+        }
+
+        .ai-results-body {
+            padding: 1.25rem;
+        }
+
+        .ai-skill-tag {
+            display: inline-block;
+            padding: 0.25rem 0.875rem;
+            background: rgba(79, 70, 229, 0.08);
+            color: var(--primary);
+            border-radius: 50px;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            border: 1px solid rgba(79, 70, 229, 0.15);
+            margin: 0.1875rem;
+        }
+
+        .ai-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .ai-stat-item {
+            background: var(--bg-surface-low);
+            border-radius: 0.75rem;
+            padding: 0.625rem 1rem;
+            border: 1px solid var(--slate-200);
+        }
+
+        .ai-stat-item .ai-stat-label {
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+
+        .ai-stat-item .ai-stat-value {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+            margin-top: 0.125rem;
+        }
+
+        .ai-error {
+            padding: 0.75rem 1rem;
+            background: #fef2f2;
+            border-radius: 0.75rem;
+            color: #991b1b;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border: 1px solid #fecaca;
+        }
+
+        .ai-error .material-symbols-outlined {
+            font-size: 1.125rem;
+            color: #dc2626;
+        }
+
+        /* =============================================
+           PROFILE STRENGTH INDICATOR
+        ============================================= */
+        .strength-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.75rem;
+            border: 1px solid var(--slate-200);
+        }
+
+        .strength-indicator .strength-bar {
+            flex: 1;
+            height: 0.5rem;
+            border-radius: var(--radius-full);
+            background: var(--slate-200);
+            overflow: hidden;
+        }
+
+        .strength-indicator .strength-bar .strength-fill {
+            height: 100%;
+            border-radius: var(--radius-full);
+            transition: width 0.8s ease;
+            width: <?php echo $profileStrength; ?>%;
+            background: <?php 
+                if ($profileStrength >= 80) echo '#22c55e';
+                elseif ($profileStrength >= 60) echo '#f59e0b';
+                elseif ($profileStrength >= 40) echo '#f97316';
+                else echo '#dc2626';
+            ?>;
+        }
+
+        .strength-indicator .strength-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            min-width: 3.5rem;
+            text-align: right;
+        }
+
+        /* =============================================
+           BUTTONS
+        ============================================= */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.625rem 1.25rem;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            font-size: 0.875rem;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
+        }
+
+        .btn-primary:hover {
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35);
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+        }
+
+        .btn-outline:hover {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+            box-shadow: 0 4px 14px rgba(34, 197, 94, 0.25);
+        }
+
+        .btn-success:hover {
+            background: #16a34a;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(34, 197, 94, 0.35);
+        }
+
+        .btn .material-symbols-outlined {
+            font-size: 1.125rem;
+        }
+
+        .btn-sm {
+            padding: 0.375rem 0.875rem;
+            font-size: 0.8125rem;
+        }
+
+        /* =============================================
+           SAVE & ANALYZE BUTTON - HIGHLIGHTED
+        ============================================= */
+        .btn-save-analyze {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35);
+        }
+
+        .btn-save-analyze:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.45);
+            background: linear-gradient(135deg, #4338ca, #6d28d9);
+        }
+
+        /* =============================================
+           FORM CARD
+        ============================================= */
+        .card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .card-header h3 {
+            font-size: 1.125rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+        }
+
+        .card-header h3 .material-symbols-outlined {
+            font-size: 1.25rem;
+            color: var(--primary);
+        }
+
+        .card-body {
+            padding: 1.5rem;
+        }
+
+        /* =============================================
+           FORM ELEMENTS
+        ============================================= */
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-bottom: 0.25rem;
+        }
+
+        .form-group label .required {
+            color: #dc2626;
+            margin-left: 0.125rem;
+        }
+
+        .form-group .form-control {
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            border: 2px solid var(--slate-200);
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+        }
+
+        .form-group .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
+        }
+
+        .form-group .form-control.ai-filled {
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .form-group .form-control::placeholder {
+            color: var(--text-on-surface-variant);
+            opacity: 0.6;
+        }
+
+        .form-group textarea.form-control {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-group .helper-text {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        .form-group .helper-text .material-symbols-outlined {
+            font-size: 0.875rem;
+            vertical-align: middle;
+        }
+
+        .form-group .char-count {
+            text-align: right;
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        /* =============================================
+           MESSAGES
+        ============================================= */
+        .message {
+            padding: 0.875rem 1.25rem;
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            border: 1px solid transparent;
+        }
+
+        .message .material-symbols-outlined {
+            font-size: 1.25rem;
+            flex-shrink: 0;
+            margin-top: 0.0625rem;
+        }
+
+        .message.success {
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+            color: #16a34a;
+        }
+
+        .message.success .material-symbols-outlined {
+            color: #16a34a;
+        }
+
+        .message.error {
+            background: #fef2f2;
+            border-color: #fecaca;
+            color: #dc2626;
+        }
+
+        .message.error .material-symbols-outlined {
+            color: #dc2626;
+        }
+
+        .message.info {
+            background: #eff6ff;
+            border-color: #bfdbfe;
+            color: #1e40af;
+        }
+
+        .message.info .material-symbols-outlined {
+            color: #1e40af;
+        }
+
+        /* =============================================
+           FORM ACTIONS
+        ============================================= */
+        .form-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
+
+        .form-actions .btn {
+            flex: 1;
+            justify-content: center;
+        }
+
+        /* =============================================
+           SAVING PROGRESS MODAL - 3 DOTS
+        ============================================= */
+        .saving-modal {
             display: none;
             position: fixed;
             top: 0;
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.4);
-            z-index: 999;
-            backdrop-filter: blur(4px);
+            background: rgba(15, 15, 30, 0.8);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            padding: 1.5rem;
+            animation: fadeIn 0.4s ease;
         }
-
-        .sidebar-overlay.active {
-            display: block;
-        }
-
-        .mobile-menu-toggle {
-            display: none;
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 8px;
-            color: var(--text-dark);
-        }
-
-        .mobile-menu-toggle svg {
-            width: 28px;
-            height: 28px;
-            stroke: currentColor;
-            fill: none;
-            stroke-width: 2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-        }
-
-        /* =============================================
-                   MAIN CONTENT
-                ============================================= */
-        .main-content {
-            margin-left: var(--sidebar-width);
-            flex: 1;
-            min-height: 100vh;
-            transition: margin-left 0.3s ease;
-            padding: 24px 32px 40px;
-        }
-
-        .sidebar.collapsed ~ .main-content {
-            margin-left: var(--sidebar-collapsed);
-        }
-
-        /* =============================================
-                   EDIT PROFILE CONTENT
-                ============================================= */
-        .edit-wrapper {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-
-        /* Page Header */
-        .page-header {
+        .saving-modal.active {
             display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-bottom: 24px;
         }
 
-        .page-header .header-left h1 {
-            font-size: 24px;
-            font-weight: 800;
-            color: var(--primary-dark);
-        }
-
-        .page-header .header-left p {
-            font-size: 14px;
-            color: var(--text-gray);
-        }
-
-        /* ===== FORM CARD ===== */
-        .card {
-            background: var(--white);
-            border-radius: var(--radius);
-            border: 1px solid var(--gray-border);
-            box-shadow: var(--shadow-sm);
+        .saving-modal-content {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 400px;
+            width: 100%;
+            padding: 2.5rem 2rem 2rem;
+            box-shadow: 0 40px 80px rgba(0, 0, 0, 0.3);
+            animation: modalSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+            text-align: center;
+            position: relative;
             overflow: hidden;
         }
 
-        .card-header {
-            padding: 18px 24px;
-            border-bottom: 1px solid var(--gray-border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+        .saving-modal-content::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 20%, rgba(79, 70, 229, 0.05), transparent 60%);
+            pointer-events: none;
         }
 
-        .card-header h3 {
-            font-size: 16px;
+        .saving-modal-content > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .saving-icon {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #eef0ff, #e0e7ff);
+            color: var(--primary);
+            transition: all 0.5s ease;
+        }
+
+        .saving-icon.done {
+            background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+            color: #059669;
+            animation: iconCelebrate 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        @keyframes iconCelebrate {
+            0% { transform: scale(0.5) rotate(-10deg); opacity: 0.5; }
+            50% { transform: scale(1.2) rotate(5deg); }
+            70% { transform: scale(0.9) rotate(-3deg); }
+            100% { transform: scale(1) rotate(0deg); opacity: 1; }
+        }
+
+        .saving-title {
+            font-size: 1.25rem;
             font-weight: 700;
-            color: var(--primary-dark);
+            color: var(--text-on-surface);
+            margin-bottom: 0.25rem;
         }
 
-        .card-body {
-            padding: 24px;
+        .saving-subtitle {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-bottom: 1.5rem;
+            min-height: 1.5rem;
+            transition: all 0.3s ease;
         }
 
-        /* ===== FORM ===== */
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-dark);
-            margin-bottom: 4px;
-        }
-
-        .form-group label .required {
-            color: #dc2626;
-            margin-left: 2px;
-        }
-
-        .form-group .helper-text {
-            font-size: 12px;
-            color: var(--text-gray);
-            margin-top: 4px;
-        }
-
-        .form-group input,
-        .form-group textarea {
-            width: 100%;
-            padding: 10px 14px;
-            border: 2px solid var(--gray-border);
-            border-radius: 10px;
-            font-size: 14px;
-            font-family: inherit;
-            background: var(--gray-light);
-            transition: var(--transition);
-            color: var(--text-dark);
-        }
-
-        .form-group input:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: var(--primary-light);
-            background: var(--white);
-            box-shadow: 0 0 0 4px rgba(74, 144, 217, 0.1);
-        }
-
-        .form-group textarea {
-            resize: vertical;
-            min-height: 100px;
-        }
-
-        .form-group textarea#careerObjective {
-            min-height: 80px;
-        }
-
-        .form-group textarea#experience {
-            min-height: 150px;
-        }
-
-        .form-group textarea#education {
-            min-height: 120px;
-        }
-
-        .form-group .char-count {
-            text-align: right;
-            font-size: 12px;
-            color: var(--text-gray);
-            margin-top: 4px;
-        }
-
-        .form-actions {
-            display: flex;
-            gap: 12px;
-            margin-top: 8px;
-            padding-top: 20px;
-            border-top: 1px solid var(--gray-border);
-            flex-wrap: wrap;
-        }
-
-        /* ===== MESSAGES ===== */
-        .message {
-            padding: 12px 18px;
-            border-radius: 10px;
-            font-size: 14px;
-            margin-bottom: 16px;
+        /* 3 Dots Progress */
+        .dots-progress {
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 10px;
+            margin: 1rem 0 1.5rem;
         }
 
-        .message.success {
-            background: #f0fdf4;
-            border: 1px solid #bbf7d0;
-            color: #16a34a;
+        .dots-progress .dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #e5e7eb;
+            transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+            transform: scale(0.8);
         }
 
-        .message.error {
-            background: #fef2f2;
-            border: 1px solid #fecaca;
-            color: #dc2626;
+        .dots-progress .dot.active {
+            background: var(--primary);
+            transform: scale(1.2);
+            box-shadow: 0 0 24px rgba(79, 70, 229, 0.35);
+            animation: dotPulse 1.2s ease-in-out infinite;
         }
 
-        .message svg {
-            width: 20px;
-            height: 20px;
-            stroke: currentColor;
-            fill: none;
-            stroke-width: 2;
-            flex-shrink: 0;
+        .dots-progress .dot.done {
+            background: var(--success-color);
+            transform: scale(1);
+        }
+
+        .dots-progress .dot:nth-child(1) { transition-delay: 0ms; }
+        .dots-progress .dot:nth-child(2) { transition-delay: 100ms; }
+        .dots-progress .dot:nth-child(3) { transition-delay: 200ms; }
+
+        @keyframes dotPulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.35); }
+            50% { box-shadow: 0 0 0 16px rgba(79, 70, 229, 0); }
+        }
+
+        .dots-progress-label {
+            font-size: 0.7rem;
+            font-weight: 500;
+            color: var(--text-on-surface-variant);
+            text-align: center;
+            margin-top: 0.25rem;
+        }
+
+        @media (max-width: 480px) {
+            .saving-modal-content { padding: 1.75rem 1.25rem; margin: 0.5rem; }
+            .saving-icon { width: 64px; height: 64px; font-size: 2rem; }
+            .dots-progress .dot { width: 12px; height: 12px; }
         }
 
         /* =============================================
-                   RESPONSIVE
-                ============================================= */
+           RESPONSIVE
+        ============================================= */
         @media (min-width: 768px) {
-            .page-header {
-                flex-direction: row;
-                justify-content: space-between;
-                align-items: center;
+            .sidebar-backdrop {
+                display: none !important;
             }
 
-            .page-header .header-left h1 {
-                font-size: 28px;
+            .mobile-menu-btn {
+                display: none !important;
+            }
+
+            .dashboard-sidebar {
+                position: fixed;
+                transform: translateX(0) !important;
+                box-shadow: var(--shadow-xl);
+                height: 100vh;
+            }
+
+            .dashboard-sidebar.mobile-hidden {
+                transform: translateX(0) !important;
+            }
+
+            .main-wrapper {
+                margin-left: var(--sidebar-width);
+            }
+
+            .dashboard-sidebar.collapsed ~ .main-wrapper {
+                margin-left: var(--sidebar-collapsed);
+            }
+
+            .profile-dropdown-toggle .profile-name,
+            .profile-dropdown-toggle .profile-role {
+                display: inline;
+            }
+
+            .page-header {
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
             }
         }
 
         @media (max-width: 767px) {
-            :root {
-                --sidebar-width: 280px;
-                --sidebar-collapsed: 0px;
-            }
-
-            .sidebar {
-                transform: translateX(-100%);
+            .dashboard-sidebar {
+                position: fixed;
                 width: var(--sidebar-width);
-                transition: transform 0.3s ease;
-                box-shadow: var(--shadow-lg);
-                border-right: none;
+                transform: translateX(-100%);
+                box-shadow: var(--shadow-xl);
             }
 
-            .sidebar.mobile-open {
+            .dashboard-sidebar.mobile-open {
                 transform: translateX(0);
             }
 
-            .sidebar.collapsed {
+            .dashboard-sidebar.collapsed {
                 width: var(--sidebar-width);
             }
 
-            .sidebar.collapsed .brand-text,
-            .sidebar.collapsed .nav-text,
-            .sidebar.collapsed .user-info,
-            .sidebar.collapsed .logout-text,
-            .sidebar.collapsed .nav-badge,
-            .sidebar.collapsed .nav-label {
-                opacity: 1;
-                width: auto;
-                overflow: visible;
+            .sidebar-toggle-btn {
+                display: none !important;
             }
 
-            .main-content {
-                margin-left: 0 !important;
-                padding: 16px;
-            }
-
-            .mobile-menu-toggle {
+            .mobile-menu-btn {
                 display: flex;
-                align-items: center;
-                justify-content: center;
             }
 
-            .sidebar-overlay.active {
-                display: block;
+            .main-wrapper {
+                margin-left: 0 !important;
             }
 
-            .sidebar-footer .logout-btn .logout-text {
-                opacity: 1 !important;
-                width: auto !important;
+            .main-scroll {
+                padding: 1rem;
+            }
+
+            .top-header-left .separator {
+                display: none;
+            }
+
+            .profile-dropdown-toggle .profile-name,
+            .profile-dropdown-toggle .profile-role {
+                display: none;
             }
 
             .card-body {
-                padding: 16px;
+                padding: 1rem 1.25rem;
             }
 
             .form-actions {
@@ -772,91 +2059,175 @@ if ($applicantId) {
             }
 
             .form-actions .btn {
+                flex: none;
+                width: 100%;
+            }
+
+            .ai-insights-banner {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .ai-insights-banner .ai-right {
+                justify-content: stretch;
+            }
+
+            .ai-insights-banner .ai-right .btn-ai-analyze {
                 width: 100%;
                 justify-content: center;
+            }
+
+            .dashboard-sidebar.collapsed .sidebar-brand-text,
+            .dashboard-sidebar.collapsed .sidebar-brand-category,
+            .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+            .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+            .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+            .dashboard-sidebar.collapsed .sidebar-footer .user-info {
+                opacity: 1;
+                width: auto;
+                overflow: visible;
+            }
+
+            .dashboard-sidebar.collapsed .sidebar-brand-card {
+                padding: 1.5rem;
+            }
+
+            .dashboard-sidebar.collapsed .sidebar-nav {
+                padding: 1.5rem 1.25rem;
+            }
+
+            .dashboard-sidebar.collapsed .sidebar-main-link {
+                justify-content: flex-start;
+                padding: 0.75rem 1rem;
+            }
+
+            .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
+                font-size: 1.25rem;
+            }
+
+            .dashboard-sidebar.collapsed .sidebar-footer .user-card {
+                justify-content: flex-start;
+                padding: 0.5rem 0.75rem;
+            }
+
+            .resume-upload-section {
+                padding: 1rem;
             }
         }
 
         @media (max-width: 480px) {
-            .main-content {
-                padding: 12px;
+            .main-scroll {
+                padding: 0.75rem;
             }
 
-            .page-header .header-left h1 {
-                font-size: 20px;
+            .breadcrumb-bar {
+                padding: 0.75rem 1rem;
+            }
+
+            .page-header h1 {
+                font-size: 1.5rem;
             }
 
             .card-header {
-                padding: 14px 16px;
+                padding: 0.75rem 1rem;
+            }
+
+            .card-header h3 {
+                font-size: 1rem;
             }
 
             .card-body {
-                padding: 14px;
+                padding: 0.75rem 1rem;
             }
+
+            .form-group {
+                margin-bottom: 0.875rem;
+            }
+
+            .ai-stat-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .ai-results-body {
+                padding: 0.875rem 1rem;
+            }
+
+            .resume-upload-section .upload-icon {
+                font-size: 2rem;
+            }
+        }
+
+        /* Scrollbar Styling */
+        .main-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .main-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .main-scroll::-webkit-scrollbar-thumb {
+            background: var(--slate-200);
+            border-radius: 3px;
+        }
+
+        .main-scroll::-webkit-scrollbar-thumb:hover {
+            background: var(--slate-500);
         }
     </style>
 </head>
 <body>
 
-    <!-- ===== SIDEBAR OVERLAY (Mobile) ===== -->
-    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    <!-- Sidebar Backdrop (Mobile) -->
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-brand">
-            <span class="brand-icon">I</span>
-            <span class="brand-text">ISMERS</span>
-            <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
-                <svg viewBox="0 0 24 24">
-                    <polyline points="15 18 9 12 15 6"/>
-                </svg>
-            </button>
+    <!-- =============================================
+    SIDEBAR - FIXED
+    ============================================= -->
+    <aside class="dashboard-sidebar" id="appSidebar">
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
 
         <nav class="sidebar-nav">
             <div class="nav-label">Main Menu</div>
 
-            <a href="dashboard.php">
-                <svg class="nav-icon" viewBox="0 0 24 24">
-                    <rect x="3" y="3" width="7" height="7" rx="1"/>
-                    <rect x="14" y="3" width="7" height="7" rx="1"/>
-                    <rect x="3" y="14" width="7" height="7" rx="1"/>
-                    <rect x="14" y="14" width="7" height="7" rx="1"/>
-                </svg>
+            <a href="dashboard.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
 
-            <a href="profile.php" class="active">
-                <svg class="nav-icon" viewBox="0 0 24 24">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                    <circle cx="12" cy="7" r="4"/>
-                </svg>
+            <a href="profile.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">person</span>
                 <span class="nav-text">My Profile</span>
             </a>
 
-            <a href="applications.php">
-                <svg class="nav-icon" viewBox="0 0 24 24">
-                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
-                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-                </svg>
+            <a href="applications.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
                 <span class="nav-text">Applications</span>
                 <span class="nav-badge"><?php echo $totalApplications; ?></span>
             </a>
 
-            <a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
-    <span class="material-symbols-outlined">calendar_month</span>
-    <span class="nav-text">Interviews</span>
-    <span class="nav-badge"><?php echo $interviewCount; ?></span>
-</a>
-
-            <a href="job_search.php">
-                <svg class="nav-icon" viewBox="0 0 24 24">
-                    <circle cx="11" cy="11" r="8"/>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                <span class="nav-text">Job Search</span>
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
             </a>
 
+            <a href="interview.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
+
+            <a href="job_search.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">search</span>
+                <span class="nav-text">Job Search</span>
+            </a>
 
         </nav>
 
@@ -868,194 +2239,505 @@ if ($applicantId) {
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            <a href="../../logout.php" class="logout-btn">
-                <svg viewBox="0 0 24 24">
-                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                    <polyline points="16 17 21 12 16 7"/>
-                    <line x1="21" y1="12" x2="9" y2="12"/>
-                </svg>
-                <span class="logout-text">Logout</span>
-            </a>
         </div>
     </aside>
 
-    <!-- ===== MAIN CONTENT ===== -->
-    <main class="main-content" id="mainContent">
+    <!-- =============================================
+    MAIN CONTENT - PUSHED BY SIDEBAR
+    ============================================= -->
+    <div class="main-wrapper" id="mainWrapper">
 
-        <!-- Mobile Header -->
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-            <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Open menu">
-                <svg viewBox="0 0 24 24">
-                    <line x1="3" y1="6" x2="21" y2="6"/>
-                    <line x1="3" y1="12" x2="21" y2="12"/>
-                    <line x1="3" y1="18" x2="21" y2="18"/>
-                </svg>
-            </button>
-            <span style="font-weight:700; color:var(--primary-blue); font-size:18px; display:none;" id="mobileBrand">ISMERS</span>
-            <span class="user-info" style="display:flex; align-items:center; gap:10px;">
-                <span class="avatar" style="width:36px; height:36px; border-radius:50%; background:var(--primary-gradient); display:flex; align-items:center; justify-content:center; color:white; font-weight:700; font-size:14px;">
-                    <?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?>
-                </span>
-            </span>
-        </div>
+        <!-- Top Header -->
+        <header class="top-header">
+            <div class="top-header-left">
+                <div class="logo">I</div>
+                <span class="separator">|</span>
+                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
+                    <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
+                </button>
+                <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" title="Open Menu">
+                    <span class="material-symbols-outlined">menu</span>
+                </button>
+                <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
+            </div>
 
-        <div class="edit-wrapper">
+            <!-- Profile Dropdown -->
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
+                    <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
+                    <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                    <span class="profile-role">Applicant</span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
 
-            <!-- Page Header -->
-            <div class="page-header">
-                <div class="header-left">
-                    <h1>Edit Profile</h1>
-                    <p>Update your professional resume information</p>
+                <!-- Dropdown Menu -->
+                <div class="profile-dropdown-menu" id="profileDropdownMenu">
+                    <div class="dropdown-header">Account</div>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <a href="../../logout.php" class="dropdown-item danger">
+                        <span class="material-symbols-outlined">logout</span>
+                        Log Out
+                    </a>
                 </div>
-                <a href="profile.php" class="btn btn-outline">
-                    <svg width="18" height="18" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M19 12H5"/>
-                        <path d="M12 19l-7-7 7-7"/>
-                    </svg>
-                    Back to Profile
-                </a>
             </div>
+        </header>
 
-            <!-- Success Message -->
-            <?php if (!empty($successMessage)): ?>
-            <div class="message success">
-                <svg viewBox="0 0 24 24">
-                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                    <polyline points="22 4 12 14.01 9 11.01"/>
-                </svg>
-                <span><?php echo htmlspecialchars($successMessage); ?></span>
-            </div>
-            <?php endif; ?>
+        <!-- Main Scrollable Area -->
+        <main class="main-scroll" id="mainScroll">
+            <div class="container">
 
-            <!-- Error Message -->
-            <?php if (!empty($errorMessage)): ?>
-            <div class="message error">
-                <svg viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="12" y1="8" x2="12" y2="12"/>
-                    <line x1="12" y1="16" x2="12.01" y2="16"/>
-                </svg>
-                <span><?php echo htmlspecialchars($errorMessage); ?></span>
-            </div>
-            <?php endif; ?>
-
-            <!-- Edit Form -->
-            <div class="card">
-                <div class="card-header">
-                    <h3>Resume Information</h3>
+                <!-- Breadcrumb -->
+                <div class="breadcrumb-bar">
+                    <div class="breadcrumb-view">
+                        <span class="material-symbols-outlined">edit</span>
+                        <span>Edit Profile</span>
+                        <span class="status-dot"></span>
+                    </div>
+                    <a href="profile.php" class="btn btn-outline" style="padding:0.375rem 1rem; font-size:0.8125rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">arrow_back</span>
+                        Back to Profile
+                    </a>
                 </div>
-                <div class="card-body">
 
-                    <form method="POST" action="">
-                        <input type="hidden" name="action" value="update_profile">
+                <!-- Page Header -->
+                <div class="page-header">
+                    <div>
+                        <h1>Edit Profile</h1>
+                        <p>Update your professional resume information</p>
+                    </div>
+                </div>
 
-                        <!-- Career Objective -->
-                        <div class="form-group">
-                            <label for="careerObjective">Career Objective</label>
-                            <textarea id="careerObjective" name="career_objective" 
-                                      placeholder="e.g., Motivated and detail-oriented Software Developer seeking a position in a dynamic tech company to apply my skills and contribute to organizational growth." 
-                                      maxlength="500"><?php echo htmlspecialchars($applicant['career_objective'] ?? ''); ?></textarea>
-                            <div class="helper-text">Briefly describe your career goals and what you're looking for (max 500 characters).</div>
-                            <div class="char-count"><span id="careerCharCount">0</span>/500</div>
-                        </div>
+                <!-- Profile Strength Indicator -->
+                <div class="strength-indicator">
+                    <span class="material-symbols-outlined" style="color:var(--primary); font-size:1.125rem;">auto_awesome</span>
+                    <span style="font-size:0.8125rem; font-weight:500; color:var(--text-on-surface-variant);">Profile Strength</span>
+                    <div class="strength-bar">
+                        <div class="strength-fill" style="width: <?php echo $profileStrength; ?>%;"></div>
+                    </div>
+                    <span class="strength-label"><?php echo $profileStrength; ?>%</span>
+                </div>
 
-                        <!-- Skills -->
-                        <div class="form-group">
-                            <label for="skills">Key Skills <span class="required">*</span></label>
-                            <textarea id="skills" name="skills" 
-                                      placeholder="e.g., PHP, Laravel, MySQL, JavaScript, HTML, CSS, Git, Leadership, Communication" 
-                                      required><?php echo htmlspecialchars($applicant['skills'] ?? ''); ?></textarea>
-                            <div class="helper-text">List your technical and soft skills separated by commas.</div>
-                        </div>
-
-                        <!-- Experience -->
-                        <div class="form-group">
-                            <label for="experience">Experience</label>
-                            <textarea id="experience" name="experience" 
-                                      placeholder="e.g., Job Title - Company Name (Month Year - Month Year)&#10;• Key responsibility or achievement #1&#10;• Key responsibility or achievement #2&#10;• Key responsibility or achievement #3"><?php echo htmlspecialchars($applicant['experience'] ?? ''); ?></textarea>
-                            <div class="helper-text">Describe your work experience. Include job title, company, dates, and key achievements.</div>
-                        </div>
-
-                        <!-- Education -->
-                        <div class="form-group">
-                            <label for="education">Education</label>
-                            <textarea id="education" name="education" 
-                                      placeholder="e.g., B.S. in Computer Science - University of the Philippines (2016 - 2020)&#10;GPA: 1.75"><?php echo htmlspecialchars($applicant['education'] ?? ''); ?></textarea>
-                            <div class="helper-text">List your educational background including degree, institution, and years.</div>
-                        </div>
-
-                        <!-- Form Actions -->
-                        <div class="form-actions">
-                            <button type="submit" class="btn btn-primary">
-                                <svg width="18" height="18" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                                    <polyline points="17 21 17 13 7 13 7 21"/>
-                                    <polyline points="7 3 7 8 15 8"/>
-                                </svg>
-                                Save Changes
+                <!-- =============================================
+                RESUME UPLOAD SECTION
+                ============================================= -->
+                <div class="resume-upload-section" id="resumeUploadSection">
+                    <span class="upload-icon">📄</span>
+                    <h4>Upload Your Resume</h4>
+                    <p>Upload your resume (PDF, DOC, DOCX, or TXT) and let AI automatically fill your profile</p>
+                    
+                    <div style="margin-bottom:0.75rem;">
+                        <span class="parser-status <?php echo $pdfParserAvailable ? 'available' : 'unavailable'; ?>">
+                            <?php if ($pdfParserAvailable): ?>
+                                ✅ PDF Parser Available
+                            <?php else: ?>
+                                ⚠️ PDF Parser Not Available - PDF files may not work
+                            <?php endif; ?>
+                        </span>
+                    </div>
+                    
+                    <form method="POST" enctype="multipart/form-data" id="resumeUploadForm">
+                        <input type="hidden" name="action" value="upload_resume">
+                        <div class="file-input-wrapper">
+                            <button type="button" class="btn btn-success">
+                                <span class="material-symbols-outlined">upload</span>
+                                Choose Resume File
                             </button>
-                            <a href="profile.php" class="btn btn-outline">Cancel</a>
+                            <input type="file" name="resume_file" id="resumeFile" accept=".pdf,.doc,.docx,.txt">
+                        </div>
+                        <div class="file-name" id="fileName">
+                            <?php if ($hasResume): ?>
+                                ✅ Current: <?php echo htmlspecialchars(basename($applicant['resume_path'])); ?>
+                            <?php endif; ?>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="margin-top:0.75rem; display:none;" id="uploadBtn">
+                            <span class="material-symbols-outlined">auto_awesome</span>
+                            Upload & Analyze
+                        </button>
+                    </form>
+                </div>
+
+                <!-- AI Insights Banner -->
+                <div class="ai-insights-banner">
+                    <div class="ai-left">
+                        <div class="ai-icon">
+                            <span class="material-symbols-outlined">auto_awesome</span>
+                        </div>
+                        <div class="ai-text">
+                            <strong>AI Resume Analysis</strong>
+                            <span style="display:block; font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                Get AI-powered insights on your skills and experience
+                            </span>
+                        </div>
+                    </div>
+                    <div class="ai-right">
+                        <?php if (!empty($storedAiSkills)): ?>
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined">check_circle</span>
+                                Analyzed
+                            </span>
+                        <?php endif; ?>
+                        <form method="POST" action="" style="margin:0;">
+                            <input type="hidden" name="action" value="analyze_ai">
+                            <button type="submit" class="btn-ai-analyze">
+                                <span class="material-symbols-outlined">psychology</span>
+                                <?php echo empty($storedAiSkills) ? 'Analyze Profile' : 'Re-analyze'; ?>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- AI Results -->
+                <?php if ($aiAnalysisResult): ?>
+                <div class="ai-results-card" style="display:block;">
+                    <div class="ai-results-header">
+                        <h3>
+                            <span class="material-symbols-outlined">psychology</span>
+                            AI Analysis Results
+                        </h3>
+                        <span class="ai-provider">Powered by <?php echo ucfirst($aiAnalysisResult['provider'] ?? 'AI'); ?></span>
+                    </div>
+                    <div class="ai-results-body">
+                        <?php if (!empty($aiAnalysisResult['skills'])): ?>
+                        <div style="margin-bottom:0.75rem;">
+                            <div style="font-size:0.75rem; font-weight:600; color:var(--text-on-surface-variant); margin-bottom:0.25rem;">Detected Skills</div>
+                            <div>
+                                <?php foreach ($aiAnalysisResult['skills'] as $skill): ?>
+                                    <span class="ai-skill-tag"><?php echo htmlspecialchars($skill); ?></span>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
+                        <div class="ai-stat-grid">
+                            <?php if (!empty($aiAnalysisResult['years_experience'])): ?>
+                            <div class="ai-stat-item">
+                                <div class="ai-stat-label">Years Experience</div>
+                                <div class="ai-stat-value"><?php echo $aiAnalysisResult['years_experience']; ?> years</div>
+                            </div>
+                            <?php endif; ?>
+
+                            <?php if (!empty($aiAnalysisResult['education']) && $aiAnalysisResult['education'] !== 'Not specified'): ?>
+                            <div class="ai-stat-item">
+                                <div class="ai-stat-label">Education Level</div>
+                                <div class="ai-stat-value"><?php echo htmlspecialchars($aiAnalysisResult['education']); ?></div>
+                            </div>
+                            <?php endif; ?>
+
+                            <?php if (!empty($aiAnalysisResult['keywords']) && count($aiAnalysisResult['keywords']) > 0): ?>
+                            <div class="ai-stat-item">
+                                <div class="ai-stat-label">Keywords Found</div>
+                                <div class="ai-stat-value"><?php echo count($aiAnalysisResult['keywords']); ?> keywords</div>
+                            </div>
+                            <?php endif; ?>
                         </div>
 
-                    </form>
-
+                        <?php if (!empty($aiAnalysisResult['summary'])): ?>
+                        <div style="margin-top:0.5rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:0.75rem; border:1px solid var(--slate-200);">
+                            <div style="font-size:0.75rem; font-weight:600; color:var(--text-on-surface-variant);">AI Summary</div>
+                            <div style="font-size:0.875rem; color:var(--text-on-surface); margin-top:0.125rem;"><?php echo htmlspecialchars($aiAnalysisResult['summary']); ?></div>
+                        </div>
+                        <?php endif; ?>
+                    </div>
                 </div>
+                <?php endif; ?>
+
+                <!-- Resume Analysis Results / AI Filled Data -->
+                <?php if ($showAIFilledData || $resumeAnalysisResult): ?>
+                <div class="ai-results-card" style="display:block; border-color: #86efac;">
+                    <div class="ai-results-header" style="background:linear-gradient(135deg, #f0fdf4, #dcfce7);">
+                        <h3>
+                            <span class="material-symbols-outlined" style="color:#059669;">description</span>
+                            <?php echo $showAIFilledData ? '📋 AI Data Loaded' : 'Resume Analysis Complete'; ?>
+                        </h3>
+                        <span class="ai-provider" style="background:#d1fae5; color:#059669;">
+                            <?php 
+                            $provider = $resumeAnalysisResult['provider'] ?? 'AI';
+                            echo '✨ ' . ucfirst($provider) . ' Extracted';
+                            ?>
+                        </span>
+                    </div>
+                    <div class="ai-results-body">
+                        <div style="margin-bottom:0.75rem; padding:0.75rem 1rem; background:#f0fdf4; border-radius:0.75rem; border:1px solid #86efac;">
+                            <div style="font-size:0.8125rem; color:#065f46;">
+                                <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">check_circle</span>
+                                <?php if ($showAIFilledData): ?>
+                                    AI data has been loaded into the form below. Review and click <strong>"Save & Analyze"</strong> to save.
+                                <?php else: ?>
+                                    AI has extracted the following information from your resume. Click <strong>"Save from AI"</strong> to load into the form.
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <?php 
+                        $displayData = $showAIFilledData ? $aiFilledData : ($resumeAnalysisResult['data'] ?? []);
+                        $displayAnalysis = $resumeAnalysisResult['analysis'] ?? null;
+                        ?>
+                        
+                        <?php if (!empty($displayAnalysis['skills']) || !empty($displayData['skills'])): ?>
+                        <div style="margin-bottom:0.75rem;">
+                            <div style="font-size:0.75rem; font-weight:600; color:var(--text-on-surface-variant); margin-bottom:0.25rem;">Extracted Skills</div>
+                            <div>
+                                <?php 
+                                $skillsList = !empty($displayAnalysis['skills']) ? $displayAnalysis['skills'] : explode(', ', $displayData['skills'] ?? '');
+                                foreach ($skillsList as $skill): 
+                                    if (empty($skill)) continue;
+                                ?>
+                                    <span class="ai-skill-tag" style="background:rgba(5,150,105,0.1); color:#059669; border-color:rgba(5,150,105,0.2);"><?php echo htmlspecialchars(trim($skill)); ?></span>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
+                        <?php if (!$showAIFilledData): ?>
+                        <form method="POST" action="" id="saveFromAIForm">
+                            <input type="hidden" name="action" value="save_from_ai">
+                            
+                            <div class="form-group">
+                                <label>Career Objective</label>
+                                <textarea name="career_objective" class="form-control" rows="2"><?php echo htmlspecialchars($displayData['career_objective'] ?? ''); ?></textarea>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Skills</label>
+                                <textarea name="skills" class="form-control" rows="2"><?php echo htmlspecialchars($displayData['skills'] ?? ''); ?></textarea>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Experience</label>
+                                <textarea name="experience" class="form-control" rows="3"><?php echo htmlspecialchars($displayData['experience'] ?? ''); ?></textarea>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Education</label>
+                                <textarea name="education" class="form-control" rows="2"><?php echo htmlspecialchars($displayData['education'] ?? ''); ?></textarea>
+                            </div>
+
+                            <div style="display:flex; gap:0.75rem; margin-top:0.5rem;">
+                                <button type="submit" class="btn btn-success" style="flex:2;">
+                                    <span class="material-symbols-outlined">upload</span>
+                                    Save from AI
+                                </button>
+                                <button type="button" class="btn btn-outline" onclick="document.getElementById('saveFromAIForm').reset();" style="flex:1;">
+                                    <span class="material-symbols-outlined">refresh</span>
+                                    Reset
+                                </button>
+                            </div>
+                        </form>
+                        <?php else: ?>
+                        <div style="padding:0.75rem 1rem; background:#dbeafe; border-radius:0.75rem; border:1px solid #93c5fd;">
+                            <div style="font-size:0.8125rem; color:#1e40af;">
+                                <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">info</span>
+                                AI data is ready in the form below. Review and click <strong>"Save & Analyze"</strong> to save to your profile.
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($resumeUploadError): ?>
+                <div class="message error">
+                    <span class="material-symbols-outlined">error</span>
+                    <span><?php echo htmlspecialchars($resumeUploadError); ?></span>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($aiError): ?>
+                <div class="message error">
+                    <span class="material-symbols-outlined">error</span>
+                    <span><?php echo htmlspecialchars($aiError); ?></span>
+                </div>
+                <?php endif; ?>
+
+                <!-- Success Message -->
+                <?php if (!empty($successMessage)): ?>
+                <div class="message success">
+                    <span class="material-symbols-outlined">check_circle</span>
+                    <span><?php echo htmlspecialchars($successMessage); ?></span>
+                </div>
+                <?php endif; ?>
+
+                <!-- Error Message -->
+                <?php if (!empty($errorMessage)): ?>
+                <div class="message error">
+                    <span class="material-symbols-outlined">error</span>
+                    <span><?php echo htmlspecialchars($errorMessage); ?></span>
+                </div>
+                <?php endif; ?>
+
+                <!-- Edit Form -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>
+                            <span class="material-symbols-outlined">edit_note</span>
+                            Resume Information
+                        </h3>
+                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">Fields marked with <span style="color:#dc2626;">*</span> are required</span>
+                    </div>
+                    <div class="card-body">
+
+                        <form method="POST" action="" id="editProfileForm">
+                            <input type="hidden" name="action" value="save_and_analyze" id="formAction">
+
+                            <!-- Career Objective -->
+                            <div class="form-group">
+                                <label for="careerObjective">Career Objective</label>
+                                <textarea id="careerObjective" name="career_objective" class="form-control <?php echo isset($aiFilledData['career_objective']) ? 'ai-filled' : ''; ?>" 
+                                          placeholder="e.g., Motivated and detail-oriented Software Developer seeking a position in a dynamic tech company to apply my skills and contribute to organizational growth." 
+                                          maxlength="500"><?php echo htmlspecialchars(isset($aiFilledData['career_objective']) ? $aiFilledData['career_objective'] : ($applicant['career_objective'] ?? '')); ?></textarea>
+                                <div class="helper-text">
+                                    <span class="material-symbols-outlined">info</span>
+                                    Briefly describe your career goals and what you're looking for (max 500 characters).
+                                </div>
+                                <div class="char-count"><span id="careerCharCount">0</span>/500</div>
+                            </div>
+
+                            <!-- Skills -->
+                            <div class="form-group">
+                                <label for="skills">Key Skills <span class="required">*</span></label>
+                                <textarea id="skills" name="skills" class="form-control <?php echo isset($aiFilledData['skills']) ? 'ai-filled' : ''; ?>" 
+                                          placeholder="e.g., PHP, Laravel, MySQL, JavaScript, HTML, CSS, Git, Leadership, Communication" 
+                                          required><?php echo htmlspecialchars(isset($aiFilledData['skills']) ? $aiFilledData['skills'] : ($applicant['skills'] ?? '')); ?></textarea>
+                                <div class="helper-text">
+                                    <span class="material-symbols-outlined">info</span>
+                                    List your technical and soft skills separated by commas. AI will help analyze your skills.
+                                </div>
+                            </div>
+
+                            <!-- Experience -->
+                            <div class="form-group">
+                                <label for="experience">Experience</label>
+                                <textarea id="experience" name="experience" class="form-control <?php echo isset($aiFilledData['experience']) ? 'ai-filled' : ''; ?>" 
+                                          placeholder="e.g., Job Title - Company Name (Month Year - Month Year)&#10;• Key responsibility or achievement #1&#10;• Key responsibility or achievement #2"><?php echo htmlspecialchars(isset($aiFilledData['experience']) ? $aiFilledData['experience'] : ($applicant['experience'] ?? '')); ?></textarea>
+                                <div class="helper-text">
+                                    <span class="material-symbols-outlined">info</span>
+                                    Describe your work experience. Include job title, company, dates, and key achievements.
+                                </div>
+                            </div>
+
+                            <!-- Education -->
+                            <div class="form-group">
+                                <label for="education">Education</label>
+                                <textarea id="education" name="education" class="form-control <?php echo isset($aiFilledData['education']) ? 'ai-filled' : ''; ?>" 
+                                          placeholder="e.g., B.S. in Computer Science - University of the Philippines (2016 - 2020)&#10;GPA: 1.75"><?php echo htmlspecialchars(isset($aiFilledData['education']) ? $aiFilledData['education'] : ($applicant['education'] ?? '')); ?></textarea>
+                                <div class="helper-text">
+                                    <span class="material-symbols-outlined">info</span>
+                                    List your educational background including degree, institution, and years.
+                                </div>
+                            </div>
+
+                            <!-- AI Analysis Note -->
+                            <div style="padding:0.75rem 1rem; background:rgba(79,70,229,0.04); border-radius:0.75rem; border:1px solid rgba(79,70,229,0.1); margin-top:0.5rem; display:flex; align-items:center; gap:0.5rem;">
+                                <span class="material-symbols-outlined" style="color:var(--primary);">auto_awesome</span>
+                                <span style="font-size:0.8125rem; color:var(--text-on-surface-variant);">
+                                    <strong>AI will analyze</strong> your profile after saving to extract skills, experience, and education insights.
+                                </span>
+                            </div>
+
+                            <!-- Form Actions -->
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-save-analyze" id="saveAnalyzeBtn">
+                                    <span class="material-symbols-outlined">auto_awesome</span>
+                                    Save & Analyze
+                                </button>
+                                <a href="profile.php" class="btn btn-outline">
+                                    <span class="material-symbols-outlined">cancel</span>
+                                    Cancel
+                                </a>
+                            </div>
+
+                        </form>
+
+                    </div>
+                </div>
+
             </div>
+        </main>
+    </div>
 
+    <!-- =============================================
+    SAVING PROGRESS MODAL - 3 DOTS
+    ============================================= -->
+    <div class="saving-modal" id="savingModal">
+        <div class="saving-modal-content">
+            <div class="saving-icon" id="savingIcon">
+                <span class="material-symbols-outlined" id="savingIconSymbol">auto_awesome</span>
+            </div>
+            <h3 class="saving-title" id="savingTitle">Saving Profile</h3>
+            <p class="saving-subtitle" id="savingSubtitle">Analyzing your profile with AI...</p>
+
+            <div class="dots-progress" id="dotsProgress">
+                <span class="dot" id="dot0"></span>
+                <span class="dot" id="dot1"></span>
+                <span class="dot" id="dot2"></span>
+            </div>
+            <div class="dots-progress-label" id="progressLabel">Step 1 of 3</div>
         </div>
-    </main>
+    </div>
 
-    <!-- ===== JAVASCRIPT ===== -->
+    <!-- =============================================
+    JAVASCRIPT
+    ============================================= -->
     <script>
         // =============================================
         // 1. SIDEBAR TOGGLE
         // =============================================
-        const sidebar = document.getElementById('sidebar');
-        const sidebarToggle = document.getElementById('sidebarToggle');
-        const isMobile = window.innerWidth <= 768;
+        const sidebar = document.getElementById('appSidebar');
+        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+        const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
+        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
 
         const savedState = localStorage.getItem('sidebarCollapsed');
-        if (savedState === 'true' && !isMobile) {
+        const isDesktop = window.innerWidth >= 768;
+
+        if (savedState === 'true' && isDesktop) {
             sidebar.classList.add('collapsed');
+            sidebarToggleIcon.textContent = 'menu';
         }
 
-        sidebarToggle.addEventListener('click', function() {
-            if (window.innerWidth <= 768) return;
+        sidebarToggleBtn.addEventListener('click', function() {
+            if (window.innerWidth < 768) return;
             sidebar.classList.toggle('collapsed');
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            sidebarToggleIcon.textContent = isCollapsed ? 'menu' : 'menu_open';
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
         });
 
         // =============================================
         // 2. MOBILE SIDEBAR
         // =============================================
-        const mobileMenuToggle = document.getElementById('mobileMenuToggle');
-        const sidebarOverlay = document.getElementById('sidebarOverlay');
-
         function openMobileSidebar() {
             sidebar.classList.add('mobile-open');
-            sidebarOverlay.classList.add('active');
+            sidebar.classList.remove('mobile-hidden');
+            sidebarBackdrop.classList.add('active');
             document.body.style.overflow = 'hidden';
         }
 
         function closeMobileSidebar() {
             sidebar.classList.remove('mobile-open');
-            sidebarOverlay.classList.remove('active');
+            sidebar.classList.add('mobile-hidden');
+            sidebarBackdrop.classList.remove('active');
             document.body.style.overflow = '';
         }
 
-        mobileMenuToggle.addEventListener('click', openMobileSidebar);
-        sidebarOverlay.addEventListener('click', closeMobileSidebar);
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
 
-        document.querySelectorAll('.sidebar-nav a').forEach(link => {
+        document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
             link.addEventListener('click', function() {
-                if (window.innerWidth <= 768) {
+                if (window.innerWidth < 768) {
                     closeMobileSidebar();
                 }
             });
         });
 
         // =============================================
-        // 3. RESPONSIVE
+        // 3. RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
 
@@ -1063,23 +2745,22 @@ if ($applicantId) {
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(function() {
                 const width = window.innerWidth;
-                const mobileBrand = document.getElementById('mobileBrand');
 
-                if (width <= 768) {
-                    sidebar.classList.remove('collapsed');
-                    mobileBrand.style.display = 'block';
-                } else {
-                    sidebar.classList.remove('mobile-open');
-                    sidebarOverlay.classList.remove('active');
-                    document.body.style.overflow = '';
-                    mobileBrand.style.display = 'none';
-
+                if (width >= 768) {
+                    closeMobileSidebar();
+                    sidebar.classList.remove('mobile-open', 'mobile-hidden');
                     const saved = localStorage.getItem('sidebarCollapsed');
                     if (saved === 'true') {
                         sidebar.classList.add('collapsed');
+                        sidebarToggleIcon.textContent = 'menu';
                     } else {
                         sidebar.classList.remove('collapsed');
+                        sidebarToggleIcon.textContent = 'menu_open';
                     }
+                } else {
+                    sidebar.classList.add('mobile-hidden');
+                    sidebar.classList.remove('collapsed');
+                    sidebarToggleIcon.textContent = 'menu_open';
                 }
             }, 250);
         });
@@ -1100,20 +2781,166 @@ if ($applicantId) {
                     careerCounter.style.color = '';
                 }
             });
-            // Initial count
             careerCounter.textContent = careerInput.value.length;
         }
 
         // =============================================
-        // 5. KEYBOARD ACCESSIBILITY
+        // 5. RESUME UPLOAD HANDLER
         // =============================================
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeMobileSidebar();
+        const resumeFile = document.getElementById('resumeFile');
+        const fileName = document.getElementById('fileName');
+        const uploadBtn = document.getElementById('uploadBtn');
+
+        if (resumeFile) {
+            resumeFile.addEventListener('change', function() {
+                if (this.files && this.files.length > 0) {
+                    const file = this.files[0];
+                    fileName.textContent = '📎 Selected: ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+                    fileName.classList.add('show');
+                    uploadBtn.style.display = 'inline-flex';
+                    
+                    setTimeout(function() {
+                        document.getElementById('resumeUploadForm').submit();
+                    }, 1000);
+                } else {
+                    fileName.classList.remove('show');
+                    uploadBtn.style.display = 'none';
+                }
+            });
+        }
+
+        // =============================================
+        // 6. PROFILE DROPDOWN
+        // =============================================
+        const profileToggle = document.getElementById('profileDropdownToggle');
+        const profileMenu = document.getElementById('profileDropdownMenu');
+
+        if (profileToggle && profileMenu) {
+            profileToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                this.classList.toggle('open');
+                profileMenu.classList.toggle('open');
+            });
+
+            document.addEventListener('click', function(e) {
+                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
+
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
+        }
+
+        // =============================================
+        // 7. SAVING MODAL - 3 DOTS PROGRESS
+        // =============================================
+        function showSavingModal() {
+            const modal = document.getElementById('savingModal');
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+            
+            let step = 0;
+            const totalSteps = 3;
+            const steps = ['Saving', 'Analyzing', 'Complete!'];
+            const icons = ['save', 'psychology', 'check_circle'];
+            
+            const dotIds = ['dot0', 'dot1', 'dot2'];
+            const icon = document.getElementById('savingIcon');
+            const iconSymbol = document.getElementById('savingIconSymbol');
+            const title = document.getElementById('savingTitle');
+            const subtitle = document.getElementById('savingSubtitle');
+            const label = document.getElementById('progressLabel');
+            
+            function updateProgress() {
+                // Update dots
+                for (let i = 0; i < totalSteps; i++) {
+                    const dot = document.getElementById(dotIds[i]);
+                    dot.className = 'dot';
+                    if (i < step) {
+                        dot.classList.add('done');
+                    } else if (i === step) {
+                        dot.classList.add('active');
+                    }
+                }
+                
+                // Update text
+                title.textContent = steps[step] || 'Processing...';
+                subtitle.textContent = step === totalSteps - 1 ? 'Profile complete! Redirecting...' : 'Please wait while we process your profile...';
+                iconSymbol.textContent = icons[step] || 'auto_awesome';
+                label.textContent = `Step ${step + 1} of ${totalSteps}`;
+                
+                if (step === totalSteps - 1) {
+                    icon.className = 'saving-icon done';
+                    document.getElementById('savingTitle').textContent = '✅ Profile Complete!';
+                    document.getElementById('savingSubtitle').textContent = 'Redirecting to your profile...';
+                }
+                
+                step++;
+                
+                if (step < totalSteps) {
+                    setTimeout(updateProgress, 500);
+                } else {
+                    setTimeout(function() {
+                        window.location.href = 'profile.php?updated=1';
+                    }, 600);
+                }
+            }
+            
+            setTimeout(updateProgress, 400);
+        }
+
+        // =============================================
+        // 8. SAVE & ANALYZE FORM SUBMIT
+        // =============================================
+        document.getElementById('editProfileForm')?.addEventListener('submit', function(e) {
+            const submitBtn = this.querySelector('#saveAnalyzeBtn');
+            if (submitBtn) {
+                e.preventDefault();
+                showSavingModal();
+                setTimeout(() => {
+                    this.submit();
+                }, 300);
             }
         });
 
+        // =============================================
+        // 9. SAVE FROM AI FORM - PREVENT AUTO SUBMIT
+        // =============================================
+        document.getElementById('saveFromAIForm')?.addEventListener('submit', function(e) {
+            // Allow normal submit - it redirects to the same page with ai_filled=1
+        });
+
+        // =============================================
+        // 10. KEYBOARD ACCESSIBILITY
+        // =============================================
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                if (window.innerWidth < 768) {
+                    closeMobileSidebar();
+                }
+                if (profileToggle) profileToggle.classList.remove('open');
+                if (profileMenu) profileMenu.classList.remove('open');
+            }
+        });
+
+        // =============================================
+        // 11. INITIAL STATE
+        // =============================================
+        if (window.innerWidth < 768) {
+            sidebar.classList.add('mobile-hidden');
+        }
+
         console.log('✏️ ISMERS Edit Profile Page loaded successfully!');
+        console.log('🤖 AI Resume Analysis enabled');
+        console.log('📄 Resume Upload & Auto-Fill enabled');
+        console.log('📦 PDF Parser: ' + ('<?php echo $pdfParserAvailable ? 'Available' : 'Not Available'; ?>'));
+        console.log('🎯 3-Step Progress Modal enabled');
     </script>
 
 </body>

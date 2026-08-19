@@ -1,8 +1,9 @@
 <?php
-// portals/applicant/job_details.php - View Job Details & Apply (Single Container)
+// portals/applicant/job_details.php - View Job Details & Apply with Face Scanner
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -21,6 +22,38 @@ $firstName = $_SESSION['first_name'] ?? 'Applicant';
 $lastName = $_SESSION['last_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $fullName = $_SESSION['full_name'] ?? 'Applicant User';
+
+// Get applicant data
+$applicant = getApplicantByUserId($userId);
+$applicantId = $applicant['id'] ?? 0;
+
+// =============================================
+// GET COUNTS FOR SIDEBAR BADGES
+// =============================================
+$totalApplications = 0;
+$interviewCount = 0;
+$pendingOffers = 0;
+
+if ($applicantId) {
+    $appResult = getRecord("
+        SELECT COUNT(*) as count FROM applications 
+        WHERE applicant_id = ?
+    ", [$applicantId], "i");
+    $totalApplications = $appResult['count'] ?? 0;
+    
+    $interviewResult = getRecord("
+        SELECT COUNT(*) as count FROM applications 
+        WHERE applicant_id = ? AND interview_date IS NOT NULL
+    ", [$applicantId], "i");
+    $interviewCount = $interviewResult['count'] ?? 0;
+    
+    $offersResult = getRecord("
+        SELECT COUNT(*) as count FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        WHERE a.applicant_id = ? AND o.status = 'sent'
+    ", [$applicantId], "i");
+    $pendingOffers = $offersResult['count'] ?? 0;
+}
 
 // Get job ID from URL
 $jobId = isset($_GET['id']) ? intval($_GET['id']) : 0;
@@ -47,7 +80,6 @@ $jobResult = mysqli_stmt_get_result($stmt);
 $job = mysqli_fetch_assoc($jobResult);
 mysqli_stmt_close($stmt);
 
-// If job doesn't exist or not open
 if (!$job) {
     header('Location: dashboard.php');
     exit;
@@ -59,6 +91,106 @@ $applicant = getRecord("
     FROM applicants
     WHERE user_id = ?
 ", [$userId], "i");
+
+// Check if face is already verified
+$faceVerified = false;
+if ($applicantId) {
+    $faceCheck = getRecord("
+        SELECT id FROM face_verification WHERE user_id = ?
+    ", [$userId], "i");
+    $faceVerified = $faceCheck !== null;
+}
+
+// =============================================
+// AI MATCH SCORE CALCULATION - SIMPLIFIED & FORCED
+// =============================================
+$matchScore = null;
+$matchStrengths = [];
+$matchGaps = [];
+$matchRecommendation = '';
+$matchProvider = '';
+
+// FIRST: Check if applicant has skills - if not, show profile incomplete message
+if ($applicant && !empty($applicant['skills'])) {
+    
+    // Try to get AI match score
+    try {
+        $aiService = new AiService();
+        
+        $jobData = [
+            'title' => $job['title'] ?? '',
+            'skills_required' => $job['skills_required'] ?? '',
+            'description' => $job['description'] ?? '',
+            'experience_level' => $job['experience_level'] ?? '',
+        ];
+        
+        $applicantData = [
+            'skills' => $applicant['skills'] ?? '',
+            'experience' => $applicant['experience'] ?? '',
+            'education' => $applicant['education'] ?? '',
+        ];
+        
+        $result = $aiService->calculateMatchScore($jobData, $applicantData);
+        
+        if (isset($result['match_score']) && $result['match_score'] !== null) {
+            $matchScore = (int)$result['match_score'];
+            $matchStrengths = $result['strengths'] ?? [];
+            $matchGaps = $result['gaps'] ?? [];
+            $matchRecommendation = $result['recommendation'] ?? '';
+            $matchProvider = $result['provider'] ?? 'unknown';
+        }
+    } catch (Exception $e) {
+        error_log("Match score error: " . $e->getMessage());
+    }
+    
+    // =============================================
+    // FALLBACK: If AI failed or returned null, calculate simple match
+    // =============================================
+    if ($matchScore === null || $matchScore === 0) {
+        // Calculate simple match based on skills
+        $jobSkills = array_map('trim', explode(',', $job['skills_required'] ?? ''));
+        $applicantSkills = array_map('trim', explode(',', $applicant['skills'] ?? ''));
+        
+        $jobSkills = array_filter($jobSkills);
+        $applicantSkills = array_filter($applicantSkills);
+        
+        if (!empty($jobSkills) && !empty($applicantSkills)) {
+            $matchingSkills = array_intersect($jobSkills, $applicantSkills);
+            $totalJobSkills = count($jobSkills);
+            $percentage = round((count($matchingSkills) / $totalJobSkills) * 100);
+            $matchScore = min($percentage, 100);
+            
+            // Set strengths and gaps
+            if (count($matchingSkills) > 0) {
+                $matchStrengths = array_values(array_slice($matchingSkills, 0, 3));
+            }
+            $missingSkills = array_diff($jobSkills, $applicantSkills);
+            if (count($missingSkills) > 0) {
+                $matchGaps = array_values(array_slice($missingSkills, 0, 3));
+            }
+            
+            // Set recommendation based on score
+            if ($matchScore >= 70) {
+                $matchRecommendation = 'Great match! Your skills align well with this position.';
+            } elseif ($matchScore >= 40) {
+                $matchRecommendation = 'Good potential. Consider developing skills in: ' . implode(', ', array_slice($missingSkills, 0, 2));
+            } else {
+                $matchRecommendation = 'Consider building more relevant skills for this position.';
+            }
+            
+            $matchProvider = 'fallback';
+        } else {
+            // No skills to match against
+            $matchScore = null;
+        }
+    }
+}
+
+// Get AI provider status
+$isAIEnabled = false;
+if (isset($aiService) && $aiService) {
+    $isAIEnabled = !$aiService->isUsingMock();
+}
 
 // Check if already applied
 $hasApplied = false;
@@ -122,7 +254,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     if (move_uploaded_file($_FILES['resume']['tmp_name'], $targetPath)) {
                         $resumePath = 'uploads/resumes/' . $newFileName;
                         
-                        // Update applicant resume path
                         $updateSql = "UPDATE applicants SET resume_path = ? WHERE user_id = ?";
                         $stmt = mysqli_prepare($conn, $updateSql);
                         mysqli_stmt_bind_param($stmt, 'si', $resumePath, $userId);
@@ -151,7 +282,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $hasApplied = true;
                     $applicationStatus = 'pending';
                     
-                    // Log activity
                     logActivity($userId, 'Job Application Submitted', 'applications', $applicationId, 
                                'Applied to job: ' . $job['title']);
                 } else {
@@ -188,7 +318,6 @@ while ($row = mysqli_fetch_assoc($similarJobsResult)) {
 }
 mysqli_stmt_close($stmt);
 
-// Status labels
 $statusLabels = [
     'pending' => 'Pending Review',
     'reviewed' => 'Reviewed',
@@ -204,6 +333,15 @@ $statusBadges = [
     'hired' => 'badge-hired',
     'rejected' => 'badge-rejected'
 ];
+
+// =============================================
+// DEBUG: Check if match score is set
+// =============================================
+error_log("=== JOB DETAILS MATCH SCORE DEBUG ===");
+error_log("Applicant Skills: " . ($applicant['skills'] ?? 'EMPTY'));
+error_log("Job Skills Required: " . ($job['skills_required'] ?? 'EMPTY'));
+error_log("Match Score: " . ($matchScore ?? 'NULL'));
+error_log("=====================================");
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -255,6 +393,9 @@ $statusBadges = [
             --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
+            --success-color: #22c55e;
+            --error-color: #dc2626;
+            --warning-color: #f59e0b;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -611,6 +752,202 @@ $statusBadges = [
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
         /* =============================================
+           AI MATCH SCORE CARD
+        ============================================= */
+        .match-score-card {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-xl);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.25rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .match-score-card .score-circle {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            background: white;
+            box-shadow: 0 4px 16px rgba(79, 70, 229, 0.15);
+        }
+
+        .match-score-card .score-circle .score-number {
+            font-size: 1.75rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .match-score-card .score-circle .score-label {
+            font-size: 0.6rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+        }
+
+        .match-score-card .score-circle.high .score-number { color: #059669; }
+        .match-score-card .score-circle.medium .score-number { color: #d97706; }
+        .match-score-card .score-circle.low .score-number { color: #dc2626; }
+
+        .match-score-card .score-details {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .match-score-card .score-details .score-title {
+            font-size: 0.875rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+            margin-bottom: 0.25rem;
+        }
+
+        .match-score-card .score-details .score-recommendation {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+            line-height: 1.5;
+        }
+
+        .match-score-card .score-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .match-score-card .score-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 500;
+        }
+
+        .match-score-card .score-tag.strength {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .match-score-card .score-tag.gap {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .match-score-card .score-provider {
+            font-size: 0.6rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        .match-score-card .no-skills {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            width: 100%;
+        }
+
+        .match-score-card .no-skills .material-symbols-outlined {
+            font-size: 2rem;
+            color: #92400e;
+        }
+
+        .match-score-card .no-skills .no-skills-text {
+            flex: 1;
+        }
+
+        .match-score-card .no-skills .no-skills-text strong {
+            font-weight: 600;
+            color: #92400e;
+            display: block;
+        }
+
+        .match-score-card .no-skills .no-skills-text span {
+            font-size: 0.8125rem;
+            color: #92400e;
+        }
+
+        .match-score-card .no-skills .no-skills-link {
+            margin-top: 0.25rem;
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #4f46e5;
+        }
+
+        /* Face Registration Banner */
+        .face-register-banner {
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+            border: 1px solid #fcd34d;
+            border-radius: var(--radius-xl);
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.25rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
+        .face-register-banner .banner-content {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .face-register-banner .banner-content .material-symbols-outlined {
+            font-size: 2rem;
+            color: #92400e;
+        }
+
+        .face-register-banner .banner-content .banner-text {
+            font-size: 0.875rem;
+            color: #92400e;
+        }
+
+        .face-register-banner .banner-content .banner-text strong {
+            display: block;
+            font-weight: 700;
+            color: #78350f;
+        }
+
+        .face-register-banner .btn-register-face {
+            background: #78350f;
+            color: #fef3c7;
+            border: none;
+            padding: 0.5rem 1.5rem;
+            border-radius: var(--radius-full);
+            font-weight: 600;
+            font-size: 0.8125rem;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            text-decoration: none;
+            font-family: var(--font-sans);
+        }
+
+        .face-register-banner .btn-register-face:hover {
+            background: #92400e;
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .face-register-banner .btn-register-face .material-symbols-outlined {
+            font-size: 1.125rem;
+        }
+
+        /* =============================================
            SINGLE CONTAINER - JOB DETAILS
         ============================================= */
         .job-card {
@@ -621,7 +958,6 @@ $statusBadges = [
             overflow: hidden;
         }
 
-        /* Divider Lines */
         .section-divider {
             height: 2px;
             background: linear-gradient(to right, var(--primary), var(--primary-light), transparent);
@@ -630,7 +966,6 @@ $statusBadges = [
             opacity: 0.6;
         }
 
-        /* Job Header */
         .job-header {
             padding: 1.5rem 2rem;
             background: var(--bg-surface-low);
@@ -666,9 +1001,47 @@ $statusBadges = [
         }
         .job-header .job-status {
             margin-top: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
         }
 
-        /* Section Styles */
+        .badge {
+            display: inline-block;
+            padding: 0.1875rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-open { background: #d1fae5; color: #059669; }
+        .badge-ongoing { background: #dbeafe; color: #2563eb; }
+        .badge-closed { background: #f1f5f9; color: #64748b; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-reviewed { background: #dbeafe; color: #2563eb; }
+        .badge-shortlisted { background: #d1fae5; color: #059669; }
+        .badge-hired { background: #a7f3d0; color: #047857; }
+        .badge-rejected { background: #fee2e2; color: #dc2626; }
+
+        .face-verified-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #6ee7b7;
+        }
+
+        .face-verified-badge .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+
         .job-section {
             padding: 1.25rem 2rem;
         }
@@ -703,25 +1076,6 @@ $statusBadges = [
             white-space: pre-wrap;
         }
 
-        .badge {
-            display: inline-block;
-            padding: 0.1875rem 0.75rem;
-            border-radius: var(--radius-full);
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .badge-open { background: #d1fae5; color: #059669; }
-        .badge-ongoing { background: #dbeafe; color: #2563eb; }
-        .badge-closed { background: #f1f5f9; color: #64748b; }
-        .badge-pending { background: #fef3c7; color: #d97706; }
-        .badge-reviewed { background: #dbeafe; color: #2563eb; }
-        .badge-shortlisted { background: #d1fae5; color: #059669; }
-        .badge-hired { background: #a7f3d0; color: #047857; }
-        .badge-rejected { background: #fee2e2; color: #dc2626; }
-
-        /* Info Grid */
         .info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -746,14 +1100,6 @@ $statusBadges = [
             font-weight: 600;
             color: var(--text-on-surface);
             font-size: 0.875rem;
-        }
-
-        /* Application Section */
-        .apply-section {
-            background: var(--bg-surface-low);
-            border-radius: 0.75rem;
-            padding: 1rem 1.25rem;
-            margin-top: 0.5rem;
         }
 
         .btn {
@@ -790,59 +1136,15 @@ $statusBadges = [
         .apply-btn {
             padding: 0.75rem 1.5rem;
             font-size: 1rem;
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35);
         }
 
-        /* Application Form */
-        .application-form {
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--slate-200);
-        }
-        .application-form .form-group {
-            margin-bottom: 1rem;
-        }
-        .application-form .form-group label {
-            display: block;
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-        .application-form .form-group .form-control {
-            width: 100%;
-            padding: 0.5rem 0.75rem;
-            border: 1.5px solid var(--slate-200);
-            border-radius: 0.5rem;
-            font-size: 0.875rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-        }
-        .application-form .form-group .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-        }
-        .application-form .form-group textarea.form-control {
-            resize: vertical;
-            min-height: 100px;
-        }
-        .application-form .form-group .file-input-wrapper {
-            position: relative;
-            overflow: hidden;
-        }
-        .application-form .form-group .file-input-wrapper input[type="file"] {
-            position: absolute;
-            left: 0;
-            top: 0;
-            opacity: 0;
-            width: 100%;
-            height: 100%;
-            cursor: pointer;
-        }
-        .application-form .form-group .file-input-wrapper .btn {
-            pointer-events: none;
+        .apply-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.45);
+            background: linear-gradient(135deg, #4338ca, #6d28d9);
         }
 
         .applied-status {
@@ -866,7 +1168,6 @@ $statusBadges = [
             color: var(--text-on-surface-variant);
         }
 
-        /* Similar Jobs */
         .similar-job-card {
             padding: 0.75rem 1rem;
             border: 1px solid var(--slate-200);
@@ -916,9 +1217,56 @@ $statusBadges = [
         .toast .material-symbols-outlined { font-size: 1.25rem; }
         .toast.success { background: #059669; }
         .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .form-group { margin-bottom: 1rem; }
+        .form-group:last-child { margin-bottom: 0; }
+        .form-group label {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-bottom: 0.1875rem;
+        }
+        .form-group .form-control {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            font-size: 0.8125rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+        }
+        .form-group .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .form-group textarea.form-control { resize: vertical; min-height: 60px; }
+
+        .file-input-wrapper {
+            position: relative;
+        }
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+        }
+        .file-input-wrapper .btn {
+            width: 100%;
+            pointer-events: none;
+            justify-content: center;
+            padding: 0.5rem;
         }
 
         @media (min-width: 768px) {
@@ -940,6 +1288,12 @@ $statusBadges = [
             .profile-dropdown-toggle .profile-role { display: none; }
             .job-header .job-title { font-size: 1.25rem; }
             .info-grid { grid-template-columns: 1fr; }
+            .match-score-card { flex-direction: column; align-items: stretch; text-align: center; }
+            .match-score-card .score-circle { margin: 0 auto; }
+            .match-score-card .score-tags { justify-content: center; }
+            .face-register-banner { flex-direction: column; text-align: center; }
+            .face-register-banner .banner-content { flex-direction: column; text-align: center; }
+            .job-header .job-status { justify-content: center; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
@@ -948,6 +1302,8 @@ $statusBadges = [
             .job-section { padding: 0.75rem 1rem; }
             .job-section:last-child { padding-bottom: 0.75rem; }
             .job-header .job-title { font-size: 1.125rem; }
+            .match-score-card .score-circle { width: 64px; height: 64px; }
+            .match-score-card .score-circle .score-number { font-size: 1.25rem; }
         }
         .main-scroll::-webkit-scrollbar { width: 5px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -970,22 +1326,39 @@ $statusBadges = [
             <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
         <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
+            <div class="nav-label">Main Menu</div>
+
             <a href="dashboard.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">dashboard</span>
                 <span class="nav-text">Dashboard</span>
             </a>
-            <a href="jobs.php" class="sidebar-main-link active">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">Jobs</span>
-            </a>
-            <a href="applications.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">assignment</span>
-                <span class="nav-text">My Applications</span>
-            </a>
+
             <a href="profile.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">person</span>
-                <span class="nav-text">Profile</span>
+                <span class="nav-text">My Profile</span>
+            </a>
+
+            <a href="applications.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">Applications</span>
+                <span class="nav-badge"><?php echo $totalApplications; ?></span>
+            </a>
+
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
+            </a>
+
+            <a href="interview.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
+
+            <a href="job_search.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">search</span>
+                <span class="nav-text">Job Search</span>
             </a>
 
         </nav>
@@ -997,10 +1370,6 @@ $statusBadges = [
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-            <a href="../../logout.php" class="logout-btn">
-                <span class="material-symbols-outlined">logout</span>
-                <span class="logout-text">Logout</span>
-            </a>
         </div>
     </aside>
 
@@ -1012,10 +1381,10 @@ $statusBadges = [
                     <span class="material-symbols-outlined">menu</span>
                 </button>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
+                    <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <a href="jobs.php" style="font-weight:500; font-size:0.8125rem; color:var(--text-on-surface-variant); display:flex; align-items:center; gap:0.25rem;">
+                <a href="job_search.php" style="font-weight:500; font-size:0.8125rem; color:var(--text-on-surface-variant); display:flex; align-items:center; gap:0.25rem;">
                     <span class="material-symbols-outlined" style="font-size:1rem;">arrow_back</span>
                     Back to Jobs
                 </a>
@@ -1074,6 +1443,80 @@ $statusBadges = [
                     <span class="breadcrumb-meta">Posted <?php echo date('M d, Y', strtotime($job['created_at'])); ?></span>
                 </div>
 
+                <!-- ============================================= -->
+                <!-- AI MATCH SCORE CARD - WILL ALWAYS SHOW IF APPLICANT HAS SKILLS -->
+                <!-- ============================================= -->
+                <?php if ($matchScore !== null && $matchScore >= 0): ?>
+                <div class="match-score-card">
+                    <?php 
+                    $scoreClass = 'low';
+                    if ($matchScore >= 70) $scoreClass = 'high';
+                    elseif ($matchScore >= 40) $scoreClass = 'medium';
+                    ?>
+                    <div class="score-circle <?php echo $scoreClass; ?>">
+                        <span class="score-number"><?php echo $matchScore; ?>%</span>
+                        <span class="score-label">Match</span>
+                    </div>
+                    <div class="score-details">
+                        <div class="score-title">Your Match Score</div>
+                        <div class="score-recommendation"><?php echo htmlspecialchars($matchRecommendation); ?></div>
+                        
+                        <?php if (!empty($matchStrengths) || !empty($matchGaps)): ?>
+                        <div class="score-tags">
+                            <?php foreach (array_slice($matchStrengths, 0, 2) as $strength): ?>
+                                <span class="score-tag strength">
+                                    <span class="material-symbols-outlined" style="font-size:0.75rem;">check</span>
+                                    <?php echo htmlspecialchars($strength); ?>
+                                </span>
+                            <?php endforeach; ?>
+                            <?php foreach (array_slice($matchGaps, 0, 2) as $gap): ?>
+                                <span class="score-tag gap">
+                                    <span class="material-symbols-outlined" style="font-size:0.75rem;">warning</span>
+                                    <?php echo htmlspecialchars($gap); ?>
+                                </span>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($matchProvider && $matchProvider !== 'mock' && $matchProvider !== 'unknown' && $matchProvider !== 'fallback'): ?>
+                        <div class="score-provider">✨ Powered by <?php echo ucfirst($matchProvider); ?></div>
+                        <?php elseif ($matchProvider === 'fallback'): ?>
+                        <div class="score-provider">📊 Based on your skills</div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <?php elseif ($applicant && empty($applicant['skills'])): ?>
+                <!-- Profile Incomplete Message -->
+                <div class="match-score-card" style="background: linear-gradient(135deg, #fef3c7, #fde68a); border-color: #fcd34d;">
+                    <div class="no-skills">
+                        <span class="material-symbols-outlined">info</span>
+                        <div class="no-skills-text">
+                            <strong>Profile Incomplete</strong>
+                            <span>Add your skills to see your match score for this job.</span>
+                            <a href="profile.php" class="no-skills-link">Update Profile →</a>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+                <!-- Face Registration Banner -->
+                <?php if (!$faceVerified && $applicant): ?>
+                <div class="face-register-banner">
+                    <div class="banner-content">
+                        <span class="material-symbols-outlined">verified</span>
+                        <div class="banner-text">
+                            <strong>Face Verification Required</strong>
+                            You need to register your face before applying to jobs.
+                        </div>
+                    </div>
+                    <a href="register_face.php?redirect=job_details.php?id=<?php echo $jobId; ?>" class="btn-register-face">
+                        <span class="material-symbols-outlined">scan</span>
+                        Register Face Now
+                    </a>
+                </div>
+                <?php endif; ?>
+
                 <!-- Single Job Card -->
                 <div class="job-card">
                     <!-- Job Header -->
@@ -1114,6 +1557,12 @@ $statusBadges = [
                             <span class="badge badge-<?php echo $job['status']; ?>">
                                 <?php echo ucfirst($job['status']); ?>
                             </span>
+                            <?php if ($faceVerified): ?>
+                            <span class="face-verified-badge">
+                                <span class="material-symbols-outlined">verified</span>
+                                Face Verified
+                            </span>
+                            <?php endif; ?>
                         </div>
                     </div>
 
@@ -1216,30 +1665,48 @@ $statusBadges = [
                                 </div>
                             </div>
                         <?php else: ?>
-                            <button class="btn btn-primary btn-block apply-btn" onclick="toggleApplicationForm()">
+                            <!-- Face Verification Status -->
+                            <?php if ($faceVerified): ?>
+                            <div style="margin-bottom:0.75rem; display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem; background:#d1fae5; border-radius:0.5rem; border:1px solid #6ee7b7;">
+                                <span class="material-symbols-outlined" style="color:#059669;">verified</span>
+                                <span style="font-size:0.8125rem; color:#065f46; font-weight:500;">Face verified ✓</span>
+                            </div>
+                            <?php endif; ?>
+
+                            <?php if (!$faceVerified): ?>
+                            <!-- If not verified, show disabled apply button with register link -->
+                            <button class="btn btn-primary btn-block apply-btn" onclick="window.location.href='register_face.php?redirect=job_details.php?id=<?php echo $jobId; ?>'" style="background: linear-gradient(135deg, #92400e, #78350f);">
+                                <span class="material-symbols-outlined">scan</span>
+                                Register Face to Apply
+                            </button>
+                            <?php else: ?>
+                            <!-- If verified, show apply button -->
+                            <button class="btn btn-primary btn-block apply-btn" onclick="document.getElementById('applicationForm').style.display='block'; document.getElementById('applicationForm').scrollIntoView({ behavior: 'smooth', block: 'center' });">
                                 <span class="material-symbols-outlined">send</span>
                                 Apply Now
                             </button>
+                            <?php endif; ?>
 
                             <!-- Application Form -->
-                            <div class="application-form" id="applicationForm" style="display:none;">
+                            <div class="application-form" id="applicationForm" style="display:none; margin-top:1rem;">
                                 <form method="POST" enctype="multipart/form-data">
                                     <input type="hidden" name="action" value="apply">
                                     
                                     <div class="form-group">
                                         <label for="coverLetter">Cover Letter</label>
                                         <textarea name="cover_letter" id="coverLetter" class="form-control" 
-                                                  placeholder="Tell us why you're the perfect fit for this role..."></textarea>
+                                                  placeholder="Tell us why you're the perfect fit for this role..." 
+                                                  rows="3"></textarea>
                                     </div>
 
                                     <div class="form-group">
                                         <label>Resume / CV</label>
                                         <div class="file-input-wrapper">
+                                            <input type="file" name="resume" accept=".pdf,.doc,.docx">
                                             <button type="button" class="btn btn-outline btn-block">
                                                 <span class="material-symbols-outlined">upload</span>
                                                 Upload Resume (PDF, DOC, DOCX)
                                             </button>
-                                            <input type="file" name="resume" accept=".pdf,.doc,.docx">
                                         </div>
                                         <div style="font-size:0.6875rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">
                                             Max 5MB. Leave empty to use your uploaded resume.
@@ -1252,7 +1719,7 @@ $statusBadges = [
                                     </div>
 
                                     <div style="display:flex; gap:0.5rem; margin-top:1rem;">
-                                        <button type="button" class="btn btn-ghost" onclick="toggleApplicationForm()" style="flex:1;">
+                                        <button type="button" class="btn btn-ghost" onclick="document.getElementById('applicationForm').style.display='none';" style="flex:1;">
                                             Cancel
                                         </button>
                                         <button type="submit" class="btn btn-success" style="flex:2;">
@@ -1298,23 +1765,21 @@ $statusBadges = [
         // =============================================
         const sidebar = document.getElementById('appSidebar');
         const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+        const sidebarToggleIcon = document.getElementById('sidebarToggleIcon');
         const isMobile = window.innerWidth <= 768;
         const savedState = localStorage.getItem('sidebarCollapsed');
 
         if (savedState === 'true' && !isMobile) {
             sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+            sidebarToggleIcon.textContent = 'chevron_right';
         }
 
         sidebarToggleBtn.addEventListener('click', function() {
             if (window.innerWidth <= 768) return;
             sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            }
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            sidebarToggleIcon.textContent = isCollapsed ? 'chevron_right' : 'chevron_left';
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
         });
 
         // =============================================
@@ -1358,54 +1823,6 @@ $statusBadges = [
         });
 
         // =============================================
-        // APPLICATION FORM TOGGLE
-        // =============================================
-        function toggleApplicationForm() {
-            const form = document.getElementById('applicationForm');
-            if (form.style.display === 'none') {
-                form.style.display = 'block';
-                form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            } else {
-                form.style.display = 'none';
-            }
-        }
-
-        // =============================================
-        // KEYBOARD SHORTCUTS
-        // =============================================
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeMobileSidebar();
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
-
-        // =============================================
-        // RESPONSIVE HANDLING
-        // =============================================
-        let resizeTimer;
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                const width = window.innerWidth;
-                if (width <= 768) {
-                    sidebar.classList.remove('collapsed');
-                } else {
-                    sidebar.classList.remove('mobile-open');
-                    sidebarBackdrop.classList.remove('active');
-                    document.body.style.overflow = '';
-                    const saved = localStorage.getItem('sidebarCollapsed');
-                    if (saved === 'true') {
-                        sidebar.classList.add('collapsed');
-                    } else {
-                        sidebar.classList.remove('collapsed');
-                    }
-                }
-            }, 250);
-        });
-
-        // =============================================
         // FILE INPUT LABEL UPDATE
         // =============================================
         document.querySelector('input[type="file"]')?.addEventListener('change', function() {
@@ -1419,7 +1836,56 @@ $statusBadges = [
             }
         });
 
-        console.log('💼 ISMERS Job Details (Single Container) loaded successfully!');
+        // =============================================
+        // KEYBOARD SHORTCUTS
+        // =============================================
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeMobileSidebar();
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
+                document.getElementById('applicationForm').style.display = 'none';
+            }
+        });
+
+        // =============================================
+        // RESPONSIVE HANDLING
+        // =============================================
+        let resizeTimer;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function() {
+                const width = window.innerWidth;
+                if (width <= 768) {
+                    sidebar.classList.remove('collapsed');
+                    sidebarToggleIcon.textContent = 'chevron_left';
+                } else {
+                    sidebar.classList.remove('mobile-open');
+                    sidebarBackdrop.classList.remove('active');
+                    document.body.style.overflow = '';
+                    const saved = localStorage.getItem('sidebarCollapsed');
+                    if (saved === 'true') {
+                        sidebar.classList.add('collapsed');
+                        sidebarToggleIcon.textContent = 'chevron_right';
+                    } else {
+                        sidebar.classList.remove('collapsed');
+                        sidebarToggleIcon.textContent = 'chevron_left';
+                    }
+                }
+            }, 250);
+        });
+
+        console.log('💼 ISMERS Job Details loaded successfully!');
+        <?php if ($matchScore !== null): ?>
+        console.log('🤖 Match Score: <?php echo $matchScore; ?>%');
+        <?php else: ?>
+        console.log('⚠️ Match Score: Not calculated');
+        <?php endif; ?>
+        <?php if ($faceVerified): ?>
+        console.log('✅ Face Verified: Yes');
+        <?php else: ?>
+        console.log('⚠️ Face Not Verified');
+        <?php endif; ?>
     </script>
 
 </body>

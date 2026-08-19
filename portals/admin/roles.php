@@ -94,6 +94,12 @@ foreach ($roles as $key => $role) {
     $roleCounts[$key] = $count;
 }
 
+// Get total users for badge
+$totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
+
+// Get user profile data for sidebar
+$userProfile = getUserProfileData($userId);
+
 // Handle POST actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -424,6 +430,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             text-overflow: ellipsis;
         }
 
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
+
+        .sidebar-backdrop.active {
+            display: block;
+            opacity: 1;
+        }
+
         /* =============================================
            PROFILE DROPDOWN
         ============================================= */
@@ -566,25 +591,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             height: 1px;
             background: var(--slate-200);
             margin: 0.25rem 0.5rem;
-        }
-
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
         }
 
         /* =============================================
@@ -1315,14 +1321,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">admin_panel_settings</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Admin Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">admin_panel_settings</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Admin Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1336,6 +1340,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <a href="users.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Users</span>
+                <span class="nav-badge"><?php echo $totalUsers; ?></span>
             </a>
 
             <a href="roles.php" class="sidebar-main-link active">
@@ -1343,23 +1348,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <span class="nav-text">Roles</span>
             </a>
 
-            
+            <a href="reports.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+
             <a href="biometric_settings.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">fingerprint</span>
                 <span class="nav-text">Biometric</span>
             </a>
 
+
         </nav>
 
         <div class="sidebar-footer">
             <div class="user-card">
-                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
                 <div class="user-info">
                     <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
                     <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
                 </div>
             </div>
-           
         </div>
     </aside>
 
@@ -1382,20 +1397,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></span>
+                    <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
                     <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
                     <span class="profile-role">Admin</span>
                     <span class="material-symbols-outlined">expand_more</span>
                 </button>
                 <div class="profile-dropdown-menu" id="profileMenu">
                     <div class="dropdown-header">Account</div>
-                 
-                    
+                    <a href="profile.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">person</span>
+                        My Profile
+                    </a>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
                     <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <a href="../../logout.php" class="dropdown-item danger">
                         <span class="material-symbols-outlined">logout</span>
                         Logout
-                    </button>
+                    </a>
                 </div>
             </div>
         </header>

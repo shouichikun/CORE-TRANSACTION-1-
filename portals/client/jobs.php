@@ -1,8 +1,9 @@
 <?php
-// portals/client/jobs.php - Client Job Management with Recruitment Agency Selection
+// portals/client/jobs.php - AI-Powered Client Job Management
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -20,6 +21,11 @@ $userId = $_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
+
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
 
 // Get client profile
 $client = getRecord("
@@ -62,136 +68,293 @@ $agencies = getRecords("
     ORDER BY ra.agency_name ASC
 ", [$clientId], "i");
 
-// Handle Job Posting
+// =============================================
+// AI HELPER FUNCTIONS
+// =============================================
+
+function generateAIJobData($jobTitle, $experience = 'Mid') {
+    global $aiService;
+    
+    try {
+        $result = $aiService->optimizeJobDescription([
+            'title' => $jobTitle,
+            'skills_required' => '',
+            'experience_level' => $experience
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            $skills = $result['suggested_skills'] ?? [];
+            
+            $qualifications = [];
+            $experienceList = [];
+            
+            switch ($experience) {
+                case 'Entry':
+                    $qualifications = ["Bachelor's Degree in related field", "Fresh Graduate / Entry Level", "0-1 year experience"];
+                    $experienceList = ['0-1 year experience', 'Fresh Graduate / Entry Level', 'Internship / OJT'];
+                    break;
+                case 'Junior':
+                    $qualifications = ["Bachelor's Degree in related field", "Junior Level", "1-3 years experience"];
+                    $experienceList = ['1-3 years experience', 'Junior Level'];
+                    break;
+                case 'Mid':
+                    $qualifications = ["Bachelor's Degree in related field", "Mid Level", "3-5 years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['3-5 years experience', 'Mid Level'];
+                    break;
+                case 'Senior':
+                    $qualifications = ["Bachelor's Degree in related field", "Master's Degree in related field", "Senior Level", "5-8 years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['5-8 years experience', 'Senior Level'];
+                    break;
+                case 'Lead':
+                    $qualifications = ["Bachelor's Degree in related field", "Master's Degree in related field", "Lead / Manager Level", "8+ years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['8+ years experience', 'Lead / Manager Level'];
+                    break;
+                default:
+                    $qualifications = ["Bachelor's Degree in related field", "Mid Level", "3-5 years experience"];
+                    $experienceList = ['3-5 years experience', 'Mid Level'];
+            }
+            
+            $salaryMin = 0;
+            $salaryMax = 0;
+            
+            if (isset($result['salary_min']) && isset($result['salary_max'])) {
+                $salaryMin = intval($result['salary_min']);
+                $salaryMax = intval($result['salary_max']);
+            } elseif (isset($result['salary_range'])) {
+                $salaryRange = $result['salary_range'];
+                preg_match('/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/', $salaryRange, $matches);
+                if (count($matches) >= 3) {
+                    $salaryMin = intval(str_replace(',', '', $matches[1]));
+                    $salaryMax = intval(str_replace(',', '', $matches[2]));
+                }
+            }
+            
+            if ($salaryMin === 0 && $salaryMax === 0) {
+                switch ($experience) {
+                    case 'Entry':
+                        $salaryMin = 25000; $salaryMax = 35000; break;
+                    case 'Junior':
+                        $salaryMin = 30000; $salaryMax = 45000; break;
+                    case 'Mid':
+                        $salaryMin = 45000; $salaryMax = 70000; break;
+                    case 'Senior':
+                        $salaryMin = 65000; $salaryMax = 100000; break;
+                    case 'Lead':
+                        $salaryMin = 85000; $salaryMax = 130000; break;
+                    default:
+                        $salaryMin = 35000; $salaryMax = 55000;
+                }
+            }
+            
+            $salaryRangeDisplay = '₱' . number_format($salaryMin) . ' - ₱' . number_format($salaryMax);
+            
+            return [
+                'success' => true,
+                'description' => $result['improved_description'] ?? '',
+                'skills' => $skills,
+                'qualifications' => $qualifications,
+                'experience' => $experienceList,
+                'salary_min' => $salaryMin,
+                'salary_max' => $salaryMax,
+                'salary_range' => $salaryRangeDisplay,
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Generation Error: " . $e->getMessage());
+    }
+    
+    return [
+        'success' => false,
+        'error' => 'Could not generate AI job data'
+    ];
+}
+
+// =============================================
+// HANDLE REQUESTS
+// =============================================
 $message = '';
 $messageType = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'post_job') {
-        // Validate inputs
-        $title = trim($_POST['title'] ?? '');
-        $description = trim($_POST['description'] ?? '');
-        $location = trim($_POST['location'] ?? '');
-        $job_type = trim($_POST['job_type'] ?? 'Full-time');
-        $salary_min = floatval($_POST['salary_min'] ?? 0);
-        $salary_max = floatval($_POST['salary_max'] ?? 0);
-        $positions = intval($_POST['positions'] ?? 1);
-        $experience_level = trim($_POST['experience_level'] ?? 'Entry');
-        $urgency = trim($_POST['urgency'] ?? 'medium');
-        $application_deadline = trim($_POST['application_deadline'] ?? '');
-        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : null;
-        $status = 'open';
+    
+    // =============================================
+    // GENERATE AI JOB DATA (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'generate_ai_job') {
+        header('Content-Type: application/json');
+        $jobTitle = trim($_POST['job_title'] ?? '');
+        $experience = trim($_POST['experience'] ?? 'Mid');
         
-        // Get selected items from checklists
-        $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
-        $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
-        $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
-        
-        // Get custom input values
-        $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
-        $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
-        $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
-        
-        // Merge selected + custom
-        $allSkills = array_merge($selectedSkills, array_filter($customSkills));
-        $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
-        $allExperience = array_merge($selectedExperience, array_filter($customExperience));
-        
-        // Convert to JSON for storage in skills_required
-        $skillsData = [
-            'skills' => array_values(array_unique($allSkills)),
-            'qualifications' => array_values(array_unique($allQualifications)),
-            'experience' => array_values(array_unique($allExperience))
-        ];
-        $skillsJson = json_encode($skillsData);
-        
-        // Build salary range string
-        $salaryRange = '';
-        if ($salary_min > 0 && $salary_max > 0) {
-            $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
-        } elseif ($salary_min > 0) {
-            $salaryRange = '₱' . number_format($salary_min) . ' and up';
-        } elseif ($salary_max > 0) {
-            $salaryRange = 'Up to ₱' . number_format($salary_max);
+        if (empty($jobTitle)) {
+            echo json_encode(['success' => false, 'error' => 'Job title is required']);
+            exit;
         }
         
-        // Validate required fields
-        $errors = [];
-        if (empty($title)) $errors[] = 'Job title is required.';
-        if (empty($description)) $errors[] = 'Job description is required.';
-        if (empty($location)) $errors[] = 'Location is required.';
-        if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
-        if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
-        if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
-        if (empty($agency_id)) $errors[] = 'Please select a recruitment agency.';
-        
-        if (empty($errors)) {
-            // Insert job - with agency_id
-            $insertSql = "INSERT INTO job_orders (
-                client_id, agency_id, title, description, skills_required, location, 
-                job_type, salary_min, salary_max, salary_range, experience_level,
-                positions_available, status, urgency, application_deadline,
-                created_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())";
-            
-            $stmt = mysqli_prepare($conn, $insertSql);
-            mysqli_stmt_bind_param($stmt, 'iisssssddsssisis', 
-                $clientId,
-                $agency_id,
-                $title, 
-                $description, 
-                $skillsJson, 
-                $location,
-                $job_type, 
-                $salary_min, 
-                $salary_max, 
-                $salaryRange,
-                $experience_level,
-                $positions, 
-                $status,
-                $urgency,
-                $application_deadline,
-                $userId
-            );
-            
-            if (mysqli_stmt_execute($stmt)) {
-                $message = 'Job posted successfully!';
-                $messageType = 'success';
-            } else {
-                $message = 'Error posting job: ' . mysqli_error($conn);
-                $messageType = 'error';
-            }
-            mysqli_stmt_close($stmt);
-        } else {
-            $message = implode('<br>', $errors);
-            $messageType = 'error';
-        }
+        $result = generateAIJobData($jobTitle, $experience);
+        echo json_encode($result);
+        exit;
     }
     
-    // Handle Job Status Update (Close/Reopen)
-    if ($_POST['action'] === 'update_status') {
+// =============================================
+// REQUEST JOB POST (Client -> HR) - FIXED VERSION
+// =============================================
+if ($_POST['action'] === 'request_job') {
+    // Validate inputs
+    $title = trim($_POST['title'] ?? '');
+    $description = trim($_POST['description'] ?? '');
+    $location = trim($_POST['location'] ?? '');
+    $job_type = trim($_POST['job_type'] ?? 'Full-time');
+    $salary_min = floatval($_POST['salary_min'] ?? 0);
+    $salary_max = floatval($_POST['salary_max'] ?? 0);
+    $positions = intval($_POST['positions'] ?? 1);
+    $experience_level = trim($_POST['experience_level'] ?? 'Entry');
+    $urgency = trim($_POST['urgency'] ?? 'medium');
+    $application_deadline = trim($_POST['application_deadline'] ?? '');
+    $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : null;
+    $request_notes = trim($_POST['request_notes'] ?? '');
+    
+    // Get selected items from checklists
+    $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
+    $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
+    $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
+    
+    // Get custom input values
+    $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
+    $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
+    $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
+    
+    // Merge selected + custom
+    $allSkills = array_merge($selectedSkills, array_filter($customSkills));
+    $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
+    $allExperience = array_merge($selectedExperience, array_filter($customExperience));
+    
+    // Convert to JSON for storage in skills_required
+    $skillsData = [
+        'skills' => array_values(array_unique($allSkills)),
+        'qualifications' => array_values(array_unique($allQualifications)),
+        'experience' => array_values(array_unique($allExperience))
+    ];
+    $skillsJson = json_encode($skillsData);
+    
+    // Build salary range string
+    $salaryRange = '';
+    if ($salary_min > 0 && $salary_max > 0) {
+        $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
+    } elseif ($salary_min > 0) {
+        $salaryRange = '₱' . number_format($salary_min) . ' and up';
+    } elseif ($salary_max > 0) {
+        $salaryRange = 'Up to ₱' . number_format($salary_max);
+    }
+    
+    // Validate required fields
+    $errors = [];
+    if (empty($title)) $errors[] = 'Job title is required.';
+    if (empty($description)) $errors[] = 'Job description is required.';
+    if (empty($location)) $errors[] = 'Location is required.';
+    if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
+    if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
+    if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
+    if (empty($agency_id)) $errors[] = 'Please select a recruitment agency.';
+    
+    if (empty($errors)) {
+        // Use simple query with escaped values - NO prepared statements to avoid the types issue
+        $status = 'pending_review';
+        
+        // Escape all string values
+        $title_esc = mysqli_real_escape_string($conn, $title);
+        $description_esc = mysqli_real_escape_string($conn, $description);
+        $skillsJson_esc = mysqli_real_escape_string($conn, $skillsJson);
+        $location_esc = mysqli_real_escape_string($conn, $location);
+        $job_type_esc = mysqli_real_escape_string($conn, $job_type);
+        $salaryRange_esc = mysqli_real_escape_string($conn, $salaryRange);
+        $experience_level_esc = mysqli_real_escape_string($conn, $experience_level);
+        $status_esc = mysqli_real_escape_string($conn, $status);
+        $urgency_esc = mysqli_real_escape_string($conn, $urgency);
+        $application_deadline_esc = mysqli_real_escape_string($conn, $application_deadline);
+        $request_notes_esc = mysqli_real_escape_string($conn, $request_notes);
+        
+        // Build the INSERT query
+        $insertSql = "INSERT INTO job_orders SET 
+            client_id = " . intval($clientId) . ",
+            agency_id = " . intval($agency_id) . ",
+            title = '$title_esc',
+            description = '$description_esc',
+            skills_required = '$skillsJson_esc',
+            location = '$location_esc',
+            job_type = '$job_type_esc',
+            salary_min = " . floatval($salary_min) . ",
+            salary_max = " . floatval($salary_max) . ",
+            salary_range = '$salaryRange_esc',
+            experience_level = '$experience_level_esc',
+            positions_available = " . intval($positions) . ",
+            status = '$status_esc',
+            urgency = '$urgency_esc',
+            application_deadline = '$application_deadline_esc',
+            created_by = " . intval($userId) . ",
+            request_notes = '$request_notes_esc',
+            requested_by = " . intval($userId) . ",
+            created_at = NOW(),
+            updated_at = NOW()";
+        
+        // Execute the query
+        if (mysqli_query($conn, $insertSql)) {
+            $jobId = mysqli_insert_id($conn);
+            $message = 'Job request submitted successfully! HR will review and approve it.';
+            $messageType = 'success';
+            
+            // Log activity
+            logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
+                       'Client requested job: ' . $title . ' (Pending HR Review)');
+            
+            // Redirect to jobs page after successful submission
+            header('Refresh: 2; URL=jobs.php');
+        } else {
+            $message = 'Error submitting job request: ' . mysqli_error($conn);
+            $messageType = 'error';
+        }
+    } else {
+        $message = implode('<br>', $errors);
+        $messageType = 'error';
+    }
+}
+    
+    // =============================================
+    // CANCEL JOB REQUEST
+    // =============================================
+    if ($_POST['action'] === 'cancel_request') {
         $jobId = intval($_POST['job_id'] ?? 0);
-        $newStatus = $_POST['new_status'] ?? 'closed';
         
         if ($jobId > 0) {
-            $updateSql = "UPDATE job_orders SET status = ?, updated_at = NOW() 
-                          WHERE id = ? AND client_id = ?";
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'sii', $newStatus, $jobId, $clientId);
+            // Only allow cancellation if status is pending_review
+            $checkSql = "SELECT id, status FROM job_orders WHERE id = ? AND client_id = ? AND status = 'pending_review'";
+            $check = getRecord($checkSql, [$jobId, $clientId], "ii");
             
-            if (mysqli_stmt_execute($stmt)) {
-                $message = 'Job status updated successfully!';
-                $messageType = 'success';
+            if ($check) {
+                $updateSql = "UPDATE job_orders SET status = 'cancelled', updated_at = NOW() 
+                              WHERE id = ? AND client_id = ?";
+                $stmt = mysqli_prepare($conn, $updateSql);
+                mysqli_stmt_bind_param($stmt, 'ii', $jobId, $clientId);
+                
+                if (mysqli_stmt_execute($stmt)) {
+                    $message = 'Job request cancelled successfully.';
+                    $messageType = 'success';
+                } else {
+                    $message = 'Error cancelling job request.';
+                    $messageType = 'error';
+                }
+                mysqli_stmt_close($stmt);
             } else {
-                $message = 'Error updating job status.';
+                $message = 'Job request not found or already processed.';
                 $messageType = 'error';
             }
-            mysqli_stmt_close($stmt);
         }
     }
 }
 
-// Get all jobs for this client
+// =============================================
+// GET ALL JOBS FOR THIS CLIENT
+// =============================================
 $jobsSql = "SELECT j.*, 
             a.agency_name, a.agency_code,
             (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as applicant_count
@@ -218,7 +381,9 @@ $statusCounts = [
     'on_hold' => 0,
     'draft' => 0,
     'filled' => 0,
-    'cancelled' => 0
+    'cancelled' => 0,
+    'pending_review' => 0,
+    'rejected' => 0
 ];
 
 foreach ($jobs as $job) {
@@ -237,16 +402,12 @@ if ($filter !== 'all') {
     });
 }
 
-// Get job types for dropdown (match enum values)
+// Get job types for dropdown
 $jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship'];
-
-// Experience levels (match enum values)
 $experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead'];
-
-// Urgency levels
 $urgencyLevels = ['low', 'medium', 'high'];
 
-// Pre-defined suggestions for skills - customizable by client
+// Pre-defined suggestions
 $suggestedSkills = [
     'PHP', 'JavaScript', 'Python', 'Java', 'C#', 'C++', 'Ruby', 'Go', 'Rust', 'Swift', 'Kotlin',
     'TypeScript', 'HTML5', 'CSS3', 'Sass', 'LESS', 'SQL',
@@ -292,6 +453,33 @@ $suggestedExperience = [
 sort($suggestedSkills);
 sort($suggestedQualifications);
 sort($suggestedExperience);
+
+// =============================================
+// JOB STATUS LABELS & BADGES
+// =============================================
+$statusLabels = [
+    'open' => 'Open',
+    'ongoing' => 'Ongoing',
+    'closed' => 'Closed',
+    'on_hold' => 'On Hold',
+    'draft' => 'Draft',
+    'filled' => 'Filled',
+    'cancelled' => 'Cancelled',
+    'pending_review' => 'Pending Review',
+    'rejected' => 'Rejected'
+];
+
+$statusBadges = [
+    'open' => 'badge-open',
+    'ongoing' => 'badge-ongoing',
+    'closed' => 'badge-closed',
+    'on_hold' => 'badge-on_hold',
+    'draft' => 'badge-draft',
+    'filled' => 'badge-filled',
+    'cancelled' => 'badge-cancelled',
+    'pending_review' => 'badge-pending',
+    'rejected' => 'badge-rejected'
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -302,9 +490,7 @@ sort($suggestedExperience);
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - CLIENT JOBS
-           ========================================================================== */
+        /* ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -332,6 +518,7 @@ sort($suggestedExperience);
             --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
             --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
             --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -345,6 +532,37 @@ sort($suggestedExperience);
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
         }
+
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
+
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined { font-size: 0.7rem; }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined { font-size: 1rem; }
+        .btn-ai:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -360,9 +578,7 @@ sort($suggestedExperience);
         }
         a { text-decoration: none; color: inherit; }
 
-        /* =============================================
-           SIDEBAR
-        ============================================= */
+        /* ===== SIDEBAR ===== */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -673,7 +889,6 @@ sort($suggestedExperience);
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* Breadcrumb */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -744,7 +959,7 @@ sort($suggestedExperience);
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Toast Message */
+        /* Toast */
         .toast {
             position: fixed;
             top: 1rem;
@@ -765,6 +980,7 @@ sort($suggestedExperience);
         .toast .material-symbols-outlined { font-size: 1.25rem; }
         .toast.success { background: #059669; }
         .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
@@ -871,9 +1087,6 @@ sort($suggestedExperience);
         }
         @media (max-width: 480px) { .form-row { grid-template-columns: 1fr; } }
 
-        /* =============================================
-           RECRUITMENT AGENCY SELECTION
-        ============================================= */
         .agency-selection {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -909,23 +1122,10 @@ sort($suggestedExperience);
             background: var(--primary-container);
             box-shadow: 0 0 0 2px var(--primary);
         }
-        .agency-option input[type="radio"] {
-            accent-color: var(--primary);
-            cursor: pointer;
-            flex-shrink: 0;
-        }
-        .agency-option .agency-info {
-            display: flex;
-            flex-direction: column;
-        }
-        .agency-option .agency-name {
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-        .agency-option .agency-code {
-            font-size: 0.625rem;
-            color: var(--text-on-surface-variant);
-        }
+        .agency-option input[type="radio"] { accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
+        .agency-option .agency-info { display: flex; flex-direction: column; }
+        .agency-option .agency-name { font-weight: 600; color: var(--text-on-surface); }
+        .agency-option .agency-code { font-size: 0.625rem; color: var(--text-on-surface-variant); }
         .agency-option .agency-logo {
             width: 2rem;
             height: 2rem;
@@ -946,9 +1146,6 @@ sort($suggestedExperience);
             border-radius: 0.375rem;
         }
 
-        /* =============================================
-           CUSTOM CHECKLIST - Skills, Qualifications, Experience
-           ============================================= */
         .checklist-section {
             border: 1.5px solid var(--slate-200);
             border-radius: 0.5rem;
@@ -957,19 +1154,16 @@ sort($suggestedExperience);
             transition: all var(--transition-fast);
             background: var(--bg-surface);
         }
-
         .checklist-section:focus-within {
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
         }
-
         .checklist-section .section-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 0.5rem;
         }
-
         .checklist-section .section-header .section-title {
             font-weight: 600;
             font-size: 0.8125rem;
@@ -978,12 +1172,10 @@ sort($suggestedExperience);
             align-items: center;
             gap: 0.375rem;
         }
-
         .checklist-section .section-header .section-title .material-symbols-outlined {
             font-size: 1rem;
             color: var(--primary);
         }
-
         .checklist-section .section-header .count-badge {
             font-size: 0.6875rem;
             color: var(--text-on-surface-variant);
@@ -991,7 +1183,6 @@ sort($suggestedExperience);
             padding: 0.0625rem 0.5rem;
             border-radius: var(--radius-full);
         }
-
         .checklist-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -1000,11 +1191,9 @@ sort($suggestedExperience);
             overflow-y: auto;
             padding: 0.125rem;
         }
-
         .checklist-grid::-webkit-scrollbar { width: 4px; }
         .checklist-grid::-webkit-scrollbar-track { background: transparent; }
         .checklist-grid::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
-
         .checklist-item {
             display: flex;
             align-items: center;
@@ -1016,11 +1205,7 @@ sort($suggestedExperience);
             font-size: 0.75rem;
             color: var(--text-on-surface);
         }
-
-        .checklist-item:hover {
-            background: var(--bg-surface-low);
-        }
-
+        .checklist-item:hover { background: var(--bg-surface-low); }
         .checklist-item input[type="checkbox"] {
             width: 0.8125rem;
             height: 0.8125rem;
@@ -1028,34 +1213,21 @@ sort($suggestedExperience);
             cursor: pointer;
             flex-shrink: 0;
         }
-
-        .checklist-item .item-label {
-            user-select: none;
-            cursor: pointer;
-        }
-
-        .checklist-item.checked {
-            background: var(--primary-container);
-        }
-
-        .checklist-item.checked .item-label {
-            color: var(--primary);
-            font-weight: 500;
-        }
+        .checklist-item .item-label { user-select: none; cursor: pointer; }
+        .checklist-item.checked { background: var(--primary-container); }
+        .checklist-item.checked .item-label { color: var(--primary); font-weight: 500; }
 
         .custom-input-row {
             display: flex;
             gap: 0.5rem;
             margin-top: 0.5rem;
         }
-
         .custom-input-row .form-control {
             flex: 1;
             padding: 0.375rem 0.625rem;
             font-size: 0.75rem;
             border-radius: 0.375rem;
         }
-
         .custom-input-row .btn-add {
             padding: 0.375rem 0.75rem;
             font-size: 0.75rem;
@@ -1067,7 +1239,6 @@ sort($suggestedExperience);
             transition: all var(--transition-fast);
             white-space: nowrap;
         }
-
         .custom-input-row .btn-add:hover {
             background: var(--on-primary-fixed-variant);
             transform: translateY(-1px);
@@ -1085,7 +1256,6 @@ sort($suggestedExperience);
             border: 1px dashed var(--slate-200);
             align-items: center;
         }
-
         .selected-items-display .item-tag {
             display: inline-flex;
             align-items: center;
@@ -1098,7 +1268,6 @@ sort($suggestedExperience);
             font-weight: 500;
             animation: tagAppear 0.2s ease-out;
         }
-
         .selected-items-display .item-tag .remove-item {
             background: none;
             border: none;
@@ -1109,42 +1278,25 @@ sort($suggestedExperience);
             transition: all var(--transition-fast);
             line-height: 1;
         }
-
         .selected-items-display .item-tag .remove-item:hover {
             color: white;
             transform: scale(1.2);
         }
-
         @keyframes tagAppear {
             from { opacity: 0; transform: scale(0.8); }
             to { opacity: 1; transform: scale(1); }
         }
 
-        /* Responsive checklist */
         @media (max-width: 768px) {
-            .checklist-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .agency-selection {
-                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            }
+            .checklist-grid { grid-template-columns: repeat(2, 1fr); }
+            .agency-selection { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
         }
-
         @media (max-width: 480px) {
-            .checklist-grid {
-                grid-template-columns: 1fr;
-            }
-            .custom-input-row {
-                flex-direction: column;
-            }
-            .agency-selection {
-                grid-template-columns: 1fr;
-            }
+            .checklist-grid { grid-template-columns: 1fr; }
+            .custom-input-row { flex-direction: column; }
+            .agency-selection { grid-template-columns: 1fr; }
         }
 
-        /* =============================================
-           JOB CARDS
-        ============================================= */
         .job-filters {
             display: flex;
             gap: 0.5rem;
@@ -1252,7 +1404,7 @@ sort($suggestedExperience);
         }
         .job-card-stats span { display: flex; align-items: center; gap: 0.25rem; }
         .job-card-stats .material-symbols-outlined { font-size: 0.875rem; }
-        .job-card-actions { display: flex; gap: 0.375rem; }
+        .job-card-actions { display: flex; gap: 0.375rem; flex-wrap: wrap; }
         .job-card-agency {
             font-size: 0.6875rem;
             color: var(--text-on-surface-variant);
@@ -1281,6 +1433,8 @@ sort($suggestedExperience);
         .badge-draft { background: #f1f5f9; color: #64748b; }
         .badge-filled { background: #d1fae5; color: #059669; }
         .badge-cancelled { background: #fecaca; color: #dc2626; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
 
         .empty-state {
             text-align: center;
@@ -1296,7 +1450,6 @@ sort($suggestedExperience);
         .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
-        /* Profile Picture Styles */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -1326,7 +1479,6 @@ sort($suggestedExperience);
             object-fit: cover;
         }
 
-        /* Responsive */
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -1343,8 +1495,7 @@ sort($suggestedExperience);
             .main-wrapper { margin-left: 0 !important; }
             .main-scroll { padding: 1rem; }
             .top-header-left .separator { display: none; }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: none; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
@@ -1352,7 +1503,7 @@ sort($suggestedExperience);
             .page-header h1 { font-size: 1.25rem; }
             .job-card-header { flex-direction: column; }
             .job-card-footer { flex-direction: column; align-items: stretch; }
-            .job-card-actions { justify-content: flex-end; }
+            .job-card-actions { justify-content: flex-start; }
             .modal { max-height: 95vh; }
             .modal-body { padding: 1rem; }
         }
@@ -1408,6 +1559,10 @@ sort($suggestedExperience);
                 <span class="material-symbols-outlined">support_agent</span>
                 <span class="nav-text">Support</span>
             </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
             <div class="nav-label" style="margin-top:1rem;">Settings</div>
             <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person</span>
@@ -1418,10 +1573,7 @@ sort($suggestedExperience);
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-
-        <!-- =============================================
-        SIDEBAR FOOTER
-        ============================================= -->
+        <!-- ===== SIDEBAR FOOTER ===== -->
         <?php
         $userProfile = getUserProfileData($userId);
         ?>
@@ -1454,6 +1606,10 @@ sort($suggestedExperience);
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Jobs</span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -1473,6 +1629,9 @@ sort($suggestedExperience);
                 </button>
                 <div class="profile-dropdown-menu" id="profileMenu">
                     <div class="dropdown-header">Account</div>
+                    <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                        <span class="material-symbols-outlined">person</span> Profile
+                    </button>
                     <div class="dropdown-divider"></div>
                     <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
                         <span class="material-symbols-outlined">logout</span> Logout
@@ -1516,12 +1675,18 @@ sort($suggestedExperience);
                 <div class="page-header">
                     <div>
                         <h1>My Jobs</h1>
-                        <p>Manage your job postings and track applications</p>
+                        <p style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                            Manage your job postings and track applications
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined">auto_awesome</span>
+                                AI Enhanced
+                            </span>
+                        </p>
                     </div>
                     <div>
-                        <button class="btn btn-primary" onclick="openModal()">
+                        <button class="btn btn-ai" onclick="openModal()">
                             <span class="material-symbols-outlined">add</span>
-                            Post New Job
+                            Request Job Post
                         </button>
                     </div>
                 </div>
@@ -1536,6 +1701,9 @@ sort($suggestedExperience);
                     </a>
                     <a href="?filter=ongoing" class="filter-btn <?php echo $filter === 'ongoing' ? 'active' : ''; ?>">
                         Ongoing <span class="count"><?php echo $statusCounts['ongoing']; ?></span>
+                    </a>
+                    <a href="?filter=pending_review" class="filter-btn <?php echo $filter === 'pending_review' ? 'active' : ''; ?>">
+                        Pending Review <span class="count"><?php echo $statusCounts['pending_review']; ?></span>
                     </a>
                     <a href="?filter=on_hold" class="filter-btn <?php echo $filter === 'on_hold' ? 'active' : ''; ?>">
                         On Hold <span class="count"><?php echo $statusCounts['on_hold']; ?></span>
@@ -1552,10 +1720,10 @@ sort($suggestedExperience);
                         <h3>No jobs found</h3>
                         <p>
                             <?php if ($filter !== 'all'): ?>
-                                No jobs with status "<?php echo htmlspecialchars($filter); ?>".
+                                No jobs with status "<?php echo htmlspecialchars(str_replace('_', ' ', $filter)); ?>".
                                 <a href="?filter=all" style="color:var(--primary); font-weight:600;">View all jobs</a>
                             <?php else: ?>
-                                You haven't posted any jobs yet. Click the "Post New Job" button to get started.
+                                You haven't requested any jobs yet. Click the "Request Job Post" button to get started.
                             <?php endif; ?>
                         </p>
                     </div>
@@ -1563,16 +1731,26 @@ sort($suggestedExperience);
                     <?php foreach ($filteredJobs as $job): 
                         $skillsData = json_decode($job['skills_required'] ?? '{}', true);
                         $displaySkills = $skillsData['skills'] ?? [];
-                        $displayQualifications = $skillsData['qualifications'] ?? [];
-                        $displayExperience = $skillsData['experience'] ?? [];
+                        $isPending = $job['status'] === 'pending_review';
+                        $isRejected = $job['status'] === 'rejected';
                     ?>
                         <div class="job-card">
                             <div class="job-card-header">
                                 <div>
                                     <div class="job-card-title">
-                                        <a href="job-details.php?id=<?php echo $job['id']; ?>">
+                                        <?php if ($isPending || $isRejected): ?>
                                             <?php echo htmlspecialchars($job['title']); ?>
-                                        </a>
+                                        <?php else: ?>
+                                            <a href="job-details.php?id=<?php echo $job['id']; ?>">
+                                                <?php echo htmlspecialchars($job['title']); ?>
+                                            </a>
+                                        <?php endif; ?>
+                                        <?php if ($isPending): ?>
+                                            <span class="badge badge-pending" style="font-size:0.55rem; margin-left:0.5rem;">⏳ Pending HR Review</span>
+                                        <?php endif; ?>
+                                        <?php if ($isRejected): ?>
+                                            <span class="badge badge-rejected" style="font-size:0.55rem; margin-left:0.5rem;">Rejected</span>
+                                        <?php endif; ?>
                                     </div>
                                     <div class="job-card-meta">
                                         <span>
@@ -1591,86 +1769,88 @@ sort($suggestedExperience);
                                         <?php endif; ?>
                                         <span>
                                             <span class="material-symbols-outlined">calendar_today</span>
-                                            Posted <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
+                                            <?php echo $isPending || $isRejected ? 'Requested: ' : 'Posted: '; ?>
+                                            <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
                                         </span>
-                                        <?php if ($job['experience_level']): ?>
-                                            <span>
-                                                <span class="material-symbols-outlined">trending_up</span>
-                                                <?php echo htmlspecialchars($job['experience_level']); ?>
-                                            </span>
-                                        <?php endif; ?>
                                     </div>
                                     <?php if ($job['agency_name']): ?>
                                         <div class="job-card-agency" style="margin-top:0.25rem;">
                                             <span class="material-symbols-outlined">apartment</span>
                                             Agency: <?php echo htmlspecialchars($job['agency_name']); ?>
-                                            <span style="font-size:0.625rem; color:var(--text-on-surface-variant);">(<?php echo htmlspecialchars($job['agency_code']); ?>)</span>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if ($isPending && !empty($job['request_notes'])): ?>
+                                        <div style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-on-surface-variant); background:var(--bg-surface-low); padding:0.25rem 0.5rem; border-radius:0.25rem; border-left:3px solid #f59e0b;">
+                                            <strong>Request Notes:</strong> <?php echo htmlspecialchars($job['request_notes']); ?>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if ($isRejected && !empty($job['request_notes'])): ?>
+                                        <div style="margin-top:0.25rem; font-size:0.75rem; color:#dc2626; background:#fef2f2; padding:0.25rem 0.5rem; border-radius:0.25rem; border-left:3px solid #dc2626;">
+                                            <strong>Feedback:</strong> <?php echo htmlspecialchars($job['request_notes']); ?>
                                         </div>
                                     <?php endif; ?>
                                 </div>
-                                <span class="badge badge-<?php echo $job['status']; ?>">
-                                    <?php echo ucfirst(str_replace('_', ' ', $job['status'])); ?>
+                                <span class="badge <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
+                                    <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
                                 </span>
                             </div>
 
-                            <div class="job-card-description">
-                                <?php echo htmlspecialchars(substr($job['description'] ?? '', 0, 200)); ?>
-                                <?php if (strlen($job['description'] ?? '') > 200): ?>...<?php endif; ?>
-                            </div>
-
-                            <?php if (!empty($displaySkills)): ?>
-                                <div class="job-card-skills">
-                                    <?php foreach (array_slice($displaySkills, 0, 6) as $skill): ?>
-                                        <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
-                                    <?php endforeach; ?>
-                                    <?php if (count($displaySkills) > 6): ?>
-                                        <span class="skill-tag">+<?php echo count($displaySkills) - 6; ?> more</span>
-                                    <?php endif; ?>
+                            <?php if (!$isPending && !$isRejected): ?>
+                                <div class="job-card-description">
+                                    <?php echo htmlspecialchars(substr($job['description'] ?? '', 0, 200)); ?>
+                                    <?php if (strlen($job['description'] ?? '') > 200): ?>...<?php endif; ?>
                                 </div>
+
+                                <?php if (!empty($displaySkills)): ?>
+                                    <div class="job-card-skills">
+                                        <?php foreach (array_slice($displaySkills, 0, 6) as $skill): ?>
+                                            <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
+                                        <?php endforeach; ?>
+                                        <?php if (count($displaySkills) > 6): ?>
+                                            <span class="skill-tag">+<?php echo count($displaySkills) - 6; ?> more</span>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
                             <?php endif; ?>
 
                             <div class="job-card-footer">
                                 <div class="job-card-stats">
-                                    <span>
-                                        <span class="material-symbols-outlined">person_search</span>
-                                        <?php echo $job['applicant_count'] ?? 0; ?> Applicants
-                                    </span>
-                                    <span>
-                                        <span class="material-symbols-outlined">people</span>
-                                        <?php echo $job['positions_available'] ?? 1; ?> Positions
-                                    </span>
-                                    <?php if ($job['urgency']): ?>
+                                    <?php if (!$isPending && !$isRejected): ?>
                                         <span>
-                                            <span class="material-symbols-outlined">priority_high</span>
-                                            <?php echo ucfirst($job['urgency']); ?>
+                                            <span class="material-symbols-outlined">person_search</span>
+                                            <?php echo $job['applicant_count'] ?? 0; ?> Applicants
+                                        </span>
+                                        <span>
+                                            <span class="material-symbols-outlined">people</span>
+                                            <?php echo $job['positions_available'] ?? 1; ?> Positions
+                                        </span>
+                                    <?php else: ?>
+                                        <span style="color:var(--text-on-surface-variant); font-size:0.7rem;">
+                                            <?php if ($isPending): ?>
+                                                ⏳ Awaiting HR review
+                                            <?php elseif ($isRejected): ?>
+                                                ❌ Request was rejected by HR
+                                            <?php endif; ?>
                                         </span>
                                     <?php endif; ?>
                                 </div>
                                 <div class="job-card-actions">
-                                    <a href="job-details.php?id=<?php echo $job['id']; ?>" class="btn btn-sm btn-outline">
-                                        <span class="material-symbols-outlined">visibility</span>
-                                        View
-                                    </a>
-                                    <?php if ($job['status'] === 'open' || $job['status'] === 'ongoing'): ?>
-                                        <form method="POST" style="display:inline;" onsubmit="return confirm('Close this job posting?')">
-                                            <input type="hidden" name="action" value="update_status">
-                                            <input type="hidden" name="job_id" value="<?php echo $job['id']; ?>">
-                                            <input type="hidden" name="new_status" value="closed">
-                                            <button type="submit" class="btn btn-sm btn-danger">
-                                                <span class="material-symbols-outlined">close</span>
-                                                Close
-                                            </button>
-                                        </form>
-                                    <?php elseif ($job['status'] === 'closed'): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="action" value="update_status">
-                                            <input type="hidden" name="job_id" value="<?php echo $job['id']; ?>">
-                                            <input type="hidden" name="new_status" value="open">
-                                            <button type="submit" class="btn btn-sm btn-success">
-                                                <span class="material-symbols-outlined">refresh</span>
-                                                Reopen
-                                            </button>
-                                        </form>
+                                    <?php if ($isPending): ?>
+                                        <button class="btn btn-sm btn-danger" onclick="cancelJobRequest(<?php echo $job['id']; ?>)">
+                                            <span class="material-symbols-outlined">cancel</span>
+                                            Cancel Request
+                                        </button>
+                                        <span style="font-size:0.7rem; color:var(--text-on-surface-variant);">⏳ Pending HR Review</span>
+                                    <?php elseif ($isRejected): ?>
+                                        <button class="btn btn-sm btn-primary" onclick="openModalWithData(<?php echo $job['id']; ?>)">
+                                            <span class="material-symbols-outlined">refresh</span>
+                                            Resubmit
+                                        </button>
+                                    <?php else: ?>
+                                        <a href="job-details.php?id=<?php echo $job['id']; ?>" class="btn btn-sm btn-outline">
+                                            <span class="material-symbols-outlined">visibility</span>
+                                            View
+                                        </a>
                                     <?php endif; ?>
                                 </div>
                             </div>
@@ -1681,31 +1861,118 @@ sort($suggestedExperience);
         </main>
     </div>
 
+    <!-- =============================================
+    AI OPTIMISTIC MODAL
+    ============================================= -->
+    <div class="ai-optimistic-modal" id="aiOptimisticModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(12px); z-index:9999; align-items:center; justify-content:center; padding:1.5rem;">
+        <div class="ai-optimistic-card" style="background:var(--bg-surface); border-radius:var(--radius-2xl); max-width:720px; width:100%; max-height:90vh; overflow-y:auto; padding:2rem 2rem 1.5rem; box-shadow:var(--shadow-xl); animation:slideUp 0.4s cubic-bezier(0.16,1,0.3,1);">
+            <div class="ai-header" style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1.5rem; padding-bottom:1rem; border-bottom:1px solid var(--slate-200);">
+                <div class="ai-icon" style="width:2.75rem; height:2.75rem; border-radius:50%; background:linear-gradient(135deg,#7c3aed,#4f46e5); display:flex; align-items:center; justify-content:center; color:white; font-size:1.25rem; flex-shrink:0;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                </div>
+                <div>
+                    <div class="ai-title" style="font-size:1.125rem; font-weight:700; color:var(--text-on-surface);">AI is crafting your job posting</div>
+                    <div class="ai-subtitle" style="font-size:0.75rem; color:var(--text-on-surface-variant);">Generating optimized description, skills, qualifications, and salary</div>
+                </div>
+                <div class="ai-provider" id="aiProvider" style="margin-left:auto; font-size:0.6rem; font-weight:600; color:var(--text-on-surface-variant); background:var(--bg-surface-low); padding:0.125rem 0.625rem; border-radius:var(--radius-full);">Groq</div>
+            </div>
+
+            <!-- Loading State -->
+            <div class="ai-dots-loading" id="aiDotsLoading" style="display:flex; align-items:center; justify-content:center; gap:0.5rem; padding:2rem 0; min-height:120px;">
+                <div class="dot" style="width:0.75rem; height:0.75rem; background:var(--primary); border-radius:50%; animation:dotBounce 1.4s infinite ease-in-out both;"></div>
+                <div class="dot" style="width:0.75rem; height:0.75rem; background:var(--primary); border-radius:50%; animation:dotBounce 1.4s infinite ease-in-out both; animation-delay:0.2s;"></div>
+                <div class="dot" style="width:0.75rem; height:0.75rem; background:var(--primary); border-radius:50%; animation:dotBounce 1.4s infinite ease-in-out both; animation-delay:0.4s;"></div>
+                <span class="loading-text" style="font-size:0.875rem; color:var(--text-on-surface-variant); margin-left:0.75rem; font-weight:500;">Analyzing job requirements</span>
+            </div>
+
+            <!-- Error State -->
+            <div class="ai-error" id="aiError" style="display:none; text-align:center; padding:1.5rem; color:#dc2626; background:#fef2f2; border-radius:var(--radius-md); margin:1rem 0;">
+                <span class="material-symbols-outlined" style="font-size:2rem; display:block; margin-bottom:0.5rem;">error</span>
+                <span id="aiErrorMessage">Something went wrong. Please try again.</span>
+            </div>
+
+            <!-- Generated Content -->
+            <div class="ai-generated-content" id="aiGeneratedContent" style="display:none; animation:fadeIn 0.5s ease;">
+                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
+                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">description</span> Job Description
+                    </div>
+                    <div class="section-value" id="aiGenDescription" style="font-size:0.875rem; color:var(--text-on-surface); line-height:1.6; white-space:pre-wrap;"></div>
+                </div>
+
+                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
+                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">psychology</span> Suggested Skills
+                    </div>
+                    <div class="section-tags" id="aiGenSkills" style="display:flex; flex-wrap:wrap; gap:0.25rem;"></div>
+                </div>
+
+                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
+                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">school</span> Suggested Qualifications
+                    </div>
+                    <div class="section-tags" id="aiGenQualifications" style="display:flex; flex-wrap:wrap; gap:0.25rem;"></div>
+                </div>
+
+                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
+                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">work_history</span> Suggested Experience
+                    </div>
+                    <div class="section-tags" id="aiGenExperience" style="display:flex; flex-wrap:wrap; gap:0.25rem;"></div>
+                </div>
+
+                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid #059669;">
+                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#059669; display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">payments</span> Recommended Salary
+                    </div>
+                    <div class="section-salary" id="aiGenSalary" style="font-size:1rem; font-weight:700; color:var(--primary);">₱50,000 - ₱80,000</div>
+                </div>
+
+                <div class="ai-actions" style="display:flex; gap:0.75rem; margin-top:1.5rem; padding-top:1rem; border-top:1px solid var(--slate-200); flex-wrap:wrap;">
+                    <button class="btn btn-primary" onclick="applyAIGeneratedData()">
+                        <span class="material-symbols-outlined">check</span> Apply All
+                    </button>
+                    <button class="btn btn-outline" onclick="applyAIDescriptionOnly()">
+                        <span class="material-symbols-outlined">description</span> Apply Description Only
+                    </button>
+                    <button class="btn btn-ghost" onclick="dismissAIModal()">Dismiss</button>
+                    <button class="btn btn-ghost" onclick="regenerateAI()" style="margin-left:auto;">
+                        <span class="material-symbols-outlined">refresh</span> Regenerate
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ===== POST JOB MODAL ===== -->
     <div class="modal-overlay" id="postJobModal">
         <div class="modal">
             <div class="modal-header">
-                <h2>Post New Job</h2>
+                <h2>Request Job Post <span class="ai-badge" style="font-size:0.55rem; margin-left:0.5rem;">
+                    <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
+                    AI
+                </span></h2>
                 <button class="modal-close" onclick="closeModal()">×</button>
             </div>
             <form method="POST" action="" id="postJobForm">
-                <input type="hidden" name="action" value="post_job">
+                <input type="hidden" name="action" value="request_job">
                 <div class="modal-body">
-                    <!-- =============================================
-                    RECRUITMENT AGENCY SELECTION
-                    ============================================= -->
+                    <!-- Agency Selection -->
                     <div class="form-group">
                         <label>Recruitment Agency <span class="required">*</span></label>
                         <div class="agency-selection" id="agencySelection">
                             <?php if (empty($agencies)): ?>
                                 <div style="grid-column:1/-1; text-align:center; padding:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">
-                                    No active recruitment agencies found. Please contact your system administrator.
+                                    No active recruitment agencies found. Please apply for an agency first.
                                 </div>
                             <?php else: ?>
-                                <?php foreach ($agencies as $agency): ?>
+                                <?php 
+                                $firstAgency = true;
+                                foreach ($agencies as $agency): 
+                                ?>
                                     <label class="agency-option" data-agency-id="<?php echo $agency['id']; ?>">
                                         <input type="radio" name="agency_id" value="<?php echo $agency['id']; ?>" 
-                                               <?php echo $loop->first ?? false ? 'checked' : ''; ?>>
+                                               <?php echo $firstAgency ? 'checked' : ''; ?>>
                                         <div class="agency-logo">
                                             <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
                                                 <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" 
@@ -1717,31 +1984,37 @@ sort($suggestedExperience);
                                         <div class="agency-info">
                                             <span class="agency-name"><?php echo htmlspecialchars($agency['agency_name']); ?></span>
                                             <span class="agency-code"><?php echo htmlspecialchars($agency['agency_code']); ?></span>
-                                            <?php if ($agency['contact_person']): ?>
-                                                <span style="font-size:0.625rem; color:var(--text-on-surface-variant);">
-                                                    <?php echo htmlspecialchars($agency['contact_person']); ?>
-                                                </span>
-                                            <?php endif; ?>
                                         </div>
                                     </label>
-                                <?php endforeach; ?>
+                                <?php 
+                                    $firstAgency = false;
+                                endforeach; 
+                                ?>
                             <?php endif; ?>
-                        </div>
-                        <div class="helper-text" style="margin-top:0.25rem;">
-                            <span class="material-symbols-outlined" style="font-size:0.875rem;">info</span>
-                            Select the recruitment agency that will handle this job posting.
                         </div>
                     </div>
 
+                    <!-- Job Title with AI Button -->
                     <div class="form-group">
                         <label>Job Title <span class="required">*</span></label>
-                        <input type="text" name="title" class="form-control" placeholder="e.g., Senior Software Engineer" required>
+                        <div style="display:flex; gap:0.5rem;">
+                            <input type="text" id="jobTitle" name="title" class="form-control" 
+                                   placeholder="e.g., Senior Software Engineer" required style="flex:1;">
+                            <button type="button" class="btn btn-ai btn-sm" onclick="openAIModal()" id="aiGenerateBtn">
+                                <span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span>
+                                AI Generate
+                            </button>
+                        </div>
+                        <div class="helper-text" style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
+                            Enter a job title, select experience level, and click "AI Generate"
+                        </div>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
                             <label>Location <span class="required">*</span></label>
-                            <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote, Hybrid" required>
+                            <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote" required>
                         </div>
                         <div class="form-group">
                             <label>Job Type <span class="required">*</span></label>
@@ -1756,7 +2029,7 @@ sort($suggestedExperience);
                     <div class="form-row">
                         <div class="form-group">
                             <label>Experience Level <span class="required">*</span></label>
-                            <select name="experience_level" class="form-control" required>
+                            <select name="experience_level" id="experienceLevel" class="form-control" required>
                                 <?php foreach ($experienceLevels as $level): ?>
                                     <option value="<?php echo $level; ?>"><?php echo $level; ?></option>
                                 <?php endforeach; ?>
@@ -1775,11 +2048,11 @@ sort($suggestedExperience);
                     <div class="form-row">
                         <div class="form-group">
                             <label>Salary Range (Min)</label>
-                            <input type="number" name="salary_min" class="form-control" placeholder="e.g., 30000" min="0">
+                            <input type="number" name="salary_min" id="salaryMin" class="form-control" placeholder="e.g., 30000" min="0">
                         </div>
                         <div class="form-group">
                             <label>Salary Range (Max)</label>
-                            <input type="number" name="salary_max" class="form-control" placeholder="e.g., 50000" min="0">
+                            <input type="number" name="salary_max" id="salaryMax" class="form-control" placeholder="e.g., 50000" min="0">
                         </div>
                     </div>
 
@@ -1796,12 +2069,12 @@ sort($suggestedExperience);
 
                     <div class="form-group">
                         <label>Job Description <span class="required">*</span></label>
-                        <textarea name="description" class="form-control" placeholder="Describe the role, responsibilities, and what makes this opportunity great..." rows="4" required></textarea>
+                        <textarea name="description" id="jobDescription" class="form-control" 
+                                  placeholder="Describe the role, responsibilities, and what makes this opportunity great..." 
+                                  rows="4" required></textarea>
                     </div>
 
-                    <!-- =============================================
-                    SKILLS CHECKLIST - CUSTOMIZABLE
-                    ============================================= -->
+                    <!-- Skills -->
                     <div class="form-group">
                         <label>Skills Required <span class="required">*</span></label>
                         <div class="checklist-section">
@@ -1830,9 +2103,7 @@ sort($suggestedExperience);
                         </div>
                     </div>
 
-                    <!-- =============================================
-                    QUALIFICATIONS CHECKLIST - CUSTOMIZABLE
-                    ============================================= -->
+                    <!-- Qualifications -->
                     <div class="form-group">
                         <label>Qualifications <span class="required">*</span></label>
                         <div class="checklist-section">
@@ -1861,9 +2132,7 @@ sort($suggestedExperience);
                         </div>
                     </div>
 
-                    <!-- =============================================
-                    EXPERIENCE CHECKLIST - CUSTOMIZABLE
-                    ============================================= -->
+                    <!-- Experience -->
                     <div class="form-group">
                         <label>Experience Required <span class="required">*</span></label>
                         <div class="checklist-section">
@@ -1892,6 +2161,17 @@ sort($suggestedExperience);
                         </div>
                     </div>
 
+                    <!-- Request Notes -->
+                    <div class="form-group">
+                        <label>Request Notes</label>
+                        <textarea name="request_notes" class="form-control" 
+                                  placeholder="Add any notes or instructions for HR regarding this job request..." rows="2"></textarea>
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
+                            Optional: Provide additional context for HR
+                        </div>
+                    </div>
+
                     <!-- Hidden fields for custom items -->
                     <input type="hidden" name="custom_skills" id="customSkills">
                     <input type="hidden" name="custom_qualifications" id="customQualifications">
@@ -1899,9 +2179,9 @@ sort($suggestedExperience);
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="submitBtn">
+                    <button type="submit" class="btn btn-ai" id="submitBtn">
                         <span class="material-symbols-outlined">send</span>
-                        Post Job
+                        Submit Request
                     </button>
                 </div>
             </form>
@@ -1909,475 +2189,840 @@ sort($suggestedExperience);
     </div>
 
     <!-- =============================================
-    JAVASCRIPT
+    JAVASCRIPT - ENHANCED AI
     ============================================= -->
     <script>
-        // =============================================
-        // 1. SIDEBAR TOGGLE
-        // =============================================
-        const sidebar = document.getElementById('appSidebar');
-        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-        const isMobile = window.innerWidth <= 768;
-        const savedState = localStorage.getItem('sidebarCollapsed');
+    // =============================================
+    // 1. SIDEBAR TOGGLE
+    // =============================================
+    const sidebar = document.getElementById('appSidebar');
+    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+    const isMobile = window.innerWidth <= 768;
+    const savedState = localStorage.getItem('sidebarCollapsed');
 
-        if (savedState === 'true' && !isMobile) {
-            sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+    if (savedState === 'true' && !isMobile) {
+        sidebar.classList.add('collapsed');
+        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'chevron_right';
+    }
+
+    sidebarToggleBtn.addEventListener('click', function() {
+        if (window.innerWidth <= 768) return;
+        sidebar.classList.toggle('collapsed');
+        const icon = this.querySelector('.material-symbols-outlined');
+        if (icon) {
+            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
         }
+        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    });
 
-        sidebarToggleBtn.addEventListener('click', function() {
-            if (window.innerWidth <= 768) return;
-            sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            }
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    // =============================================
+    // 2. MOBILE SIDEBAR
+    // =============================================
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+
+    function openMobileSidebar() {
+        sidebar.classList.add('mobile-open');
+        sidebarBackdrop.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeMobileSidebar() {
+        sidebar.classList.remove('mobile-open');
+        sidebarBackdrop.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    if (mobileMenuBtn) {
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+    }
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
+
+    // =============================================
+    // 3. PROFILE DROPDOWN
+    // =============================================
+    const profileToggle = document.getElementById('profileToggle');
+    const profileMenu = document.getElementById('profileMenu');
+
+    if (profileToggle && profileMenu) {
+        profileToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.classList.toggle('open');
+            profileMenu.classList.toggle('open');
         });
 
-        // =============================================
-        // 2. MOBILE SIDEBAR
-        // =============================================
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
-
-        function openMobileSidebar() {
-            sidebar.classList.add('mobile-open');
-            sidebarBackdrop.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeMobileSidebar() {
-            sidebar.classList.remove('mobile-open');
-            sidebarBackdrop.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-
-        if (mobileMenuBtn) {
-            mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        }
-        if (sidebarBackdrop) {
-            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-        }
-
-        // =============================================
-        // 3. PROFILE DROPDOWN
-        // =============================================
-        const profileToggle = document.getElementById('profileToggle');
-        const profileMenu = document.getElementById('profileMenu');
-
-        if (profileToggle && profileMenu) {
-            profileToggle.addEventListener('click', function(e) {
-                e.stopPropagation();
-                this.classList.toggle('open');
-                profileMenu.classList.toggle('open');
-            });
-
-            document.addEventListener('click', function(e) {
-                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                    profileToggle.classList.remove('open');
-                    profileMenu.classList.remove('open');
-                }
-            });
-        }
-
-        // =============================================
-        // 4. AGENCY SELECTION STYLING
-        // =============================================
-        document.querySelectorAll('.agency-option input[type="radio"]').forEach(radio => {
-            radio.addEventListener('change', function() {
-                document.querySelectorAll('.agency-option').forEach(opt => {
-                    opt.classList.remove('selected');
-                });
-                if (this.checked) {
-                    this.closest('.agency-option').classList.add('selected');
-                }
-            });
-            if (radio.checked) {
-                radio.closest('.agency-option').classList.add('selected');
+        document.addEventListener('click', function(e) {
+            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
             }
         });
+    }
 
-        // =============================================
-        // 5. MODAL
-        // =============================================
-        function openModal() {
-            const modal = document.getElementById('postJobModal');
-            if (modal) modal.classList.add('active');
-            document.body.style.overflow = 'hidden';
-            const form = document.getElementById('postJobForm');
-            if (form) form.reset();
-            resetChecklists();
-            const firstRadio = document.querySelector('.agency-option input[type="radio"]');
-            if (firstRadio) {
-                firstRadio.checked = true;
-                document.querySelectorAll('.agency-option').forEach(opt => opt.classList.remove('selected'));
-                firstRadio.closest('.agency-option').classList.add('selected');
-            }
-        }
-
-        function closeModal() {
-            const modal = document.getElementById('postJobModal');
-            if (modal) modal.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-
-        function resetChecklists() {
-            document.querySelectorAll('.checklist-item input[type="checkbox"]').forEach(cb => {
-                cb.checked = false;
-                cb.closest('.checklist-item').classList.remove('checked');
+    // =============================================
+    // 4. AGENCY SELECTION
+    // =============================================
+    document.querySelectorAll('.agency-option input[type="radio"]').forEach(radio => {
+        radio.addEventListener('change', function() {
+            document.querySelectorAll('.agency-option').forEach(opt => {
+                opt.classList.remove('selected');
             });
-            ['skills', 'qualifications', 'experience'].forEach(type => {
-                const display = document.getElementById(type + 'Display');
-                if (display) {
-                    display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
-                }
-                const hidden = document.getElementById('custom' + type.charAt(0).toUpperCase() + type.slice(1));
-                if (hidden) hidden.value = '';
-                const count = document.getElementById(type + 'Count');
-                if (count) count.textContent = '0 selected';
-            });
-        }
-
-        const modalOverlay = document.getElementById('postJobModal');
-        if (modalOverlay) {
-            modalOverlay.addEventListener('click', function(e) {
-                if (e.target === this) closeModal();
-            });
-        }
-
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeModal();
-                closeMobileSidebar();
-                if (profileToggle) profileToggle.classList.remove('open');
-                if (profileMenu) profileMenu.classList.remove('open');
+            if (this.checked) {
+                this.closest('.agency-option').classList.add('selected');
             }
         });
-
-        // =============================================
-        // 6. CUSTOM CHECKLIST FUNCTIONS
-        // =============================================
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        if (radio.checked) {
+            radio.closest('.agency-option').classList.add('selected');
         }
+    });
 
-        function updateDisplay(type, displayId, countId) {
-            const checkboxes = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]`);
-            const display = document.getElementById(displayId);
-            const count = document.getElementById(countId);
-            const customHidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
-            
-            if (!display || !count) return;
+    // =============================================
+    // 5. MODAL
+    // =============================================
+    function openModal() {
+        const modal = document.getElementById('postJobModal');
+        if (modal) modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+        const form = document.getElementById('postJobForm');
+        if (form) form.reset();
+        resetChecklists();
+        
+        const firstRadio = document.querySelector('.agency-option input[type="radio"]');
+        if (firstRadio) {
+            firstRadio.checked = true;
+            document.querySelectorAll('.agency-option').forEach(opt => opt.classList.remove('selected'));
+            firstRadio.closest('.agency-option').classList.add('selected');
+        }
+    }
 
-            const selected = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]:checked`);
-            const selectedNames = Array.from(selected).map(cb => cb.value);
-            
-            const customItems = [];
-            display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
-                const text = tag.textContent.replace('×', '').trim();
-                if (text) customItems.push(text);
-            });
-            
-            const allItems = [...selectedNames, ...customItems];
-            
-            document.querySelectorAll(`#${type}Checklist .checklist-item`).forEach(label => {
-                const cb = label.querySelector('input[type="checkbox"]');
-                if (cb && cb.checked) {
-                    label.classList.add('checked');
-                } else {
-                    label.classList.remove('checked');
-                }
-            });
+    function openModalWithData(jobId) {
+        // Fetch job data and populate form for resubmission
+        // For now, just open the modal
+        openModal();
+    }
 
-            if (allItems.length === 0) {
+    function closeModal() {
+        const modal = document.getElementById('postJobModal');
+        if (modal) modal.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    function resetChecklists() {
+        document.querySelectorAll('.checklist-item input[type="checkbox"]').forEach(cb => {
+            cb.checked = false;
+            cb.closest('.checklist-item').classList.remove('checked');
+        });
+        ['skills', 'qualifications', 'experience'].forEach(type => {
+            const display = document.getElementById(type + 'Display');
+            if (display) {
                 display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
-            } else {
-                display.innerHTML = allItems.map(name => `
-                    <span class="item-tag ${customItems.includes(name) ? 'custom-item' : ''}">
-                        ${escapeHtml(name)}
-                        <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(name)}">×</button>
-                    </span>
-                `).join('');
+            }
+            const hidden = document.getElementById('custom' + type.charAt(0).toUpperCase() + type.slice(1));
+            if (hidden) hidden.value = '';
+            const count = document.getElementById(type + 'Count');
+            if (count) count.textContent = '0 selected';
+        });
+    }
+
+    const modalOverlay = document.getElementById('postJobModal');
+    if (modalOverlay) {
+        modalOverlay.addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+    }
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeModal();
+            closeMobileSidebar();
+            dismissAIModal();
+            if (profileToggle) profileToggle.classList.remove('open');
+            if (profileMenu) profileMenu.classList.remove('open');
+        }
+    });
+
+    // =============================================
+    // 6. AI OPTIMISTIC MODAL
+    // =============================================
+    let aiGeneratedData = null;
+    let isGenerating = false;
+
+    function openAIModal() {
+        const jobTitle = document.getElementById('jobTitle').value.trim();
+        const experienceLevel = document.getElementById('experienceLevel').value;
+        
+        if (!jobTitle) {
+            showToast('Please enter a job title first.', 'error');
+            document.getElementById('jobTitle').focus();
+            return;
+        }
+
+        const modal = document.getElementById('aiOptimisticModal');
+        const loading = document.getElementById('aiDotsLoading');
+        const content = document.getElementById('aiGeneratedContent');
+        const error = document.getElementById('aiError');
+        
+        modal.style.display = 'flex';
+        loading.style.display = 'flex';
+        content.style.display = 'none';
+        error.style.display = 'none';
+        
+        const loadingText = loading.querySelector('.loading-text');
+        const messages = [
+            'Analyzing job requirements',
+            'Generating optimized description',
+            'Curating skills and qualifications',
+            'Calculating market salary range'
+        ];
+        let msgIndex = 0;
+        loadingText.textContent = messages[0];
+        
+        const interval = setInterval(() => {
+            msgIndex = (msgIndex + 1) % messages.length;
+            loadingText.textContent = messages[msgIndex];
+        }, 1800);
+
+        const generateBtn = document.getElementById('aiGenerateBtn');
+        generateBtn.disabled = true;
+        generateBtn.innerHTML = '⏳ Generating...';
+        isGenerating = true;
+
+        const formData = new FormData();
+        formData.append('action', 'generate_ai_job');
+        formData.append('job_title', jobTitle);
+        formData.append('experience', experienceLevel);
+
+        fetch('jobs.php', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            clearInterval(interval);
+            isGenerating = false;
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+
+            if (data.success) {
+                aiGeneratedData = data;
                 
-                display.querySelectorAll('.remove-item').forEach(btn => {
-                    btn.addEventListener('click', function(e) {
+                document.getElementById('aiProvider').textContent = data.provider || 'Groq';
+                document.getElementById('aiGenDescription').textContent = data.description || 'No description generated.';
+                
+                const skillsContainer = document.getElementById('aiGenSkills');
+                skillsContainer.innerHTML = '';
+                if (data.skills && data.skills.length > 0) {
+                    data.skills.forEach(skill => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.style.cssText = 'display:inline-block; padding:0.25rem 0.75rem; background:var(--primary); color:white; border-radius:var(--radius-full); font-size:0.8rem; font-weight:500; margin:0.15rem;';
+                        tag.textContent = skill;
+                        skillsContainer.appendChild(tag);
+                    });
+                } else {
+                    skillsContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No skills suggested</span>';
+                }
+                
+                const qualContainer = document.getElementById('aiGenQualifications');
+                qualContainer.innerHTML = '';
+                if (data.qualifications && data.qualifications.length > 0) {
+                    data.qualifications.forEach(qual => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.style.cssText = 'display:inline-block; padding:0.25rem 0.75rem; background:var(--primary); color:white; border-radius:var(--radius-full); font-size:0.8rem; font-weight:500; margin:0.15rem;';
+                        tag.textContent = qual;
+                        qualContainer.appendChild(tag);
+                    });
+                } else {
+                    qualContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No qualifications suggested</span>';
+                }
+                
+                const expContainer = document.getElementById('aiGenExperience');
+                expContainer.innerHTML = '';
+                if (data.experience && data.experience.length > 0) {
+                    data.experience.forEach(exp => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.style.cssText = 'display:inline-block; padding:0.25rem 0.75rem; background:var(--primary); color:white; border-radius:var(--radius-full); font-size:0.8rem; font-weight:500; margin:0.15rem;';
+                        tag.textContent = exp;
+                        expContainer.appendChild(tag);
+                    });
+                } else {
+                    expContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No experience suggested</span>';
+                }
+                
+                let salaryDisplay = '₱50,000 - ₱80,000';
+                if (data.salary_min > 0 && data.salary_max > 0) {
+                    salaryDisplay = '₱' + Number(data.salary_min).toLocaleString() + ' - ₱' + Number(data.salary_max).toLocaleString();
+                } else if (data.salary_range) {
+                    salaryDisplay = data.salary_range;
+                }
+                document.getElementById('aiGenSalary').textContent = salaryDisplay;
+                
+                loading.style.display = 'none';
+                content.style.display = 'block';
+                showToast('✨ AI job data generated successfully!', 'success');
+            } else {
+                loading.style.display = 'none';
+                document.getElementById('aiErrorMessage').textContent = data.error || 'Failed to generate job data.';
+                error.style.display = 'block';
+            }
+        })
+        .catch(error => {
+            clearInterval(interval);
+            isGenerating = false;
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+            
+            loading.style.display = 'none';
+            document.getElementById('aiErrorMessage').textContent = 'Network error. Please check your connection and try again.';
+            error.style.display = 'block';
+            showToast('Error generating AI data. Please try again.', 'error');
+        });
+    }
+
+    function dismissAIModal() {
+        const modal = document.getElementById('aiOptimisticModal');
+        modal.style.display = 'none';
+        document.getElementById('aiDotsLoading').style.display = 'flex';
+        document.getElementById('aiGeneratedContent').style.display = 'none';
+        document.getElementById('aiError').style.display = 'none';
+        if (isGenerating) {
+            isGenerating = false;
+            const generateBtn = document.getElementById('aiGenerateBtn');
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+        }
+    }
+
+    function regenerateAI() {
+        document.getElementById('aiDotsLoading').style.display = 'flex';
+        document.getElementById('aiGeneratedContent').style.display = 'none';
+        document.getElementById('aiError').style.display = 'none';
+        openAIModal();
+    }
+
+    function applyAIGeneratedData() {
+        if (!aiGeneratedData) {
+            showToast('No AI data to apply. Generate first.', 'error');
+            return;
+        }
+        
+        if (aiGeneratedData.description) {
+            document.getElementById('jobDescription').value = aiGeneratedData.description;
+        }
+        
+        if (aiGeneratedData.skills && aiGeneratedData.skills.length > 0) {
+            const checkboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
+            const skillsLower = aiGeneratedData.skills.map(s => s.toLowerCase().trim());
+            
+            checkboxes.forEach(cb => {
+                const cbLower = cb.value.toLowerCase().trim();
+                if (skillsLower.some(s => cbLower.includes(s) || s.includes(cbLower))) {
+                    cb.checked = true;
+                    cb.closest('.checklist-item').classList.add('checked');
+                }
+            });
+            const allChecked = Array.from(document.querySelectorAll('#skillsChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+            const missingSkills = aiGeneratedData.skills.filter(s => 
+                !allChecked.some(checked => s.toLowerCase().trim().includes(checked) || checked.includes(s.toLowerCase().trim()))
+            );
+            if (missingSkills.length > 0) {
+                const display = document.getElementById('skillsDisplay');
+                const emptyMsg = display.querySelector('span');
+                if (emptyMsg && display.children.length === 1) {
+                    display.innerHTML = '';
+                }
+                missingSkills.forEach(skill => {
+                    const tag = document.createElement('span');
+                    tag.className = 'item-tag custom-item';
+                    tag.innerHTML = `${skill} <button type="button" class="remove-item" data-type="skills" data-value="${skill}">×</button>`;
+                    display.appendChild(tag);
+                    tag.querySelector('.remove-item').addEventListener('click', function(e) {
                         e.stopPropagation();
-                        const type = this.dataset.type;
-                        const value = this.dataset.value;
-                        const isCustom = this.closest('.item-tag').classList.contains('custom-item');
-                        
-                        if (isCustom) {
-                            this.closest('.item-tag').remove();
-                            updateCustomHidden(type);
-                            updateDisplay(type, `${type}Display`, `${type}Count`);
-                        } else {
-                            const checkbox = document.querySelector(`#${type}Checklist input[type="checkbox"][value="${value}"]`);
-                            if (checkbox) {
-                                checkbox.checked = false;
-                                updateDisplay(type, `${type}Display`, `${type}Count`);
-                            }
-                        }
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden('skills');
+                        updateDisplay('skills', 'skillsDisplay', 'skillsCount');
                     });
                 });
-                
-                updateCustomHidden(type);
+                updateCustomHidden('skills');
             }
-
-            count.textContent = `${allItems.length} selected`;
+            updateDisplay('skills', 'skillsDisplay', 'skillsCount');
         }
-
-        function updateCustomHidden(type) {
-            const display = document.getElementById(`${type}Display`);
-            const hidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+        
+        if (aiGeneratedData.qualifications && aiGeneratedData.qualifications.length > 0) {
+            const checkboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
+            const qualLower = aiGeneratedData.qualifications.map(q => q.toLowerCase().trim());
             
-            if (!display || !hidden) return;
-            
-            const customItems = [];
-            display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
-                const text = tag.textContent.replace('×', '').trim();
-                if (text) customItems.push(text);
-            });
-            
-            hidden.value = customItems.join(', ');
-        }
-
-        function addCustomItem(type, inputId) {
-            const input = document.getElementById(inputId);
-            if (!input) return;
-            
-            const value = input.value.trim();
-            if (!value) {
-                alert('Please enter a value first.');
-                return;
-            }
-            
-            const display = document.getElementById(`${type}Display`);
-            if (display) {
-                const existing = display.querySelectorAll('.item-tag');
-                for (let tag of existing) {
-                    if (tag.textContent.replace('×', '').trim().toLowerCase() === value.toLowerCase()) {
-                        alert('This item already exists.');
-                        return;
-                    }
+            checkboxes.forEach(cb => {
+                const cbLower = cb.value.toLowerCase().trim();
+                if (qualLower.some(q => cbLower.includes(q) || q.includes(cbLower))) {
+                    cb.checked = true;
+                    cb.closest('.checklist-item').classList.add('checked');
                 }
+            });
+            const allChecked = Array.from(document.querySelectorAll('#qualificationsChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+            const missingQuals = aiGeneratedData.qualifications.filter(q => 
+                !allChecked.some(checked => q.toLowerCase().trim().includes(checked) || checked.includes(q.toLowerCase().trim()))
+            );
+            if (missingQuals.length > 0) {
+                const display = document.getElementById('qualificationsDisplay');
+                const emptyMsg = display.querySelector('span');
+                if (emptyMsg && display.children.length === 1) {
+                    display.innerHTML = '';
+                }
+                missingQuals.forEach(qual => {
+                    const tag = document.createElement('span');
+                    tag.className = 'item-tag custom-item';
+                    tag.innerHTML = `${qual} <button type="button" class="remove-item" data-type="qualifications" data-value="${qual}">×</button>`;
+                    display.appendChild(tag);
+                    tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden('qualifications');
+                        updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+                    });
+                });
+                updateCustomHidden('qualifications');
             }
+            updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+        }
+        
+        if (aiGeneratedData.experience && aiGeneratedData.experience.length > 0) {
+            const checkboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
+            const expLower = aiGeneratedData.experience.map(e => e.toLowerCase().trim());
             
-            const tag = document.createElement('span');
-            tag.className = 'item-tag custom-item';
-            tag.innerHTML = `${escapeHtml(value)} <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(value)}">×</button>`;
-            
-            const emptyMsg = display.querySelector('span');
-            if (emptyMsg && display.children.length === 1) {
-                display.innerHTML = '';
+            checkboxes.forEach(cb => {
+                const cbLower = cb.value.toLowerCase().trim();
+                if (expLower.some(e => cbLower.includes(e) || e.includes(cbLower))) {
+                    cb.checked = true;
+                    cb.closest('.checklist-item').classList.add('checked');
+                }
+            });
+            const allChecked = Array.from(document.querySelectorAll('#experienceChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+            const missingExp = aiGeneratedData.experience.filter(e => 
+                !allChecked.some(checked => e.toLowerCase().trim().includes(checked) || checked.includes(e.toLowerCase().trim()))
+            );
+            if (missingExp.length > 0) {
+                const display = document.getElementById('experienceDisplay');
+                const emptyMsg = display.querySelector('span');
+                if (emptyMsg && display.children.length === 1) {
+                    display.innerHTML = '';
+                }
+                missingExp.forEach(exp => {
+                    const tag = document.createElement('span');
+                    tag.className = 'item-tag custom-item';
+                    tag.innerHTML = `${exp} <button type="button" class="remove-item" data-type="experience" data-value="${exp}">×</button>`;
+                    display.appendChild(tag);
+                    tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden('experience');
+                        updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+                    });
+                });
+                updateCustomHidden('experience');
             }
+            updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+        }
+        
+        if (aiGeneratedData.salary_min !== undefined && aiGeneratedData.salary_min > 0) {
+            document.getElementById('salaryMin').value = aiGeneratedData.salary_min;
+        }
+        if (aiGeneratedData.salary_max !== undefined && aiGeneratedData.salary_max > 0) {
+            document.getElementById('salaryMax').value = aiGeneratedData.salary_max;
+        }
+        
+        dismissAIModal();
+        showToast('🎉 All AI suggestions applied to your job request!', 'success');
+    }
+
+    function applyAIDescriptionOnly() {
+        if (!aiGeneratedData || !aiGeneratedData.description) {
+            showToast('No description to apply.', 'error');
+            return;
+        }
+        document.getElementById('jobDescription').value = aiGeneratedData.description;
+        dismissAIModal();
+        showToast('✅ Description applied successfully!', 'success');
+    }
+
+    // =============================================
+    // 7. CUSTOM CHECKLIST FUNCTIONS
+    // =============================================
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function updateDisplay(type, displayId, countId) {
+        const checkboxes = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]`);
+        const display = document.getElementById(displayId);
+        const count = document.getElementById(countId);
+        const customHidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+        
+        if (!display || !count) return;
+
+        const selected = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]:checked`);
+        const selectedNames = Array.from(selected).map(cb => cb.value);
+        
+        const customItems = [];
+        display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
+            const text = tag.textContent.replace('×', '').trim();
+            if (text) customItems.push(text);
+        });
+        
+        const allItems = [...selectedNames, ...customItems];
+        
+        document.querySelectorAll(`#${type}Checklist .checklist-item`).forEach(label => {
+            const cb = label.querySelector('input[type="checkbox"]');
+            if (cb && cb.checked) {
+                label.classList.add('checked');
+            } else {
+                label.classList.remove('checked');
+            }
+        });
+
+        if (allItems.length === 0) {
+            display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
+        } else {
+            display.innerHTML = allItems.map(name => `
+                <span class="item-tag ${customItems.includes(name) ? 'custom-item' : ''}">
+                    ${escapeHtml(name)}
+                    <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(name)}">×</button>
+                </span>
+            `).join('');
             
-            display.appendChild(tag);
-            
-            tag.querySelector('.remove-item').addEventListener('click', function(e) {
-                e.stopPropagation();
-                this.closest('.item-tag').remove();
-                updateCustomHidden(type);
-                updateDisplay(type, `${type}Display`, `${type}Count`);
+            display.querySelectorAll('.remove-item').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const type = this.dataset.type;
+                    const value = this.dataset.value;
+                    const isCustom = this.closest('.item-tag').classList.contains('custom-item');
+                    
+                    if (isCustom) {
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden(type);
+                        updateDisplay(type, `${type}Display`, `${type}Count`);
+                    } else {
+                        const checkbox = document.querySelector(`#${type}Checklist input[type="checkbox"][value="${value}"]`);
+                        if (checkbox) {
+                            checkbox.checked = false;
+                            updateDisplay(type, `${type}Display`, `${type}Count`);
+                        }
+                    }
+                });
             });
             
             updateCustomHidden(type);
-            updateDisplay(type, `${type}Display`, `${type}Count`);
-            input.value = '';
-            input.focus();
         }
 
-        document.addEventListener('DOMContentLoaded', function() {
-            const skillsCheckboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
-            skillsCheckboxes.forEach(cb => {
-                cb.addEventListener('change', function() {
-                    updateDisplay('skills', 'skillsDisplay', 'skillsCount');
-                });
-                const label = cb.closest('.checklist-item');
-                if (label) {
-                    label.addEventListener('click', function(e) {
-                        if (e.target.tagName !== 'INPUT') {
-                            const c = this.querySelector('input[type="checkbox"]');
-                            if (c) {
-                                c.checked = !c.checked;
-                                updateDisplay('skills', 'skillsDisplay', 'skillsCount');
-                            }
-                        }
-                    });
-                }
-            });
-            
-            const qualCheckboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
-            qualCheckboxes.forEach(cb => {
-                cb.addEventListener('change', function() {
-                    updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
-                });
-                const label = cb.closest('.checklist-item');
-                if (label) {
-                    label.addEventListener('click', function(e) {
-                        if (e.target.tagName !== 'INPUT') {
-                            const c = this.querySelector('input[type="checkbox"]');
-                            if (c) {
-                                c.checked = !c.checked;
-                                updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
-                            }
-                        }
-                    });
-                }
-            });
-            
-            const expCheckboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
-            expCheckboxes.forEach(cb => {
-                cb.addEventListener('change', function() {
-                    updateDisplay('experience', 'experienceDisplay', 'experienceCount');
-                });
-                const label = cb.closest('.checklist-item');
-                if (label) {
-                    label.addEventListener('click', function(e) {
-                        if (e.target.tagName !== 'INPUT') {
-                            const c = this.querySelector('input[type="checkbox"]');
-                            if (c) {
-                                c.checked = !c.checked;
-                                updateDisplay('experience', 'experienceDisplay', 'experienceCount');
-                            }
-                        }
-                    });
-                }
-            });
+        count.textContent = `${allItems.length} selected`;
+    }
 
-            document.getElementById('customSkillInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addCustomItem('skills', 'customSkillInput');
-                }
-            });
-            document.getElementById('customQualificationInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addCustomItem('qualifications', 'customQualificationInput');
-                }
-            });
-            document.getElementById('customExperienceInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addCustomItem('experience', 'customExperienceInput');
-                }
-            });
-
-            updateDisplay('skills', 'skillsDisplay', 'skillsCount');
-            updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
-            updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+    function updateCustomHidden(type) {
+        const display = document.getElementById(`${type}Display`);
+        const hidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+        
+        if (!display || !hidden) return;
+        
+        const customItems = [];
+        display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
+            const text = tag.textContent.replace('×', '').trim();
+            if (text) customItems.push(text);
         });
+        
+        hidden.value = customItems.join(', ');
+    }
 
-        // =============================================
-        // 7. FORM VALIDATION
-        // =============================================
-        document.getElementById('postJobForm').addEventListener('submit', function(e) {
-            const title = this.querySelector('input[name="title"]');
-            const description = this.querySelector('textarea[name="description"]');
-            const location = this.querySelector('input[name="location"]');
-            const jobType = this.querySelector('select[name="job_type"]');
-            const experienceLevel = this.querySelector('select[name="experience_level"]');
-            const agencySelected = this.querySelector('input[name="agency_id"]:checked');
-            
-            const allSkills = document.querySelectorAll('#skillsDisplay .item-tag');
-            const allQualifications = document.querySelectorAll('#qualificationsDisplay .item-tag');
-            const allExperience = document.querySelectorAll('#experienceDisplay .item-tag');
-            
-            let errors = [];
-
-            [title, description, location, jobType, experienceLevel].forEach(el => {
-                if (el) el.style.borderColor = '';
-            });
-
-            if (!agencySelected) {
-                errors.push('Please select a recruitment agency.');
+    function addCustomItem(type, inputId) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        
+        const value = input.value.trim();
+        if (!value) {
+            alert('Please enter a value first.');
+            return;
+        }
+        
+        const display = document.getElementById(`${type}Display`);
+        if (display) {
+            const existing = display.querySelectorAll('.item-tag');
+            for (let tag of existing) {
+                if (tag.textContent.replace('×', '').trim().toLowerCase() === value.toLowerCase()) {
+                    alert('This item already exists.');
+                    return;
+                }
             }
-
-            if (!title || !title.value.trim()) {
-                errors.push('Please enter a job title.');
-                if (title) title.style.borderColor = '#dc2626';
-            }
-
-            if (!description || !description.value.trim()) {
-                errors.push('Please enter a job description.');
-                if (description) description.style.borderColor = '#dc2626';
-            }
-
-            if (!location || !location.value.trim()) {
-                errors.push('Please enter a location.');
-                if (location) location.style.borderColor = '#dc2626';
-            }
-
-            if (!jobType || !jobType.value) {
-                errors.push('Please select a job type.');
-                if (jobType) jobType.style.borderColor = '#dc2626';
-            }
-
-            if (!experienceLevel || !experienceLevel.value) {
-                errors.push('Please select an experience level.');
-                if (experienceLevel) experienceLevel.style.borderColor = '#dc2626';
-            }
-
-            if (allSkills.length === 0) {
-                errors.push('Please add at least one skill.');
-            }
-
-            if (allQualifications.length === 0) {
-                errors.push('Please add at least one qualification.');
-            }
-
-            if (allExperience.length === 0) {
-                errors.push('Please add at least one experience requirement.');
-            }
-
-            const salaryMin = parseFloat(this.querySelector('input[name="salary_min"]').value);
-            const salaryMax = parseFloat(this.querySelector('input[name="salary_max"]').value);
-
-            if (salaryMin > 0 && salaryMax > 0 && salaryMin > salaryMax) {
-                errors.push('Minimum salary cannot be greater than maximum salary.');
-            }
-
-            if (errors.length > 0) {
-                e.preventDefault();
-                alert('Please fix the following errors:\n\n• ' + errors.join('\n• '));
-                
-                const firstError = [title, description, location, jobType, experienceLevel].find(el => 
-                    el && el.style.borderColor === '#dc2626'
-                );
-                if (firstError) firstError.focus();
-            }
+        }
+        
+        const tag = document.createElement('span');
+        tag.className = 'item-tag custom-item';
+        tag.innerHTML = `${escapeHtml(value)} <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(value)}">×</button>`;
+        
+        const emptyMsg = display.querySelector('span');
+        if (emptyMsg && display.children.length === 1) {
+            display.innerHTML = '';
+        }
+        
+        display.appendChild(tag);
+        
+        tag.querySelector('.remove-item').addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.closest('.item-tag').remove();
+            updateCustomHidden(type);
+            updateDisplay(type, `${type}Display`, `${type}Count`);
         });
+        
+        updateCustomHidden(type);
+        updateDisplay(type, `${type}Display`, `${type}Count`);
+        input.value = '';
+        input.focus();
+    }
 
-        // =============================================
-        // 8. RESPONSIVE HANDLING
-        // =============================================
-        let resizeTimer;
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                const width = window.innerWidth;
-                if (width <= 768) {
-                    sidebar.classList.remove('collapsed');
-                } else {
-                    sidebar.classList.remove('mobile-open');
-                    if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
-                    document.body.style.overflow = '';
-                    const saved = localStorage.getItem('sidebarCollapsed');
-                    if (saved === 'true') {
-                        sidebar.classList.add('collapsed');
-                    } else {
-                        sidebar.classList.remove('collapsed');
+    document.addEventListener('DOMContentLoaded', function() {
+        const skillsCheckboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
+        skillsCheckboxes.forEach(cb => {
+            cb.addEventListener('change', function() {
+                updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+            });
+            const label = cb.closest('.checklist-item');
+            if (label) {
+                label.addEventListener('click', function(e) {
+                    if (e.target.tagName !== 'INPUT') {
+                        const c = this.querySelector('input[type="checkbox"]');
+                        if (c) {
+                            c.checked = !c.checked;
+                            updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+                        }
                     }
-                }
-            }, 250);
+                });
+            }
+        });
+        
+        const qualCheckboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
+        qualCheckboxes.forEach(cb => {
+            cb.addEventListener('change', function() {
+                updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+            });
+            const label = cb.closest('.checklist-item');
+            if (label) {
+                label.addEventListener('click', function(e) {
+                    if (e.target.tagName !== 'INPUT') {
+                        const c = this.querySelector('input[type="checkbox"]');
+                        if (c) {
+                            c.checked = !c.checked;
+                            updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+                        }
+                    }
+                });
+            }
+        });
+        
+        const expCheckboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
+        expCheckboxes.forEach(cb => {
+            cb.addEventListener('change', function() {
+                updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+            });
+            const label = cb.closest('.checklist-item');
+            if (label) {
+                label.addEventListener('click', function(e) {
+                    if (e.target.tagName !== 'INPUT') {
+                        const c = this.querySelector('input[type="checkbox"]');
+                        if (c) {
+                            c.checked = !c.checked;
+                            updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+                        }
+                    }
+                });
+            }
         });
 
-        console.log('📋 ISMERS Job Management loaded successfully!');
-    </script>
+        document.getElementById('customSkillInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addCustomItem('skills', 'customSkillInput');
+            }
+        });
+        document.getElementById('customQualificationInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addCustomItem('qualifications', 'customQualificationInput');
+            }
+        });
+        document.getElementById('customExperienceInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addCustomItem('experience', 'customExperienceInput');
+            }
+        });
 
+        updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+        updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+        updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+    });
+
+    // =============================================
+    // 8. FORM VALIDATION
+    // =============================================
+    document.getElementById('postJobForm').addEventListener('submit', function(e) {
+        const title = this.querySelector('input[name="title"]');
+        const description = this.querySelector('textarea[name="description"]');
+        const location = this.querySelector('input[name="location"]');
+        const jobType = this.querySelector('select[name="job_type"]');
+        const experienceLevel = this.querySelector('select[name="experience_level"]');
+        const agencySelected = this.querySelector('input[name="agency_id"]:checked');
+        
+        const allSkills = document.querySelectorAll('#skillsDisplay .item-tag');
+        const allQualifications = document.querySelectorAll('#qualificationsDisplay .item-tag');
+        const allExperience = document.querySelectorAll('#experienceDisplay .item-tag');
+        
+        let errors = [];
+
+        [title, description, location, jobType, experienceLevel].forEach(el => {
+            if (el) el.style.borderColor = '';
+        });
+
+        if (!agencySelected) {
+            errors.push('Please select a recruitment agency.');
+        }
+
+        if (!title || !title.value.trim()) {
+            errors.push('Please enter a job title.');
+            if (title) title.style.borderColor = '#dc2626';
+        }
+
+        if (!description || !description.value.trim()) {
+            errors.push('Please enter a job description.');
+            if (description) description.style.borderColor = '#dc2626';
+        }
+
+        if (!location || !location.value.trim()) {
+            errors.push('Please enter a location.');
+            if (location) location.style.borderColor = '#dc2626';
+        }
+
+        if (!jobType || !jobType.value) {
+            errors.push('Please select a job type.');
+            if (jobType) jobType.style.borderColor = '#dc2626';
+        }
+
+        if (!experienceLevel || !experienceLevel.value) {
+            errors.push('Please select an experience level.');
+            if (experienceLevel) experienceLevel.style.borderColor = '#dc2626';
+        }
+
+        if (allSkills.length === 0) {
+            errors.push('Please add at least one skill.');
+        }
+
+        if (allQualifications.length === 0) {
+            errors.push('Please add at least one qualification.');
+        }
+
+        if (allExperience.length === 0) {
+            errors.push('Please add at least one experience requirement.');
+        }
+
+        const salaryMin = parseFloat(this.querySelector('input[name="salary_min"]').value);
+        const salaryMax = parseFloat(this.querySelector('input[name="salary_max"]').value);
+
+        if (salaryMin > 0 && salaryMax > 0 && salaryMin > salaryMax) {
+            errors.push('Minimum salary cannot be greater than maximum salary.');
+        }
+
+        if (errors.length > 0) {
+            e.preventDefault();
+            alert('Please fix the following errors:\n\n• ' + errors.join('\n• '));
+            
+            const firstError = [title, description, location, jobType, experienceLevel].find(el => 
+                el && el.style.borderColor === '#dc2626'
+            );
+            if (firstError) firstError.focus();
+        }
+    });
+
+    // =============================================
+    // 9. CANCEL JOB REQUEST
+    // =============================================
+    function cancelJobRequest(jobId) {
+        if (!confirm('Are you sure you want to cancel this job request? This action cannot be undone.')) return;
+        
+        const formData = new FormData();
+        formData.append('action', 'cancel_request');
+        formData.append('job_id', jobId);
+        
+        fetch('jobs.php', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.text())
+        .then(data => {
+            // Reload the page to reflect changes
+            window.location.reload();
+        })
+        .catch(error => {
+            showToast('Error cancelling job request.', 'error');
+        });
+    }
+
+    // =============================================
+    // 10. TOAST SYSTEM
+    // =============================================
+    function showToast(message, type) {
+        type = type || 'info';
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) existingToast.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            toast.style.transition = 'all 0.4s ease';
+            setTimeout(() => toast.remove(), 400);
+        }, 3500);
+    }
+
+    // =============================================
+    // 11. RESPONSIVE HANDLING
+    // =============================================
+    let resizeTimer;
+    window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function() {
+            const width = window.innerWidth;
+            if (width <= 768) {
+                sidebar.classList.remove('collapsed');
+            } else {
+                sidebar.classList.remove('mobile-open');
+                if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+                document.body.style.overflow = '';
+                const saved = localStorage.getItem('sidebarCollapsed');
+                if (saved === 'true') {
+                    sidebar.classList.add('collapsed');
+                } else {
+                    sidebar.classList.remove('collapsed');
+                }
+            }
+        }, 250);
+    });
+
+    console.log('📋 ISMERS Client Job Management with HR Approval Flow loaded successfully!');
+    console.log('🤖 AI Features: Optimistic Modal, Dots Loading, Full Job Data Generation');
+    console.log('📤 Job requests are sent to HR for review (status: pending_review)');
+</script>
 </body>
 </html>

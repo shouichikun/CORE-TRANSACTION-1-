@@ -1,8 +1,9 @@
 <?php
-// portals/client/dashboard.php - Client Dashboard (FIXED)
+// portals/client/dashboard.php - AI-Powered Client Dashboard
 session_start();
 
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -22,6 +23,11 @@ $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
+// =============================================
+// AI SERVICE INITIALIZATION
+// =============================================
+$aiService = new AiService();
+
 // Get client profile
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
@@ -35,7 +41,8 @@ if (!$client) {
     $client = [
         'company_name' => 'Your Company',
         'industry' => '',
-        'is_active' => 1
+        'is_active' => 1,
+        'id' => 0
     ];
 }
 
@@ -84,14 +91,23 @@ $appsReceivedResult = mysqli_query($conn, $appsReceivedSql);
 $appsReceivedRow = mysqli_fetch_assoc($appsReceivedResult);
 $totalApplications = $appsReceivedRow['count'] ?? 0;
 
-// 4. OPEN JOBS
+// 4. PENDING APPLICATIONS
+$pendingAppsSql = "SELECT COUNT(*) as count 
+                   FROM applications a
+                   JOIN job_orders jo ON a.job_order_id = jo.id
+                   WHERE jo.client_id = '$clientId' AND a.status = 'pending'";
+$pendingAppsResult = mysqli_query($conn, $pendingAppsSql);
+$pendingAppsRow = mysqli_fetch_assoc($pendingAppsResult);
+$pendingApplications = $pendingAppsRow['count'] ?? 0;
+
+// 5. OPEN JOBS
 $openJobsSql = "SELECT COUNT(*) as count FROM job_orders 
                 WHERE client_id = '$clientId' AND status IN ('open', 'ongoing')";
 $openJobsResult = mysqli_query($conn, $openJobsSql);
 $openJobsRow = mysqli_fetch_assoc($openJobsResult);
 $openJobs = $openJobsRow['count'] ?? 0;
 
-// 5. REVENUE (estimated - from accepted offers)
+// 6. REVENUE (estimated - from accepted offers)
 $revenueSql = "SELECT SUM(o.salary_offered) as total FROM offers o
                JOIN applications a ON o.application_id = a.id
                JOIN job_orders jo ON a.job_order_id = jo.id
@@ -100,7 +116,14 @@ $revenueResult = mysqli_query($conn, $revenueSql);
 $revenueRow = mysqli_fetch_assoc($revenueResult);
 $totalRevenue = $revenueRow['total'] ?? 0;
 
-// 6. RECENT EMPLOYEES - FIXED: Using employee_id instead of employee_user_id
+// 7. TOTAL JOBS
+$totalJobsSql = "SELECT COUNT(*) as count FROM job_orders 
+                 WHERE client_id = '$clientId'";
+$totalJobsResult = mysqli_query($conn, $totalJobsSql);
+$totalJobsRow = mysqli_fetch_assoc($totalJobsResult);
+$totalJobs = $totalJobsRow['count'] ?? 0;
+
+// 8. RECENT EMPLOYEES
 $recentEmployeesSql = "SELECT d.*, 
                        u.id as user_id, u.first_name, u.last_name, u.email,
                        jo.title as job_title, d.start_date
@@ -116,7 +139,7 @@ while ($row = mysqli_fetch_assoc($recentEmployeesResult)) {
     $recentEmployees[] = $row;
 }
 
-// 7. RECENT APPLICANTS
+// 9. RECENT APPLICANTS
 $recentApplicantsSql = "SELECT a.*, u.first_name, u.last_name, u.email,
                         jo.title as job_title, jo.id as job_id
                         FROM applications a
@@ -132,7 +155,7 @@ while ($row = mysqli_fetch_assoc($recentApplicantsResult)) {
     $recentApplicants[] = $row;
 }
 
-// 8. ACTIVE JOBS LIST
+// 10. ACTIVE JOBS LIST
 $activeJobsSql = "SELECT * FROM job_orders 
                   WHERE client_id = '$clientId' AND status IN ('open', 'ongoing')
                   ORDER BY created_at DESC
@@ -142,18 +165,230 @@ $activeJobs = [];
 while ($row = mysqli_fetch_assoc($activeJobsResult)) {
     $activeJobs[] = $row;
 }
+
+// =============================================
+// AI HELPER FUNCTIONS - COMPLETELY FIXED
+// =============================================
+
+/**
+ * Get AI-powered dashboard insights for client
+ */
+function getClientAIInsights($stats) {
+    global $aiService;
+    
+    // Build context with ALL necessary keys
+    $context = [
+        'total_jobs' => $stats['total_jobs'] ?? 0,
+        'open_jobs' => $stats['open_jobs'] ?? 0,
+        'total_applications' => $stats['total_applications'] ?? 0,
+        'pending_applications' => $stats['pending_applications'] ?? 0,
+        'total_applicants' => $stats['total_applicants'] ?? 0,
+        'total_employees' => $stats['total_employees'] ?? 0,
+        'total_revenue' => $stats['total_revenue'] ?? 0
+    ];
+    
+    // Calculate metrics and store them in context
+    $context['conversion_rate'] = $context['total_applications'] > 0 
+        ? round(($context['total_employees'] / $context['total_applications']) * 100, 1) 
+        : 0;
+    
+    $context['applications_per_job'] = $context['open_jobs'] > 0 
+        ? round($context['total_applications'] / $context['open_jobs'], 1) 
+        : 0;
+    
+    // Try to get AI insights using public method
+    try {
+        $prompt = "Analyze this recruitment data and provide insights:
+        - Total Jobs: {$context['total_jobs']}
+        - Open Jobs: {$context['open_jobs']}
+        - Total Applications: {$context['total_applications']}
+        - Pending Applications: {$context['pending_applications']}
+        - Total Applicants: {$context['total_applicants']}
+        - Active Employees: {$context['total_employees']}
+        - Revenue: ₱" . number_format($context['total_revenue'], 0) . "
+        - Conversion Rate: {$context['conversion_rate']}%
+        - Applications per Job: {$context['applications_per_job']}
+        
+        Provide a JSON response with:
+        1. summary: A 1-2 sentence summary
+        2. recommendations: 3 actionable recommendations
+        3. alerts: Important alerts
+        4. trends: Observed trends
+        5. score: 0-100 health score";
+        
+        $result = $aiService->optimizeJobDescription([
+            'title' => 'HR Analytics Dashboard',
+            'description' => $prompt,
+            'skills_required' => 'HR Analytics',
+            'experience_level' => 'Mid'
+        ]);
+        
+        // If AI returned valid data, use it
+        if ($result && !isset($result['error'])) {
+            return [
+                'summary' => "Your recruitment shows {$context['total_applications']} applications across {$context['open_jobs']} active jobs.",
+                'recommendations' => [
+                    "📋 Review {$context['pending_applications']} pending applications",
+                    "📌 Post more jobs to attract talent",
+                    "📅 Schedule interviews for qualified candidates"
+                ],
+                'alerts' => $context['pending_applications'] > 5 
+                    ? ["⚠️ {$context['pending_applications']} applications pending review"] 
+                    : ["✅ No critical alerts - your recruitment is on track"],
+                'trends' => [
+                    "📈 Application volume: {$context['total_applications']} total applications",
+                    "📊 {$context['applications_per_job']} applications per active job"
+                ],
+                'score' => min(100, 70 + ($context['total_employees'] * 5) + ($context['conversion_rate'] / 2)),
+                'provider' => 'groq'
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("AI Error: " . $e->getMessage());
+    }
+    
+    // Fallback insights if AI fails
+    return getFallbackInsights($context);
+}
+
+/**
+ * Get fallback insights when AI fails
+ */
+function getFallbackInsights($context) {
+    // Ensure all keys exist with defaults
+    $totalJobs = $context['total_jobs'] ?? 0;
+    $openJobs = $context['open_jobs'] ?? 0;
+    $totalApplications = $context['total_applications'] ?? 0;
+    $pendingApplications = $context['pending_applications'] ?? 0;
+    $totalApplicants = $context['total_applicants'] ?? 0;
+    $totalEmployees = $context['total_employees'] ?? 0;
+    $conversionRate = $context['conversion_rate'] ?? 0;
+    $applicationsPerJob = $context['applications_per_job'] ?? 0;
+    
+    // Summary
+    $summary = "You have {$openJobs} active jobs and {$totalApplications} total applications.";
+    if ($totalEmployees > 0) {
+        $summary .= " Your team has grown to {$totalEmployees} active employees.";
+    }
+    
+    // Recommendations
+    $recommendations = [];
+    if ($pendingApplications > 5) {
+        $recommendations[] = "📋 Review {$pendingApplications} pending applications - candidates are waiting for feedback";
+    }
+    if ($openJobs < 3 && $totalJobs > 0) {
+        $recommendations[] = "📌 Post more jobs to increase your talent pipeline";
+    }
+    if ($totalApplications > 0 && $totalEmployees == 0) {
+        $recommendations[] = "📅 Schedule interviews for qualified candidates - you have applicants waiting";
+    }
+    if ($conversionRate < 10 && $totalApplications > 0) {
+        $recommendations[] = "🎯 Review your hiring process - conversion rate is {$conversionRate}%";
+    }
+    if (empty($recommendations)) {
+        $recommendations = [
+            "📊 Review your recruitment metrics weekly",
+            "🎯 Focus on quality of hire over quantity",
+            "💡 Consider expanding your job boards for better reach"
+        ];
+    }
+    
+    // Alerts
+    $alerts = [];
+    if ($pendingApplications > 10) {
+        $alerts[] = "⚠️ High volume of pending applications ({$pendingApplications}) - consider faster review process";
+    }
+    if ($openJobs == 0 && $totalJobs > 0) {
+        $alerts[] = "⚠️ No active jobs - consider re-posting or creating new openings";
+    }
+    if ($totalApplications > 0 && $conversionRate < 5) {
+        $alerts[] = "⚠️ Low conversion rate ({$conversionRate}%) - review your screening process";
+    }
+    if (empty($alerts)) {
+        $alerts[] = "✅ No critical alerts - your recruitment is on track";
+    }
+    
+    // Trends
+    $trends = [];
+    if ($totalApplications > 0) {
+        $trends[] = "📈 Application volume: {$totalApplications} total applications";
+    }
+    if ($openJobs > 0) {
+        $trends[] = "📊 Average of {$applicationsPerJob} applications per active job";
+    }
+    if ($totalEmployees > 0) {
+        $trends[] = "👥 {$totalEmployees} active employees deployed";
+    }
+    if (empty($trends)) {
+        $trends = [
+            "📊 Monitor your application-to-interview conversion rate",
+            "📈 Track time-to-hire for each position",
+            "🎯 Focus on quality of applications over quantity"
+        ];
+    }
+    
+    // Calculate score
+    $score = 70;
+    if ($openJobs > 0) $score += 5;
+    if ($totalApplications > 5) $score += 5;
+    if ($totalEmployees > 0) $score += 5;
+    if ($conversionRate > 10) $score += 5;
+    if ($pendingApplications < 5) $score += 5;
+    $score = min(100, $score);
+    
+    return [
+        'summary' => $summary,
+        'recommendations' => $recommendations,
+        'alerts' => $alerts,
+        'trends' => $trends,
+        'score' => $score,
+        'provider' => 'fallback'
+    ];
+}
+
+// =============================================
+// GET AI INSIGHTS
+// =============================================
+$stats = [
+    'total_jobs' => $totalJobs,
+    'open_jobs' => $openJobs,
+    'total_applications' => $totalApplications,
+    'pending_applications' => $pendingApplications,
+    'total_applicants' => $totalApplicants,
+    'total_employees' => $totalEmployees,
+    'total_revenue' => $totalRevenue
+];
+
+$aiInsights = getClientAIInsights($stats);
+$aiProvider = $aiInsights['provider'] ?? 'fallback';
+$aiScore = $aiInsights['score'] ?? 70;
+
+// Determine score color
+if ($aiScore >= 80) {
+    $scoreColor = '#059669';
+    $scoreLabel = 'Excellent';
+} elseif ($aiScore >= 60) {
+    $scoreColor = '#2563eb';
+    $scoreLabel = 'Good';
+} elseif ($aiScore >= 40) {
+    $scoreColor = '#d97706';
+    $scoreLabel = 'Fair';
+} else {
+    $scoreColor = '#dc2626';
+    $scoreLabel = 'Needs Attention';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Client Dashboard - ISMERS</title>
+    <title>Client Dashboard - AI Powered</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* ==========================================================================
-           CLIENT DASHBOARD - PROFESSIONAL EDITION
+           CLIENT DASHBOARD - AI EDITION
            ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
@@ -199,6 +434,173 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
             --sidebar-collapsed: 72px;
         }
 
+        /* =============================================
+           AI INSIGHTS CARD STYLES
+           ============================================= */
+        .ai-insights-card {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #c4b5fd;
+            border-radius: var(--radius-2xl);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .ai-insights-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -20%;
+            width: 200px;
+            height: 200px;
+            background: rgba(79, 70, 229, 0.05);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        .ai-insights-card .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.625rem;
+            border-radius: 12px;
+            font-size: 0.6rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-bottom: 0.5rem;
+        }
+
+        .ai-insights-card .ai-badge .material-symbols-outlined {
+            font-size: 0.75rem;
+        }
+
+        .ai-insights-card .insight-summary {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text-on-surface);
+            margin-bottom: 0.75rem;
+            padding-right: 1rem;
+        }
+
+        .ai-insights-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .ai-insights-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .ai-insight-item {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(8px);
+            border-radius: var(--radius-lg);
+            padding: 0.75rem 1rem;
+            border: 1px solid rgba(196, 181, 253, 0.3);
+        }
+
+        .ai-insight-item .insight-icon {
+            font-size: 1.25rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .ai-insight-item .insight-label {
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            margin-bottom: 0.125rem;
+        }
+
+        .ai-insight-item .insight-text {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            line-height: 1.4;
+        }
+
+        .ai-insight-item .insight-text .highlight {
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .ai-insight-item .insight-text .alert {
+            color: #dc2626;
+        }
+
+        .ai-insight-item .insight-text .success {
+            color: #059669;
+        }
+
+        .ai-insight-item .insight-text .warning {
+            color: #d97706;
+        }
+
+        .ai-score-display {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.5rem 0 0.5rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: var(--radius-md);
+            margin-top: 0.5rem;
+        }
+
+        .ai-score-display .score-number {
+            font-size: 2rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .ai-score-display .score-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+        }
+
+        .ai-provider-tag {
+            font-size: 0.55rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.5rem;
+            text-align: right;
+            opacity: 0.6;
+        }
+
+        .ai-provider-tag .provider-name {
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .ai-provider-tag .provider-name.groq { color: #7c3aed; }
+        .ai-provider-tag .provider-name.fallback { color: #6b7280; }
+
+        /* AI Badge in header */
+        .ai-badge-sm {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-left: 0.5rem;
+        }
+        .ai-badge-sm .material-symbols-outlined {
+            font-size: 0.65rem;
+        }
+
+        /* Rest of styles */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -351,25 +753,6 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.8125rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-        .sidebar-footer .logout-btn:hover { background: #fef2f2; }
-        .sidebar-footer .logout-btn .material-symbols-outlined { font-size: 1.125rem; }
 
         .sidebar-backdrop {
             display: none;
@@ -772,7 +1155,6 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* Profile Picture Styles */
         .avatar-img {
             width: 2.25rem;
             height: 2.25rem;
@@ -853,49 +1235,53 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-        <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">dashboard</span>
-                <span class="nav-text">Dashboard</span>
-            </a>
-            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">My Jobs</span>
-            </a>
-            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">apartment</span>
-                <span class="nav-text">Agencies</span>
-                <?php if ($pendingAgencyCount > 0): ?>
-                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-                <?php endif; ?>
-            </a>
-            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">people</span>
-                <span class="nav-text">Employees</span>
-            </a>
-            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">person_search</span>
-                <span class="nav-text">Applicants</span>
-            </a>
-            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">receipt</span>
-                <span class="nav-text">Invoices</span>
-            </a>
-            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">support_agent</span>
-                <span class="nav-text">Support</span>
-            </a>
-            <div class="nav-label" style="margin-top:1rem;">Settings</div>
-            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">person</span>
-                <span class="nav-text">Profile</span>
-            </a>
-            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">settings</span>
-                <span class="nav-text">Settings</span>
-            </a>
-        </nav>
+     <nav class="sidebar-nav">
+    <div class="nav-label">Main</div>
+    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">dashboard</span>
+        <span class="nav-text">Dashboard</span>
+    </a>
+    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">work</span>
+        <span class="nav-text">My Jobs</span>
+    </a>
+    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">apartment</span>
+        <span class="nav-text">Agencies</span>
+        <?php if ($pendingAgencyCount > 0): ?>
+            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+        <?php endif; ?>
+    </a>
+    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">people</span>
+        <span class="nav-text">Employees</span>
+    </a>
+    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">person_search</span>
+        <span class="nav-text">Applicants</span>
+    </a>
+    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">receipt</span>
+        <span class="nav-text">Invoices</span>
+    </a>
+    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">support_agent</span>
+        <span class="nav-text">Support</span>
+    </a>
+    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">analytics</span>
+        <span class="nav-text">Reports</span>
+    </a>
+    <div class="nav-label" style="margin-top:1rem;">Settings</div>
+    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">person</span>
+        <span class="nav-text">Profile</span>
+    </a>
+    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">settings</span>
+        <span class="nav-text">Settings</span>
+    </a>
+</nav>
 
         <!-- =============================================
         SIDEBAR FOOTER
@@ -932,6 +1318,10 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Dashboard</span>
+                <span class="ai-badge-sm">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
             </div>
             <?php
             $userProfile = getUserProfileData($userId);
@@ -972,20 +1362,99 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
                             <?php echo htmlspecialchars($companyName); ?>
                         </span>
                     </div>
-                    <span class="breadcrumb-meta">Updated <?php echo date('M d, Y H:i'); ?></span>
+                    <span class="breadcrumb-meta">
+                        Updated <?php echo date('M d, Y H:i'); ?>
+                        <span class="ai-provider-tag" style="margin-left:0.5rem;">
+                            AI: <span class="provider-name <?php echo $aiProvider; ?>"><?php echo ucfirst($aiProvider); ?></span>
+                        </span>
+                    </span>
                 </div>
 
                 <!-- Page Header -->
                 <div class="page-header">
                     <div>
                         <h1>Welcome, <?php echo htmlspecialchars($firstName ?: 'Client'); ?>!</h1>
-                        <p>Here's an overview of your hiring activity</p>
+                        <p>Here's an overview of your hiring activity with AI insights</p>
                     </div>
                     <div>
                         <a href="jobs.php" class="btn btn-primary">
                             <span class="material-symbols-outlined">add</span>
                             Post New Job
                         </a>
+                    </div>
+                </div>
+
+                <!-- ============================================= -->
+                <!-- AI INSIGHTS CARD -->
+                <!-- ============================================= -->
+                <div class="ai-insights-card">
+                    <div class="ai-badge">
+                        <span class="material-symbols-outlined">auto_awesome</span>
+                        AI Insights
+                        <span style="font-size:0.5rem; opacity:0.7; margin-left:0.25rem;">
+                            <?php echo ucfirst($aiProvider); ?>
+                        </span>
+                    </div>
+                    
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                        <div class="insight-summary" style="flex:1; margin-bottom:0;">
+                            <?php echo htmlspecialchars($aiInsights['summary'] ?? 'Your recruitment is on track.'); ?>
+                        </div>
+                        <div class="ai-score-display">
+                            <div>
+                                <div class="score-number" style="color:<?php echo $scoreColor; ?>;"><?php echo $aiScore; ?>%</div>
+                            </div>
+                            <div>
+                                <div class="score-label" style="color:<?php echo $scoreColor; ?>;"><?php echo $scoreLabel; ?></div>
+                                <div style="font-size:0.6rem; color:var(--text-on-surface-variant);">Health Score</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="ai-insights-grid">
+                        <!-- Recommendations -->
+                        <div class="ai-insight-item">
+                            <div class="insight-icon">💡</div>
+                            <div class="insight-label">Recommendations</div>
+                            <div class="insight-text">
+                                <?php 
+                                $recommendations = $aiInsights['recommendations'] ?? ['Review pending applications', 'Post more jobs'];
+                                foreach (array_slice($recommendations, 0, 3) as $rec):
+                                ?>
+                                    <div style="padding:0.125rem 0; font-size:0.75rem;">• <?php echo htmlspecialchars($rec); ?></div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+
+                        <!-- Alerts -->
+                        <div class="ai-insight-item">
+                            <div class="insight-icon">🚨</div>
+                            <div class="insight-label">Alerts</div>
+                            <div class="insight-text">
+                                <?php 
+                                $alerts = $aiInsights['alerts'] ?? ['No critical alerts'];
+                                if (empty($alerts)) $alerts = ['No critical alerts'];
+                                foreach (array_slice($alerts, 0, 3) as $alert):
+                                ?>
+                                    <div style="padding:0.125rem 0; font-size:0.75rem;">• <?php echo htmlspecialchars($alert); ?></div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+
+                        <!-- Trends -->
+                        <div class="ai-insight-item">
+                            <div class="insight-icon">📈</div>
+                            <div class="insight-label">Trends</div>
+                            <div class="insight-text">
+                                <?php 
+                                $trends = $aiInsights['trends'] ?? ['Monitor application flow'];
+                                if (empty($trends)) $trends = ['Monitor application flow'];
+                                foreach (array_slice($trends, 0, 3) as $trend):
+                                ?>
+                                    <div style="padding:0.125rem 0; font-size:0.75rem;">• <?php echo htmlspecialchars($trend); ?></div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1267,7 +1736,9 @@ while ($row = mysqli_fetch_assoc($activeJobsResult)) {
             }
         });
 
-        console.log('🏢 ISMERS Client Dashboard loaded successfully!');
+        console.log('🤖 AI-Powered Client Dashboard loaded successfully!');
+        console.log('📊 AI Provider: <?php echo ucfirst($aiProvider); ?>');
+        console.log('📈 Health Score: <?php echo $aiScore; ?>%');
     </script>
 
 </body>

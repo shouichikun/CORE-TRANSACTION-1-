@@ -37,6 +37,19 @@ if (!$client) {
 $companyName = $client['company_name'] ?? 'Your Company';
 $clientId = $client['id'] ?? 0;
 
+// =============================================
+// GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
+// =============================================
+$pendingAgencyCount = 0;
+$pendingAgencies = getRecords("
+    SELECT COUNT(*) as count FROM agency_applications 
+    WHERE client_id = ? AND status = 'pending'
+", [$clientId], "i");
+
+if (!empty($pendingAgencies)) {
+    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+}
+
 $message = '';
 $messageType = '';
 
@@ -1092,49 +1105,53 @@ $rejectedApplications = getRecords("
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-        <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">dashboard</span>
-                <span class="nav-text">Dashboard</span>
-            </a>
-            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">work</span>
-                <span class="nav-text">My Jobs</span>
-            </a>
-            <a href="agency_applications.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">apartment</span>
-                <span class="nav-text">Agencies</span>
-                <?php if (count($pendingApplications) > 0): ?>
-                    <span class="nav-badge"><?php echo count($pendingApplications); ?></span>
-                <?php endif; ?>
-            </a>
-            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">people</span>
-                <span class="nav-text">Employees</span>
-            </a>
-            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">person_search</span>
-                <span class="nav-text">Applicants</span>
-            </a>
-            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">receipt</span>
-                <span class="nav-text">Invoices</span>
-            </a>
-            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">support_agent</span>
-                <span class="nav-text">Support</span>
-            </a>
-            <div class="nav-label" style="margin-top:1rem;">Settings</div>
-            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">person</span>
-                <span class="nav-text">Profile</span>
-            </a>
-            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">settings</span>
-                <span class="nav-text">Settings</span>
-            </a>
-        </nav>
+       <nav class="sidebar-nav">
+    <div class="nav-label">Main</div>
+    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">dashboard</span>
+        <span class="nav-text">Dashboard</span>
+    </a>
+    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">work</span>
+        <span class="nav-text">My Jobs</span>
+    </a>
+    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">apartment</span>
+        <span class="nav-text">Agencies</span>
+        <?php if ($pendingAgencyCount > 0): ?>
+            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+        <?php endif; ?>
+    </a>
+    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">people</span>
+        <span class="nav-text">Employees</span>
+    </a>
+    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">person_search</span>
+        <span class="nav-text">Applicants</span>
+    </a>
+    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">receipt</span>
+        <span class="nav-text">Invoices</span>
+    </a>
+    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">support_agent</span>
+        <span class="nav-text">Support</span>
+    </a>
+    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">analytics</span>
+        <span class="nav-text">Reports</span>
+    </a>
+    <div class="nav-label" style="margin-top:1rem;">Settings</div>
+    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">person</span>
+        <span class="nav-text">Profile</span>
+    </a>
+    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+        <span class="material-symbols-outlined">settings</span>
+        <span class="nav-text">Settings</span>
+    </a>
+</nav>
 
         <!-- =============================================
         SIDEBAR FOOTER

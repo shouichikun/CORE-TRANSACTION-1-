@@ -199,277 +199,256 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
             color: inherit;
         }
 
-        /* =============================================
-           SIDEBAR - FIXED
-        ============================================= */
-        .dashboard-sidebar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            bottom: 0;
-            z-index: 50;
-            background: var(--bg-surface);
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            width: var(--sidebar-width);
-            border-right: 1px solid var(--slate-200);
-            transition: width 0.3s ease, transform 0.3s ease;
-            overflow: hidden;
-            box-shadow: var(--shadow-xl);
-            flex-shrink: 0;
-        }
+      /* =============================================
+   SIDEBAR - STANDARDIZED
+   ============================================= */
+.dashboard-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    background: var(--bg-surface);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: var(--sidebar-width);
+    border-right: 1px solid var(--slate-200);
+    transition: width 0.3s ease, transform 0.3s ease;
+    overflow: hidden;
+    box-shadow: var(--shadow-xl);
+    flex-shrink: 0;
+}
 
-        .dashboard-sidebar.collapsed {
-            width: var(--sidebar-collapsed);
-        }
+.dashboard-sidebar.collapsed {
+    width: var(--sidebar-collapsed);
+}
 
-        .dashboard-sidebar.mobile-hidden {
-            transform: translateX(-100%);
-        }
+.dashboard-sidebar.mobile-hidden {
+    transform: translateX(-100%);
+}
 
-        .dashboard-sidebar.mobile-open {
-            transform: translateX(0);
-        }
+.dashboard-sidebar.mobile-open {
+    transform: translateX(0);
+}
 
-        .dashboard-sidebar .sidebar-brand-text,
-        .dashboard-sidebar .sidebar-brand-category,
-        .dashboard-sidebar .sidebar-nav .nav-label,
-        .dashboard-sidebar .sidebar-nav .nav-text,
-        .dashboard-sidebar .sidebar-nav .nav-badge,
-        .dashboard-sidebar .sidebar-footer .user-info {
-            opacity: 1;
-            transition: opacity 0.3s ease;
-            overflow: hidden;
-            white-space: nowrap;
-        }
+/* Hide text when collapsed */
+.dashboard-sidebar .sidebar-brand-text,
+.dashboard-sidebar .sidebar-brand-category,
+.dashboard-sidebar .sidebar-nav .nav-label,
+.dashboard-sidebar .sidebar-nav .nav-text,
+.dashboard-sidebar .sidebar-nav .nav-badge,
+.dashboard-sidebar .sidebar-footer .user-info {
+    opacity: 1;
+    transition: opacity 0.3s ease;
+    overflow: hidden;
+    white-space: nowrap;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-brand-text,
-        .dashboard-sidebar.collapsed .sidebar-brand-category,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
-            opacity: 0;
-            width: 0;
-            overflow: hidden;
-            margin: 0;
-            padding: 0;
-        }
+.dashboard-sidebar.collapsed .sidebar-brand-text,
+.dashboard-sidebar.collapsed .sidebar-brand-category,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+.dashboard-sidebar.collapsed .sidebar-footer .user-info {
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-brand-card {
-            padding: 1rem 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-brand-card {
+    padding: 1rem 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-nav {
-            padding: 0.5rem 0.25rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-nav {
+    padding: 0.5rem 0.25rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-main-link {
-            justify-content: center;
-            padding: 0.75rem 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-main-link {
+    justify-content: center;
+    padding: 0.75rem 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
+    font-size: 1.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
-            justify-content: center;
-            padding: 0.5rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-footer .user-card {
+    justify-content: center;
+    padding: 0.5rem;
+}
 
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            font-size: 0.875rem;
-        }
+.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    font-size: 0.875rem;
+}
 
-        .sidebar-brand-card {
-            border-radius: 2rem;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            gap: 0.75rem;
-        }
+/* Sidebar Brand */
+.sidebar-brand-card {
+    border-radius: 2rem;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 0.75rem;
+}
 
-        .sidebar-brand-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 3.5rem;
-            height: 3.5rem;
-            border-radius: 1.75rem;
-            background: var(--slate-100);
-            color: var(--primary);
-            font-size: 1.5rem;
-            flex-shrink: 0;
-        }
+.sidebar-brand-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 1.75rem;
+    background: var(--slate-100);
+    color: var(--primary);
+    font-size: 1.5rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-brand-icon .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+.sidebar-brand-icon .material-symbols-outlined {
+    font-size: 1.5rem;
+}
 
-        .sidebar-brand-text {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--slate-900);
-        }
+.sidebar-brand-text {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--slate-900);
+}
 
-        .sidebar-brand-category {
-            font-size: 0.75rem;
-            color: var(--slate-500);
-            margin-top: 0.25rem;
-        }
+.sidebar-brand-category {
+    font-size: 0.75rem;
+    color: var(--slate-500);
+    margin-top: 0.25rem;
+}
 
-        .sidebar-nav {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem 1.25rem;
-        }
+/* Sidebar Navigation */
+.sidebar-nav {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem 1.25rem;
+}
 
-        .sidebar-nav .nav-label {
-            font-size: 0.75rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--slate-500);
-            padding: 0.5rem 0.75rem;
-            margin-bottom: 0.5rem;
-        }
+.sidebar-nav .nav-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--slate-500);
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+}
 
-        .sidebar-main-link {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.75rem 1rem;
-            border-radius: 0.75rem;
-            color: var(--text-on-surface-variant);
-            transition: all var(--transition-fast);
-            margin-bottom: 0.25rem;
-            font-family: var(--font-label);
-            font-weight: 500;
-            font-size: 0.875rem;
-        }
+.sidebar-main-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    color: var(--text-on-surface-variant);
+    transition: all var(--transition-fast);
+    margin-bottom: 0.25rem;
+    font-family: var(--font-label);
+    font-weight: 500;
+    font-size: 0.875rem;
+}
 
-        .sidebar-main-link:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
+.sidebar-main-link:hover {
+    background: var(--bg-surface-low);
+    color: var(--text-on-surface);
+}
 
-        .sidebar-main-link.active {
-            background: var(--bg-surface-container-high);
-            color: var(--primary);
-        }
+.sidebar-main-link.active {
+    background: var(--bg-surface-container-high);
+    color: var(--primary);
+}
 
-        .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
+.sidebar-main-link .material-symbols-outlined {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-main-link .nav-text {
-            transition: opacity 0.3s ease;
-        }
+.sidebar-main-link .nav-text {
+    transition: opacity 0.3s ease;
+}
 
-        .sidebar-main-link .nav-badge {
-            margin-left: auto;
-            background: var(--primary);
-            color: white;
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 0.125rem 0.5rem;
-            border-radius: 50px;
-            transition: opacity 0.3s ease;
-        }
+.sidebar-main-link .nav-badge {
+    margin-left: auto;
+    background: var(--primary);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.125rem 0.5rem;
+    border-radius: 50px;
+    transition: opacity 0.3s ease;
+}
 
-        .sidebar-footer {
-            padding: 1rem 1.25rem;
-            border-top: 1px solid var(--slate-200);
-        }
+/* Sidebar Footer */
+.sidebar-footer {
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--slate-200);
+}
 
-        .sidebar-footer .user-card {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 0.5rem 0.75rem;
-            border-radius: 1rem;
-            background: var(--bg-surface-low);
-        }
+.sidebar-footer .user-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 1rem;
+    background: var(--bg-surface-low);
+}
 
-        .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            border-radius: 50%;
-            background: var(--primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: 700;
-            font-size: 0.875rem;
-            flex-shrink: 0;
-        }
+.sidebar-footer .user-card .avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    background: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: 700;
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
 
-        .sidebar-footer .user-card .user-info .user-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
+.sidebar-footer .user-card .user-info .user-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-on-surface);
+}
 
-        .sidebar-footer .user-card .user-info .user-email {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
+.sidebar-footer .user-card .user-info .user-email {
+    font-size: 0.75rem;
+    color: var(--text-on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.875rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
+/* Sidebar Backdrop */
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(17, 24, 39, 0.5);
+    backdrop-filter: blur(8px);
+    z-index: 40;
+    transition: opacity 0.3s ease;
+    opacity: 0;
+}
 
-        .sidebar-footer .logout-btn:hover {
-            background: #fef2f2;
-        }
-
-        .sidebar-footer .logout-btn .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
-
-        .sidebar-backdrop {
-            display: none;
-            position: fixed;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(17, 24, 39, 0.5);
-            backdrop-filter: blur(8px);
-            z-index: 40;
-            transition: opacity 0.3s ease;
-            opacity: 0;
-        }
-
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
-        }
+.sidebar-backdrop.active {
+    display: block;
+    opacity: 1;
+}
 
         /* =============================================
            MAIN CONTENT
@@ -1378,9 +1357,9 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
         <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">account_balance</span>
+            <span class="material-symbols-outlined">work</span>
         </span>
-        <p class="sidebar-brand-text">Company Name</p>
+        <p class="sidebar-brand-text">ISMERS</p>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1400,6 +1379,11 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
         <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
+            <span class="nav-badge"><?php 
+                // Get pending applications count
+                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+                echo $pendingApps; 
+            ?></span>
         </a>
         <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">view_kanban</span>
@@ -1413,7 +1397,31 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
         </a>
-        <!-- NO "System" section with Settings -->
+        <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">archive</span>
+            <span class="nav-text">Archive</span>
+            <span class="nav-badge"><?php 
+                // Get total archive count
+                $totalArchived = 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
+                $totalArchived += $archivedResult['count'] ?? 0;
+                echo $totalArchived;
+            ?></span>
+        </a>
+        <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">apartment</span>
+            <span class="nav-text">Apply as Agency</span>
+        </a>
+        <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">assignment</span>
+            <span class="nav-text">Deployments</span>
+        </a>
     </nav>
     <div class="sidebar-footer">
         <div class="user-card">
@@ -1423,7 +1431,6 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
                 <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
             </div>
         </div>
-        <!-- NO logout-btn here - only in profile dropdown -->
     </div>
 </aside>
 

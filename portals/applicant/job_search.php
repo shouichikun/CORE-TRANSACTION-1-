@@ -1,9 +1,10 @@
 <?php
-// portals/applicant/job_search.php - Job Search
+// portals/applicant/job_search.php - Job Search with AI Match Scores
 session_start();
 
 // Include configuration file
 require_once '../../app/config.php';
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -27,6 +28,34 @@ $email = $_SESSION['email'] ?? '';
 $applicant = getApplicantByUserId($userId);
 $applicantId = $applicant['id'] ?? 0;
 
+// =============================================
+// GET PENDING OFFERS COUNT FOR SIDEBAR BADGE
+// =============================================
+$pendingOffers = 0;
+if ($applicantId) {
+    $offersResult = getRecord("
+        SELECT COUNT(*) as count FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        WHERE a.applicant_id = ? AND o.status = 'sent'
+    ", [$applicantId], "i");
+    $pendingOffers = $offersResult['count'] ?? 0;
+}
+
+// =============================================
+// CHECK IF APPLICANT IS ALREADY HIRED
+// =============================================
+$isHired = 0;
+if ($applicant && isset($applicant['is_hired'])) {
+    $isHired = (int)$applicant['is_hired'];
+}
+
+if ($isHired === 1) {
+    $_SESSION['message'] = 'You are already hired. You cannot apply for other positions.';
+    $_SESSION['message_type'] = 'info';
+    header('Location: applications.php');
+    exit;
+}
+
 // Get applications count for the badge
 $allApplications = [];
 if ($applicantId) {
@@ -45,6 +74,7 @@ $searchQuery = $_GET['search'] ?? '';
 $jobType = $_GET['job_type'] ?? '';
 $location = $_GET['location'] ?? '';
 $experienceLevel = $_GET['experience'] ?? '';
+$sortBy = $_GET['sort'] ?? 'newest'; // newest, match_score
 $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $perPage = 10;
 
@@ -105,6 +135,69 @@ $types .= "ii";
 
 $jobs = getRecords($sql, $params, $types);
 
+// =============================================
+// AI MATCH SCORE CALCULATION
+// =============================================
+function calculateMatchScoreForJob($job, $applicant) {
+    if (!$applicant || empty($applicant['skills'])) {
+        return null;
+    }
+    
+    try {
+        $aiService = new AiService();
+        
+        $jobData = [
+            'title' => $job['title'] ?? '',
+            'skills_required' => $job['skills_required'] ?? '',
+            'description' => $job['description'] ?? '',
+            'experience_level' => $job['experience_level'] ?? '',
+        ];
+        
+        $applicantData = [
+            'skills' => $applicant['skills'] ?? '',
+            'experience' => $applicant['experience'] ?? '',
+            'education' => $applicant['education'] ?? '',
+        ];
+        
+        $result = $aiService->calculateMatchScore($jobData, $applicantData);
+        
+        // Ensure we have a valid score
+        if (!isset($result['match_score']) || $result['match_score'] === null) {
+            return null;
+        }
+        
+        return [
+            'score' => (int)$result['match_score'],
+            'strengths' => $result['strengths'] ?? [],
+            'gaps' => $result['gaps'] ?? [],
+            'recommendation' => $result['recommendation'] ?? '',
+            'provider' => $result['provider'] ?? 'unknown'
+        ];
+        
+    } catch (Exception $e) {
+        error_log("Match score error for job {$job['id']}: " . $e->getMessage());
+        return null;
+    }
+}
+
+// Calculate match scores for all jobs
+$matchScores = [];
+$matchScoresLoaded = false;
+
+if ($applicant && !empty($applicant['skills'])) {
+    // Check if we should use AI (not mock) or fallback to simple match
+    $aiService = new AiService();
+    $useAI = !$aiService->isUsingMock();
+    
+    foreach ($jobs as $job) {
+        $score = calculateMatchScoreForJob($job, $applicant);
+        if ($score !== null) {
+            $matchScores[$job['id']] = $score;
+        }
+    }
+    $matchScoresLoaded = true;
+}
+
 // Get all locations for filter
 $locations = getRecords("SELECT DISTINCT location FROM job_orders WHERE status IN ('open', 'ongoing') ORDER BY location");
 $jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship'];
@@ -137,6 +230,11 @@ if ($applicantId) {
     ", [$applicantId], "i");
     $interviewCount = $interviewResult['count'] ?? 0;
 }
+
+// Get AI provider status
+$aiService = new AiService();
+$aiProvider = $aiService->getProvider();
+$isAIEnabled = !$aiService->isUsingMock();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -560,26 +658,22 @@ if ($applicantId) {
             font-size: 1.25rem;
         }
 
+        .profile-dropdown-wrapper { position: relative; }
         .profile-dropdown-toggle {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            padding: 0.375rem 0.75rem 0.375rem 0.375rem;
+            gap: 0.625rem;
+            padding: 0.25rem 0.75rem 0.25rem 0.25rem;
             border-radius: var(--radius-full);
             border: 1px solid transparent;
             background: transparent;
             cursor: pointer;
             transition: all var(--transition-fast);
         }
-
-        .profile-dropdown-toggle:hover {
-            background: var(--bg-surface-low);
-            border-color: rgba(199, 196, 216, 0.3);
-        }
-
+        .profile-dropdown-toggle:hover { background: var(--bg-surface-low); border-color: var(--slate-200); }
         .profile-dropdown-toggle .avatar-small {
-            width: 2.25rem;
-            height: 2.25rem;
+            width: 2rem;
+            height: 2rem;
             border-radius: 50%;
             background: var(--primary);
             display: flex;
@@ -588,24 +682,62 @@ if ($applicantId) {
             color: white;
             font-weight: 700;
             font-size: 0.75rem;
+            flex-shrink: 0;
         }
-
-        .profile-dropdown-toggle .profile-name {
-            font-size: 0.875rem;
+        .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
+        .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
+        .profile-dropdown-toggle .material-symbols-outlined { font-size: 1rem; color: var(--text-on-surface-variant); transition: transform var(--transition-fast); }
+        .profile-dropdown-toggle.open .material-symbols-outlined:last-child { transform: rotate(180deg); }
+        .profile-dropdown-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            width: 13rem;
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--slate-200);
+            padding: 0.5rem;
+            z-index: 50;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-0.25rem) scale(0.97);
+            transition: all var(--transition-smooth);
+            transform-origin: top right;
+        }
+        .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
+        .profile-dropdown-menu .dropdown-header {
+            padding: 0.25rem 0.75rem 0.25rem;
+            font-size: 0.6rem;
             font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-on-surface-variant);
+        }
+        .profile-dropdown-menu .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.5rem;
+            font-size: 0.8125rem;
+            font-weight: 500;
             color: var(--text-on-surface);
+            transition: all var(--transition-fast);
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            font-family: var(--font-sans);
         }
-
-        .profile-dropdown-toggle .profile-role {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            font-weight: 400;
-        }
-
-        .profile-dropdown-toggle .material-symbols-outlined {
-            font-size: 1rem;
-            color: var(--text-on-surface-variant);
-        }
+        .profile-dropdown-menu .dropdown-item:hover { background: var(--bg-surface-low); color: var(--primary); }
+        .profile-dropdown-menu .dropdown-item .material-symbols-outlined { font-size: 1.125rem; color: var(--text-on-surface-variant); }
+        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined { color: var(--primary); }
+        .profile-dropdown-menu .dropdown-item.danger { color: #dc2626; }
+        .profile-dropdown-menu .dropdown-item.danger:hover { background: #fef2f2; color: #dc2626; }
+        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined { color: #dc2626; }
+        .profile-dropdown-menu .dropdown-divider { height: 1px; background: var(--slate-200); margin: 0.25rem 0.5rem; }
 
         /* =============================================
                    MAIN SCROLLABLE AREA
@@ -801,6 +933,43 @@ if ($applicantId) {
         }
 
         /* =============================================
+                   AI MATCH SCORE BADGE
+                ============================================= */
+        .match-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 600;
+            border: 1px solid;
+            flex-shrink: 0;
+        }
+
+        .match-badge.high {
+            background: #d1fae5;
+            color: #065f46;
+            border-color: #6ee7b7;
+        }
+
+        .match-badge.medium {
+            background: #fef3c7;
+            color: #92400e;
+            border-color: #fcd34d;
+        }
+
+        .match-badge.low {
+            background: #fee2e2;
+            color: #991b1b;
+            border-color: #fca5a5;
+        }
+
+        .match-badge .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+
+        /* =============================================
                    SEARCH BAR
                 ============================================= */
         .search-bar {
@@ -886,6 +1055,47 @@ if ($applicantId) {
         }
 
         /* =============================================
+                   SORT OPTIONS
+                ============================================= */
+        .sort-options {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .sort-options .sort-label {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            font-weight: 600;
+        }
+
+        .sort-options .sort-btn {
+            padding: 0.25rem 0.75rem;
+            border-radius: var(--radius-full);
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface);
+            border: 1.5px solid var(--slate-200);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            text-decoration: none;
+        }
+
+        .sort-options .sort-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .sort-options .sort-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        /* =============================================
                    RESULTS INFO
                 ============================================= */
         .results-info {
@@ -930,6 +1140,7 @@ if ($applicantId) {
             align-items: flex-start;
             gap: 0.75rem;
             margin-bottom: 0.5rem;
+            flex-wrap: wrap;
         }
 
         .job-card .job-title {
@@ -1094,6 +1305,23 @@ if ($applicantId) {
             font-size: 1.125rem;
         }
 
+        /* AI Status Badge */
+        .ai-status {
+            font-size: 0.7rem;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            border: 1px solid var(--slate-200);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .ai-status .material-symbols-outlined {
+            font-size: 0.875rem;
+        }
+
         /* =============================================
                    RESPONSIVE
                 ============================================= */
@@ -1213,6 +1441,10 @@ if ($applicantId) {
                 font-size: 0.8125rem;
             }
 
+            .sort-options {
+                justify-content: center;
+            }
+
             .dashboard-sidebar.collapsed .sidebar-brand-text,
             .dashboard-sidebar.collapsed .sidebar-brand-category,
             .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
@@ -1285,6 +1517,11 @@ if ($applicantId) {
             .empty-state .empty-icon .material-symbols-outlined {
                 font-size: 3rem;
             }
+
+            .match-badge {
+                font-size: 0.625rem;
+                padding: 0.125rem 0.5rem;
+            }
         }
 
         /* Scrollbar Styling */
@@ -1315,14 +1552,12 @@ if ($applicantId) {
     SIDEBAR - FIXED
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="px-5 pt-6 pb-5 border-b border-slate-200">
-            <div class="sidebar-brand-card">
-                <span class="sidebar-brand-icon">
-                    <span class="material-symbols-outlined">account_balance</span>
-                </span>
-                <p class="sidebar-brand-text">ISMERS</p>
-                <p class="sidebar-brand-category">Applicant Portal</p>
-            </div>
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">account_balance</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
 
         <nav class="sidebar-nav">
@@ -1344,17 +1579,22 @@ if ($applicantId) {
                 <span class="nav-badge"><?php echo $totalApplications; ?></span>
             </a>
 
-<a href="interview.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interview.php' ? 'active' : ''; ?>">
-    <span class="material-symbols-outlined">calendar_month</span>
-    <span class="nav-text">Interviews</span>
-    <span class="nav-badge"><?php echo $interviewCount; ?></span>
-</a>
+            <a href="offers.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">My Offers</span>
+                <span class="nav-badge"><?php echo $pendingOffers; ?></span>
+            </a>
+
+            <a href="interview.php" class="sidebar-main-link">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+                <span class="nav-badge"><?php echo $interviewCount; ?></span>
+            </a>
 
             <a href="job_search.php" class="sidebar-main-link active">
                 <span class="material-symbols-outlined">search</span>
                 <span class="nav-text">Job Search</span>
             </a>
-
 
         </nav>
 
@@ -1388,16 +1628,29 @@ if ($applicantId) {
                 <span class="logo-text" style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface); display:none;">ISMERS</span>
             </div>
 
-            <div class="relative flex items-center">
+            <!-- Profile Dropdown -->
+            <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
                     <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
                     <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
                     <span class="profile-role">Applicant</span>
                     <span class="material-symbols-outlined">expand_more</span>
                 </button>
-            </div>
 
-            
+                <!-- Dropdown Menu -->
+                <div class="profile-dropdown-menu" id="profileDropdownMenu">
+                    <div class="dropdown-header">Account</div>
+                    <a href="settings.php" class="dropdown-item">
+                        <span class="material-symbols-outlined">settings</span>
+                        Settings
+                    </a>
+                    <div class="dropdown-divider"></div>
+                    <a href="../../logout.php" class="dropdown-item danger">
+                        <span class="material-symbols-outlined">logout</span>
+                        Log Out
+                    </a>
+                </div>
+            </div>
         </header>
 
         <!-- Main Scrollable Area -->
@@ -1411,6 +1664,15 @@ if ($applicantId) {
                         <span>Job Search</span>
                         <span class="status-dot"></span>
                     </div>
+                    <?php if ($matchScoresLoaded && !empty($applicant['skills'])): ?>
+                    <span class="ai-status">
+                        <span class="material-symbols-outlined">auto_awesome</span>
+                        <?php 
+                        echo $isAIEnabled ? 'AI Match Scores' : 'Simple Match';
+                        echo ' (' . count(array_filter($matchScores)) . ' scored)';
+                        ?>
+                    </span>
+                    <?php endif; ?>
                 </div>
 
                 <!-- Page Header -->
@@ -1468,6 +1730,21 @@ if ($applicantId) {
                     </select>
                 </div>
 
+                <!-- Sort Options -->
+                <div class="sort-options">
+                    <span class="sort-label">Sort by:</span>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['sort' => 'newest'])); ?>" 
+                       class="sort-btn <?php echo $sortBy === 'newest' ? 'active' : ''; ?>">
+                        Newest
+                    </a>
+                    <?php if ($matchScoresLoaded && !empty($applicant['skills'])): ?>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['sort' => 'match_score'])); ?>" 
+                       class="sort-btn <?php echo $sortBy === 'match_score' ? 'active' : ''; ?>">
+                        Best Match
+                    </a>
+                    <?php endif; ?>
+                </div>
+
                 <!-- Results Info -->
                 <div class="results-info">
                     <span class="count">
@@ -1497,16 +1774,49 @@ if ($applicantId) {
                         </p>
                     </div>
                 <?php else: ?>
-                    <?php foreach ($jobs as $job): ?>
+                    <?php 
+                    // Sort jobs by match score if selected
+                    if ($sortBy === 'match_score' && $matchScoresLoaded) {
+                        usort($jobs, function($a, $b) use ($matchScores) {
+                            $scoreA = $matchScores[$a['id']]['score'] ?? 0;
+                            $scoreB = $matchScores[$b['id']]['score'] ?? 0;
+                            return $scoreB - $scoreA;
+                        });
+                    }
+                    ?>
+                    <?php foreach ($jobs as $job): 
+                        $match = $matchScores[$job['id']] ?? null;
+                        $matchScore = $match ? $match['score'] : null;
+                        $isApplied = in_array($job['id'], $appliedJobIds);
+                    ?>
                         <div class="job-card">
                             <div class="job-header">
                                 <div>
                                     <div class="job-title"><?php echo htmlspecialchars($job['title']); ?></div>
                                     <div class="job-company"><?php echo htmlspecialchars($job['company_name']); ?></div>
                                 </div>
-                                <?php if ($job['urgency'] === 'high'): ?>
-                                    <span class="badge-urgent">Urgent</span>
-                                <?php endif; ?>
+                                <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                                    <?php if ($job['urgency'] === 'high'): ?>
+                                        <span class="badge-urgent">Urgent</span>
+                                    <?php endif; ?>
+                                    <?php if ($matchScore !== null && $matchScore > 0): ?>
+                                        <?php 
+                                        $scoreClass = 'low';
+                                        $scoreIcon = 'sentiment_dissatisfied';
+                                        if ($matchScore >= 70) {
+                                            $scoreClass = 'high';
+                                            $scoreIcon = 'check_circle';
+                                        } elseif ($matchScore >= 40) {
+                                            $scoreClass = 'medium';
+                                            $scoreIcon = 'trending_up';
+                                        }
+                                        ?>
+                                        <span class="match-badge <?php echo $scoreClass; ?>">
+                                            <span class="material-symbols-outlined"><?php echo $scoreIcon; ?></span>
+                                            <?php echo $matchScore; ?>% Match
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
                             </div>
 
                             <div class="job-meta">
@@ -1556,21 +1866,42 @@ if ($applicantId) {
                                     <?php endif; ?>
                                 </div>
 
-                                <?php 
-                                $isApplied = in_array($job['id'], $appliedJobIds);
-                                ?>
                                 <?php if ($isApplied): ?>
                                     <span class="btn-applied">
                                         <span class="material-symbols-outlined">check</span>
                                         Applied
                                     </span>
                                 <?php else: ?>
-                                    <a href="apply.php?job_id=<?php echo $job['id']; ?>" class="btn-success btn-sm">
+                                    <a href="job_details.php?id=<?php echo $job['id']; ?>" class="btn-success btn-sm">
                                         <span class="material-symbols-outlined">send</span>
-                                        Apply Now
+                                        View & Apply
                                     </a>
                                 <?php endif; ?>
                             </div>
+
+                            <!-- AI Match Score Details (only if score exists) -->
+                            <?php if ($match && $matchScore !== null && $matchScore > 0): ?>
+                            <div style="margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid var(--slate-200); display:flex; gap:0.5rem; flex-wrap:wrap;">
+                                <?php if (!empty($match['strengths'])): ?>
+                                    <span style="font-size:0.6875rem; color:#059669; display:flex; align-items:center; gap:0.25rem;">
+                                        <span class="material-symbols-outlined" style="font-size:0.875rem;">check</span>
+                                        <?php echo htmlspecialchars($match['strengths'][0]); ?>
+                                        <?php if (count($match['strengths']) > 1): ?>
+                                            +<?php echo count($match['strengths']) - 1; ?> more
+                                        <?php endif; ?>
+                                    </span>
+                                <?php endif; ?>
+                                <?php if (!empty($match['gaps'])): ?>
+                                    <span style="font-size:0.6875rem; color:#d97706; display:flex; align-items:center; gap:0.25rem;">
+                                        <span class="material-symbols-outlined" style="font-size:0.875rem;">warning</span>
+                                        <?php echo htmlspecialchars($match['gaps'][0]); ?>
+                                        <?php if (count($match['gaps']) > 1): ?>
+                                            +<?php echo count($match['gaps']) - 1; ?> more
+                                        <?php endif; ?>
+                                    </span>
+                                <?php endif; ?>
+                            </div>
+                            <?php endif; ?>
                         </div>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -1579,7 +1910,7 @@ if ($applicantId) {
                 <?php if ($totalPages > 1): ?>
                     <div class="pagination">
                         <?php if ($page > 1): ?>
-                            <a href="?page=<?php echo $page - 1; ?>&search=<?php echo urlencode($searchQuery); ?>&job_type=<?php echo urlencode($jobType); ?>&location=<?php echo urlencode($location); ?>&experience=<?php echo urlencode($experienceLevel); ?>">
+                            <a href="?page=<?php echo $page - 1; ?>&search=<?php echo urlencode($searchQuery); ?>&job_type=<?php echo urlencode($jobType); ?>&location=<?php echo urlencode($location); ?>&experience=<?php echo urlencode($experienceLevel); ?>&sort=<?php echo urlencode($sortBy); ?>">
                                 <span class="material-symbols-outlined">chevron_left</span>
                             </a>
                         <?php else: ?>
@@ -1589,14 +1920,14 @@ if ($applicantId) {
                         <?php endif; ?>
 
                         <?php for ($i = max(1, $page - 2); $i <= min($totalPages, $page + 2); $i++): ?>
-                            <a href="?page=<?php echo $i; ?>&search=<?php echo urlencode($searchQuery); ?>&job_type=<?php echo urlencode($jobType); ?>&location=<?php echo urlencode($location); ?>&experience=<?php echo urlencode($experienceLevel); ?>" 
+                            <a href="?page=<?php echo $i; ?>&search=<?php echo urlencode($searchQuery); ?>&job_type=<?php echo urlencode($jobType); ?>&location=<?php echo urlencode($location); ?>&experience=<?php echo urlencode($experienceLevel); ?>&sort=<?php echo urlencode($sortBy); ?>" 
                                class="<?php echo $i === $page ? 'active' : ''; ?>">
                                 <?php echo $i; ?>
                             </a>
                         <?php endfor; ?>
 
                         <?php if ($page < $totalPages): ?>
-                            <a href="?page=<?php echo $page + 1; ?>&search=<?php echo urlencode($searchQuery); ?>&job_type=<?php echo urlencode($jobType); ?>&location=<?php echo urlencode($location); ?>&experience=<?php echo urlencode($experienceLevel); ?>">
+                            <a href="?page=<?php echo $page + 1; ?>&search=<?php echo urlencode($searchQuery); ?>&job_type=<?php echo urlencode($jobType); ?>&location=<?php echo urlencode($location); ?>&experience=<?php echo urlencode($experienceLevel); ?>&sort=<?php echo urlencode($sortBy); ?>">
                                 <span class="material-symbols-outlined">chevron_right</span>
                             </a>
                         <?php else: ?>
@@ -1632,16 +1963,20 @@ if ($applicantId) {
 
             if (savedState === 'true' && isDesktop) {
                 sidebar.classList.add('collapsed');
-                sidebarToggleIcon.textContent = 'menu';
+                if (sidebarToggleIcon) sidebarToggleIcon.textContent = 'menu';
             }
 
-            sidebarToggleBtn.addEventListener('click', function() {
-                if (window.innerWidth < 768) return;
-                sidebar.classList.toggle('collapsed');
-                const isCollapsed = sidebar.classList.contains('collapsed');
-                sidebarToggleIcon.textContent = isCollapsed ? 'menu' : 'menu_open';
-                localStorage.setItem('sidebarCollapsed', isCollapsed);
-            });
+            if (sidebarToggleBtn) {
+                sidebarToggleBtn.addEventListener('click', function() {
+                    if (window.innerWidth < 768) return;
+                    sidebar.classList.toggle('collapsed');
+                    const isCollapsed = sidebar.classList.contains('collapsed');
+                    if (sidebarToggleIcon) {
+                        sidebarToggleIcon.textContent = isCollapsed ? 'menu' : 'menu_open';
+                    }
+                    localStorage.setItem('sidebarCollapsed', isCollapsed);
+                });
+            }
 
             // =============================================
             // 2. MOBILE SIDEBAR TOGGLE
@@ -1660,8 +1995,12 @@ if ($applicantId) {
                 document.body.style.overflow = '';
             }
 
-            mobileMenuBtn.addEventListener('click', openMobileSidebar);
-            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+            if (mobileMenuBtn) {
+                mobileMenuBtn.addEventListener('click', openMobileSidebar);
+            }
+            if (sidebarBackdrop) {
+                sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+            }
 
             document.querySelectorAll('.sidebar-main-link').forEach(function(link) {
                 link.addEventListener('click', function() {
@@ -1687,15 +2026,15 @@ if ($applicantId) {
                         const saved = localStorage.getItem('sidebarCollapsed');
                         if (saved === 'true') {
                             sidebar.classList.add('collapsed');
-                            sidebarToggleIcon.textContent = 'menu';
+                            if (sidebarToggleIcon) sidebarToggleIcon.textContent = 'menu';
                         } else {
                             sidebar.classList.remove('collapsed');
-                            sidebarToggleIcon.textContent = 'menu_open';
+                            if (sidebarToggleIcon) sidebarToggleIcon.textContent = 'menu_open';
                         }
                     } else {
                         sidebar.classList.add('mobile-hidden');
                         sidebar.classList.remove('collapsed');
-                        sidebarToggleIcon.textContent = 'menu_open';
+                        if (sidebarToggleIcon) sidebarToggleIcon.textContent = 'menu_open';
                     }
                 }, 250);
             });
@@ -1728,6 +2067,38 @@ if ($applicantId) {
             }
 
             console.log('ISMERS Job Search Page loaded successfully.');
+            console.log('🤖 AI Match Scores: <?php echo $isAIEnabled ? 'Enabled' : 'Disabled (Mock)'; ?>');
+            console.log('📊 Jobs Scored: <?php echo count(array_filter($matchScores)); ?>');
+        })();
+
+        // =============================================
+        // PROFILE DROPDOWN TOGGLE (Outside IIFE)
+        // =============================================
+        (function() {
+            const profileToggle = document.getElementById('profileDropdownToggle');
+            const profileMenu = document.getElementById('profileDropdownMenu');
+
+            if (profileToggle && profileMenu) {
+                profileToggle.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    this.classList.toggle('open');
+                    profileMenu.classList.toggle('open');
+                });
+
+                document.addEventListener('click', function(e) {
+                    if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                        profileToggle.classList.remove('open');
+                        profileMenu.classList.remove('open');
+                    }
+                });
+
+                document.addEventListener('keydown', function(e) {
+                    if (e.key === 'Escape') {
+                        profileToggle.classList.remove('open');
+                        profileMenu.classList.remove('open');
+                    }
+                });
+            }
         })();
     </script>
 
