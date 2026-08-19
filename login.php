@@ -138,6 +138,18 @@ function getSystemAccountRole($email) {
     return $systemRoles[$email] ?? 'applicant';
 }
 
+// =============================================
+// HANDLE LOGOUT MESSAGE - FIXED
+// =============================================
+// ONLY show logout message if it comes from a successful logout and there's no error
+$logoutMessage = '';
+if (isset($_GET['logout']) && $_GET['logout'] === 'success') {
+    // Only show if there's no error (error will override)
+    if (empty($_POST)) {
+        $logoutMessage = 'You have been logged out successfully.';
+    }
+}
+
 // Handle login
 $error = '';
 $email = '';
@@ -149,6 +161,9 @@ $modalFullName = '';
 $modalCode = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Clear any logout message on POST (login attempt)
+    $logoutMessage = '';
+    
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $remember = isset($_POST['remember']);
@@ -272,10 +287,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Check for logout message
-$logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success' 
-    ? 'You have been logged out successfully.' 
-    : '';
+// =============================================
+// IF THERE'S AN ERROR, CLEAR THE LOGOUT MESSAGE
+// =============================================
+if (!empty($error)) {
+    $logoutMessage = '';
+}
 ?>
 <!DOCTYPE html>
 <html class="light" lang="en">
@@ -545,6 +562,66 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
             transform: none;
         }
 
+        /* =============================================
+           FACE LOGIN DIVIDER - NEW STYLES
+           ============================================= */
+        .login-divider {
+            position: relative;
+            margin: 1.5rem 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 50%;
+            height: 1px;
+            background: var(--outline-variant);
+        }
+
+        .login-divider span {
+            position: relative;
+            background: var(--bg-surface);
+            padding: 0 1rem;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-family: var(--font-label);
+        }
+
+        .btn-face-login {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.625rem;
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: transparent;
+            border: 2px solid var(--primary);
+            border-radius: var(--radius-md);
+            color: var(--primary);
+            font-size: 0.875rem;
+            font-weight: 600;
+            font-family: var(--font-sans);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            text-decoration: none;
+        }
+
+        .btn-face-login:hover {
+            background: var(--primary);
+            color: var(--on-primary);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
+        }
+
+        .btn-face-login .material-symbols-outlined {
+            font-size: 1.25rem;
+        }
+
         .auth-footer {
             margin-top: 1.5rem;
             padding-top: 1.5rem;
@@ -603,7 +680,7 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
 
         /* =============================================
            VERIFICATION MODAL - AESTHETIC & MODERN
-        ============================================= */
+           ============================================= */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -912,11 +989,17 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
             <p>Access your account to continue.</p>
         </div>
 
+        <!-- ============================================= -->
+        <!-- SUCCESS MESSAGE - ONLY SHOWS ON ACTUAL LOGOUT -->
+        <!-- ============================================= -->
         <div class="message success <?php echo empty($logoutMessage) ? 'hidden' : ''; ?>" id="successMessage">
             <span class="material-symbols-outlined">check_circle</span>
             <span><?php echo htmlspecialchars($logoutMessage); ?></span>
         </div>
 
+        <!-- ============================================= -->
+        <!-- ERROR MESSAGE - OVERRIDES SUCCESS MESSAGE -->
+        <!-- ============================================= -->
         <div class="message error <?php echo empty($error) ? 'hidden' : ''; ?>" id="errorMessage">
             <span class="material-symbols-outlined">error</span>
             <span id="errorText"><?php echo htmlspecialchars($error); ?></span>
@@ -974,6 +1057,19 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
             </button>
         </form>
 
+        <!-- ============================================= -->
+        <!-- FACE LOGIN DIVIDER - NEW SECTION -->
+        <!-- ============================================= -->
+        <div class="login-divider">
+            <span>or continue with</span>
+        </div>
+
+        <a href="login_face.php<?php echo isset($_GET['redirect']) ? '?redirect=' . urlencode($_GET['redirect']) : ''; ?>" 
+           class="btn-face-login">
+            <span class="material-symbols-outlined">face</span>
+            Sign in with Face
+        </a>
+
         <div class="signup-link">
             Don't have an account? <a href="portals/applicant/register.php">Get Started</a>
         </div>
@@ -1004,19 +1100,24 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
     });
 
     // =============================================
-    // 2. FORM SUBMISSION - FIXED
+    // 2. FORM SUBMISSION
     // =============================================
     const form = document.getElementById('loginForm');
     const loginBtn = document.getElementById('loginBtn');
     const errorMsg = document.getElementById('errorMessage');
     const errorText = document.getElementById('errorText');
+    const successMsg = document.getElementById('successMessage');
 
     // Store original button HTML for reset
     const originalBtnHTML = loginBtn.innerHTML;
 
     function showError(message) {
+        // Hide success message when error appears
+        successMsg.classList.add('hidden');
+        
         errorText.textContent = message;
         errorMsg.classList.remove('hidden');
+        
         // Reset button
         loginBtn.disabled = false;
         loginBtn.innerHTML = originalBtnHTML;
@@ -1029,6 +1130,8 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
     form.addEventListener('submit', function(e) {
         // Clear previous errors
         errorMsg.classList.add('hidden');
+        // Hide success message on new login attempt
+        successMsg.classList.add('hidden');
 
         const email = document.getElementById('email').value.trim();
         const password = passwordInput.value.trim();
@@ -1101,7 +1204,6 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
     // =============================================
     // 4. AUTO-HIDE SUCCESS MESSAGE
     // =============================================
-    const successMsg = document.getElementById('successMessage');
     if (!successMsg.classList.contains('hidden')) {
         setTimeout(function() {
             successMsg.classList.add('hidden');
@@ -1130,6 +1232,12 @@ $logoutMessage = isset($_GET['logout']) && $_GET['logout'] === 'success'
         modal.style.display = 'flex';
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
+
+        // Hide any messages when modal shows
+        const successMsg = document.getElementById('successMessage');
+        const errorMsg = document.getElementById('errorMessage');
+        if (successMsg) successMsg.classList.add('hidden');
+        if (errorMsg) errorMsg.classList.add('hidden');
 
         // Reset button state (in case form submission got stuck)
         const btn = document.getElementById('loginBtn');
