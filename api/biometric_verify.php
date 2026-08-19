@@ -1,150 +1,150 @@
 <?php
-// api/biometric_verify.php - Biometric Verification API
+// /CT1/api/biometric_verify.php - Face Verification API
 session_start();
-require_once '../app/config.php';
-
 header('Content-Type: application/json');
 
-// Check request method
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    echo json_encode(['success' => false, 'message' => 'Invalid request method']);
-    exit;
-}
+// Enable error reporting for debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
 
-// Get parameters
-$email = $_POST['email'] ?? '';
-$biometricType = $_POST['biometric_type'] ?? 'face';
-$verificationCode = $_POST['verification_code'] ?? '';
-$faceImage = $_POST['face_image'] ?? '';
-$fingerprintData = $_POST['fingerprint_data'] ?? '';
+require_once '../app/config.php';
 
-if (empty($email)) {
-    echo json_encode(['success' => false, 'message' => 'Email is required']);
-    exit;
-}
+// Get the input data
+$input = file_get_contents('php://input');
+$data = json_decode($input, true);
 
-// Get user
-$user = getUserByEmail($email);
-if (!$user) {
-    echo json_encode(['success' => false, 'message' => 'User not found']);
-    exit;
-}
+// Log the request for debugging
+error_log("Face Verification Request: " . $input);
 
-// Check if biometric is enabled
-if ($user['biometric_enabled'] != 1) {
-    echo json_encode(['success' => false, 'message' => 'Biometric not enabled for this account']);
-    exit;
-}
+$action = $data['action'] ?? '';
 
-// Verify based on type
-$verified = false;
-$confidence = 0;
-$message = '';
-
-// Check verification code from session
-$storedCode = $_SESSION['biometric_code'] ?? '';
-$expires = $_SESSION['biometric_expires'] ?? 0;
-
-if (!empty($verificationCode)) {
-    // Verify with code
-    if (time() > $expires) {
-        echo json_encode([
-            'success' => false,
-            'message' => 'Verification code has expired. Please request a new one.'
-        ]);
+if ($action === 'enroll') {
+    $userId = isset($data['user_id']) ? intval($data['user_id']) : 0;
+    $descriptor = $data['descriptor'] ?? null;
+    $snapshot = $data['snapshot'] ?? null;
+    
+    // Validate input
+    if (!$userId) {
+        echo json_encode(['success' => false, 'error' => 'User ID is required']);
         exit;
     }
     
-    if ($verificationCode === $storedCode) {
-        $verified = true;
-        $confidence = 0.95;
-        $message = 'Biometric verification successful';
+    if (!$descriptor || !is_array($descriptor) || count($descriptor) < 10) {
+        error_log("Invalid descriptor: " . json_encode($descriptor));
+        echo json_encode(['success' => false, 'error' => 'Invalid face descriptor data']);
+        exit;
+    }
+    
+    try {
+        global $conn;
+        
+        // Check if user already has a face enrollment
+        $checkSql = "SELECT id FROM face_verification WHERE user_id = ?";
+        $checkStmt = mysqli_prepare($conn, $checkSql);
+        mysqli_stmt_bind_param($checkStmt, "i", $userId);
+        mysqli_stmt_execute($checkStmt);
+        $checkResult = mysqli_stmt_get_result($checkStmt);
+        $existing = mysqli_fetch_assoc($checkResult);
+        mysqli_stmt_close($checkStmt);
+        
+        // Convert descriptor to JSON
+        $descriptorJson = json_encode($descriptor);
+        
+        if ($existing) {
+            // Update existing
+            $sql = "UPDATE face_verification SET 
+                    face_descriptor = ?,
+                    snapshot = ?,
+                    updated_at = NOW()
+                    WHERE user_id = ?";
+            $stmt = mysqli_prepare($conn, $sql);
+            mysqli_stmt_bind_param($stmt, "ssi", $descriptorJson, $snapshot, $userId);
+            $result = mysqli_stmt_execute($stmt);
+            $affected = mysqli_stmt_affected_rows($stmt);
+            mysqli_stmt_close($stmt);
+            
+            if ($result) {
+                // Update applicants table
+                $updateSql = "UPDATE applicants SET face_verified = 1, face_verified_at = NOW() WHERE user_id = ?";
+                $updateStmt = mysqli_prepare($conn, $updateSql);
+                mysqli_stmt_bind_param($updateStmt, "i", $userId);
+                mysqli_stmt_execute($updateStmt);
+                mysqli_stmt_close($updateStmt);
+                
+                error_log("Face enrollment updated for user: $userId");
+                echo json_encode(['success' => true, 'message' => 'Face updated successfully', 'action' => 'updated']);
+            } else {
+                error_log("Failed to update face: " . mysqli_error($conn));
+                echo json_encode(['success' => false, 'error' => 'Failed to update face data']);
+            }
+        } else {
+            // Create new
+            $sql = "INSERT INTO face_verification (user_id, face_descriptor, snapshot, created_at) 
+                    VALUES (?, ?, ?, NOW())";
+            $stmt = mysqli_prepare($conn, $sql);
+            mysqli_stmt_bind_param($stmt, "iss", $userId, $descriptorJson, $snapshot);
+            $result = mysqli_stmt_execute($stmt);
+            $id = mysqli_insert_id($conn);
+            mysqli_stmt_close($stmt);
+            
+            if ($result) {
+                // Update applicants table
+                $updateSql = "UPDATE applicants SET face_verified = 1, face_verified_at = NOW() WHERE user_id = ?";
+                $updateStmt = mysqli_prepare($conn, $updateSql);
+                mysqli_stmt_bind_param($updateStmt, "i", $userId);
+                mysqli_stmt_execute($updateStmt);
+                mysqli_stmt_close($updateStmt);
+                
+                // Log activity
+                logActivity($userId, 'Face Enrolled', 'face_verification', $id, 'Face biometric enrolled for applicant');
+                
+                error_log("Face enrollment created for user: $userId, ID: $id");
+                echo json_encode(['success' => true, 'message' => 'Face enrolled successfully', 'action' => 'created']);
+            } else {
+                error_log("Failed to insert face: " . mysqli_error($conn));
+                echo json_encode(['success' => false, 'error' => 'Failed to save face data']);
+            }
+        }
+        
+    } catch (Exception $e) {
+        error_log("Face enrollment error: " . $e->getMessage());
+        echo json_encode(['success' => false, 'error' => 'Server error: ' . $e->getMessage()]);
+    }
+    
+    exit;
+}
+
+// Handle verification (check if user has face data)
+if ($action === 'check') {
+    $userId = isset($data['user_id']) ? intval($data['user_id']) : 0;
+    
+    if (!$userId) {
+        echo json_encode(['success' => false, 'error' => 'User ID is required']);
+        exit;
+    }
+    
+    $sql = "SELECT id, face_descriptor FROM face_verification WHERE user_id = ?";
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, "i", $userId);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $faceData = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+    
+    if ($faceData) {
+        echo json_encode([
+            'success' => true, 
+            'has_face' => true,
+            'message' => 'Face verification found'
+        ]);
     } else {
         echo json_encode([
-            'success' => false,
-            'message' => 'Invalid verification code. Please try again.'
+            'success' => true, 
+            'has_face' => false,
+            'message' => 'No face verification found'
         ]);
-        exit;
     }
-} elseif ($biometricType === 'face' || $biometricType === 'both') {
-    // Face verification logic (simulated)
-    $verified = true;
-    $confidence = 0.92;
-    $message = 'Face verified successfully';
-} elseif ($biometricType === 'fingerprint') {
-    // Fingerprint verification logic (simulated)
-    $verified = true;
-    $confidence = 0.95;
-    $message = 'Fingerprint verified successfully';
+    exit;
 }
 
-if ($verified && $confidence >= 0.85) {
-    // Log successful verification
-    logBiometricActivity($user['id'], $biometricType, 'login', $confidence, 'success');
-    
-    // Set session
-    $_SESSION['user_id'] = $user['id'];
-    $_SESSION['role'] = $user['role'];
-    $_SESSION['full_name'] = $user['full_name'];
-    $_SESSION['email'] = $user['email'];
-    $_SESSION['first_name'] = $user['first_name'];
-    $_SESSION['biometric_verified'] = true;
-    $_SESSION['biometric_verified_at'] = time();
-    
-    // Clear biometric session data
-    unset($_SESSION['biometric_code']);
-    unset($_SESSION['biometric_expires']);
-    unset($_SESSION['biometric_user_id']);
-    unset($_SESSION['biometric_role']);
-    unset($_SESSION['biometric_full_name']);
-    unset($_SESSION['biometric_first_name']);
-    unset($_SESSION['biometric_email']);
-    
-    // Update last login
-    updateLastLogin($user['id']);
-    $updateSql = "UPDATE users SET last_activity = NOW(), biometric_verified_at = NOW() WHERE id = ?";
-    updateRecord($updateSql, [$user['id']], "i");
-    
-    // Redirect based on role
-    $redirects = [
-        'admin' => '../portals/admin/dashboard.php',
-        'hr_manager' => '../portals/hr/dashboard.php',
-        'recruiter' => '../portals/hr/dashboard.php',
-        'client' => '../portals/client/index.php',
-        'applicant' => '../portals/applicant/dashboard.php',
-        'employee' => '../portals/employee/index.php',
-        'supervisor' => '../portals/supervisor/index.php'
-    ];
-    
-    echo json_encode([
-        'success' => true,
-        'message' => $message,
-        'confidence' => $confidence,
-        'redirect' => $redirects[$user['role']] ?? '../index.php'
-    ]);
-} else {
-    logBiometricActivity($user['id'], $biometricType, 'login', $confidence, 'failed');
-    echo json_encode([
-        'success' => false,
-        'message' => 'Biometric verification failed. Please try again.',
-        'confidence' => $confidence
-    ]);
-}
-
-/**
- * Log biometric activity
- */
-function logBiometricActivity($userId, $type, $action, $confidence, $status) {
-    global $conn;
-    
-    $sql = "INSERT INTO biometric_logs (user_id, biometric_type, action_type, confidence_score, status, ip_address, user_agent) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)";
-    $ip = $_SERVER['REMOTE_ADDR'] ?? null;
-    $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? null;
-    
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "issdsss", $userId, $type, $action, $confidence, $status, $ip, $userAgent);
-    mysqli_stmt_execute($stmt);
-    mysqli_stmt_close($stmt);
-}
-?>
+echo json_encode(['success' => false, 'error' => 'Invalid action']);
