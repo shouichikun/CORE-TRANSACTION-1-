@@ -2,6 +2,13 @@
 // send_otp.php - Send OTP email via AJAX (background)
 session_start();
 
+// =============================================
+// DEBUG: Enable error reporting
+// =============================================
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 require_once 'app/config.php';
 
 // Load PHPMailer
@@ -9,9 +16,19 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 use PHPMailer\PHPMailer\Exception;
 
-require_once 'PHPMailer-master/src/Exception.php';
-require_once 'PHPMailer-master/src/PHPMailer.php';
-require_once 'PHPMailer-master/src/SMTP.php';
+// Check if PHPMailer files exist
+$phpmailerPath = __DIR__ . '/PHPMailer-master/src/';
+if (!file_exists($phpmailerPath . 'Exception.php') || 
+    !file_exists($phpmailerPath . 'PHPMailer.php') || 
+    !file_exists($phpmailerPath . 'SMTP.php')) {
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'error' => 'PHPMailer files not found']);
+    exit;
+}
+
+require_once $phpmailerPath . 'Exception.php';
+require_once $phpmailerPath . 'PHPMailer.php';
+require_once $phpmailerPath . 'SMTP.php';
 
 header('Content-Type: application/json');
 
@@ -20,8 +37,21 @@ $code = isset($_POST['code']) ? $_POST['code'] : '';
 $email = isset($_POST['email']) ? $_POST['email'] : '';
 $name = isset($_POST['name']) ? $_POST['name'] : 'User';
 
+// Log the request for debugging
+error_log("=== send_otp.php called ===");
+error_log("User ID: $userId");
+error_log("Email: $email");
+error_log("Code: $code");
+
 if ($userId <= 0 || empty($code) || empty($email)) {
     echo json_encode(['success' => false, 'error' => 'Missing required data']);
+    exit;
+}
+
+// Verify the code matches session
+if (!isset($_SESSION['verification_code']) || $_SESSION['verification_code'] !== $code) {
+    error_log("Code mismatch. Session: " . ($_SESSION['verification_code'] ?? 'NULL') . ", Received: $code");
+    echo json_encode(['success' => false, 'error' => 'Invalid verification code']);
     exit;
 }
 
@@ -39,7 +69,13 @@ try {
     
     $mail->setFrom(MAIL_FROM, MAIL_FROM_NAME);
     $mail->addAddress($email, $name);
-    $mail->addReplyTo(MAIL_REPLY_TO, MAIL_REPLY_TO_NAME);
+    
+    // ✅ FIXED: Check if REPLY_TO constants are defined
+    if (defined('MAIL_REPLY_TO') && defined('MAIL_REPLY_TO_NAME')) {
+        $mail->addReplyTo(MAIL_REPLY_TO, MAIL_REPLY_TO_NAME);
+    } else {
+        $mail->addReplyTo(MAIL_FROM, MAIL_FROM_NAME);
+    }
     
     $mail->isHTML(true);
     $mail->Subject = 'Login Verification Code - ISMERS';
@@ -92,10 +128,14 @@ try {
     
     $mail->send();
     
-    // Log OTP sent
-    logActivity($userId, 'Login OTP Sent', 'users', $userId, 'OTP sent to: ' . $email);
+    error_log("Email sent successfully to: $email");
     
-    echo json_encode(['success' => true]);
+    // Log OTP sent - check if function exists
+    if (function_exists('logActivity')) {
+        logActivity($userId, 'Login OTP Sent', 'users', $userId, 'OTP sent to: ' . $email);
+    }
+    
+    echo json_encode(['success' => true, 'message' => 'Verification email sent']);
     
 } catch (Exception $e) {
     error_log("AJAX verification email failed: " . $e->getMessage());

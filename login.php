@@ -4,7 +4,16 @@ session_start();
 
 // Include configuration
 require_once 'app/config.php';
+// Set session variables
+$_SESSION['user_id'] = $user['id'];
+$_SESSION['role'] = $user['role'];
+$_SESSION['full_name'] = $user['full_name'];
+$_SESSION['first_name'] = $user['first_name'];
+$_SESSION['email'] = $user['email'];
 
+// ✅ Initialize session timeout tracking
+$_SESSION['last_activity'] = time();
+$_SESSION['created_at'] = time();
 // If already logged in, redirect to dashboard
 if (isset($_SESSION['user_id'])) {
     $role = $_SESSION['role'] ?? 'applicant';
@@ -139,12 +148,10 @@ function getSystemAccountRole($email) {
 }
 
 // =============================================
-// HANDLE LOGOUT MESSAGE - FIXED
+// HANDLE LOGOUT MESSAGE
 // =============================================
-// ONLY show logout message if it comes from a successful logout and there's no error
 $logoutMessage = '';
 if (isset($_GET['logout']) && $_GET['logout'] === 'success') {
-    // Only show if there's no error (error will override)
     if (empty($_POST)) {
         $logoutMessage = 'You have been logged out successfully.';
     }
@@ -161,7 +168,6 @@ $modalFullName = '';
 $modalCode = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Clear any logout message on POST (login attempt)
     $logoutMessage = '';
     
     $email = trim($_POST['email'] ?? '');
@@ -171,23 +177,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($email) || empty($password)) {
         $error = 'Please enter both email and password.';
     } else {
-        // Check if system account
         $isSystemAccount = isSystemAccount($email);
-        
-        // Get user from database
         $user = getUserByEmail($email);
         
         // If system account and user doesn't exist, create it
         if ($isSystemAccount && !$user) {
-            // Create system account on the fly
             $role = getSystemAccountRole($email);
             $nameParts = explode('@', $email);
             $username = ucfirst(str_replace('_', ' ', $nameParts[0]));
             
             $passwordHash = password_hash('password123', PASSWORD_DEFAULT);
             
+            // ✅ FIXED: PostgreSQL INSERT - removed type string "ssssss"
             $sql = "INSERT INTO users (email, password_hash, role, full_name, first_name, last_name, is_active, is_verified, biometric_enabled, created_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, NOW())";
+                    VALUES ($1, $2, $3, $4, $5, $6, 1, 1, 1, NOW())";
             
             $userId = insertRecord($sql, [
                 $email,
@@ -196,29 +199,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $username . ' User',
                 $username,
                 'User'
-            ], "ssssss");
+            ]);
             
             if ($userId) {
                 $user = getUserById($userId);
-                
-                // Log creation
-                logActivity($userId, 'System Account Created', 'users', $userId, 'System account created for: ' . $email);
+                if (function_exists('logActivity')) {
+                    logActivity($userId, 'System Account Created', 'users', $userId, 'System account created for: ' . $email);
+                }
             }
         }
         
-        // Verify user exists
         if (!$user) {
             $error = 'Account not found. Please check your email and try again.';
         } elseif (password_verify($password, $user['password_hash'])) {
-            // Check if active
             if ($user['is_active'] == 0) {
                 $error = 'Your account has been deactivated.';
             } else {
-                // =============================================
-                // SYSTEM ACCOUNT - Direct Login (No Verification)
-                // =============================================
+                // SYSTEM ACCOUNT - Direct Login
                 if ($isSystemAccount) {
-                    // Direct login for system accounts
                     $_SESSION['user_id'] = $user['id'];
                     $_SESSION['role'] = $user['role'];
                     $_SESSION['full_name'] = $user['full_name'];
@@ -227,15 +225,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['is_system_account'] = true;
                     
                     updateLastLogin($user['id']);
-                    $updateSql = "UPDATE users SET last_activity = NOW() WHERE id = ?";
-                    updateRecord($updateSql, [$user['id']], "i");
+                    
+                    // ✅ FIXED: PostgreSQL update - removed type string "i"
+                    $updateSql = "UPDATE users SET last_activity = NOW() WHERE id = $1";
+                    updateRecord($updateSql, [$user['id']]);
                     
                     if ($remember) {
                         setcookie('remember_email', $email, time() + 86400 * 7, '/');
                     }
                     
-                    // Log system login
-                    logActivity($user['id'], 'System Account Login', 'users', $user['id'], 'System account login: ' . $email);
+                    if (function_exists('logActivity')) {
+                        logActivity($user['id'], 'System Account Login', 'users', $user['id'], 'System account login: ' . $email);
+                    }
                     
                     $redirects = [
                         'admin' => 'portals/admin/dashboard.php',
@@ -250,14 +251,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
                 
-                // =============================================
-                // REGULAR USER - SHOW MODAL, SEND EMAIL
-                // =============================================
-                // Generate OTP code
+                // REGULAR USER - Show modal, send email
                 $code = sprintf("%06d", rand(100000, 999999));
-                $expires = time() + 600; // 10 minutes
+                $expires = time() + 600;
                 
-                // Store in session
                 $_SESSION['temp_user_id'] = $user['id'];
                 $_SESSION['temp_role'] = $user['role'];
                 $_SESSION['temp_full_name'] = $user['full_name'];
@@ -267,14 +264,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['verification_expires'] = $expires;
                 $_SESSION['remember_me'] = $remember;
                 
-                // Store in database
-                $updateSql = "UPDATE users SET verification_code = ?, verification_expires = FROM_UNIXTIME(?) WHERE id = ?";
-                updateRecord($updateSql, [$code, $expires, $user['id']], "sii");
+                // ✅ FIXED: PostgreSQL update - removed type string "sii"
+                $updateSql = "UPDATE users SET verification_code = $1, verification_expires = TO_TIMESTAMP($2) WHERE id = $3";
+                updateRecord($updateSql, [$code, $expires, $user['id']]);
                 
-                // Log OTP generated
-                logActivity($user['id'], 'Login OTP Generated', 'users', $user['id'], 'OTP generated for: ' . $email);
+                if (function_exists('logActivity')) {
+                    logActivity($user['id'], 'Login OTP Generated', 'users', $user['id'], 'OTP generated for: ' . $email);
+                }
                 
-                // Set modal data - SHOW IMMEDIATELY
                 $showModal = true;
                 $modalEmail = $email;
                 $modalUserId = $user['id'];
@@ -287,9 +284,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// =============================================
-// IF THERE'S AN ERROR, CLEAR THE LOGOUT MESSAGE
-// =============================================
 if (!empty($error)) {
     $logoutMessage = '';
 }
@@ -366,6 +360,24 @@ if (!empty($error)) {
             text-align: center;
             margin-bottom: 2rem;
         }
+
+        /* =============================================
+           LOGO STYLES
+           ============================================= */
+
+.auth-logo {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 1.25rem;
+}
+
+.auth-logo img {
+    width: 80px;
+    height: 80px;
+    object-fit: contain;
+    display: block;
+}
 
         .auth-header h1 {
             font-size: 1.5rem;
@@ -563,7 +575,7 @@ if (!empty($error)) {
         }
 
         /* =============================================
-           FACE LOGIN DIVIDER - NEW STYLES
+           FACE LOGIN DIVIDER
            ============================================= */
         .login-divider {
             position: relative;
@@ -678,8 +690,25 @@ if (!empty($error)) {
             margin-top: 0.25rem;
         }
 
+        .system-badge-notice {
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            margin-top: 0.5rem;
+            text-align: center;
+            font-size: 0.75rem;
+            color: #92400e;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
         /* =============================================
-           VERIFICATION MODAL - AESTHETIC & MODERN
+           VERIFICATION MODAL
            ============================================= */
         .modal-overlay {
             display: none;
@@ -937,13 +966,17 @@ if (!empty($error)) {
             .success-icon .material-symbols-outlined {
                 font-size: 1.75rem;
             }
+            .auth-logo img {
+                width: 56px;
+                height: 56px;
+            }
         }
     </style>
 </head>
 <body>
 
 <!-- =============================================
-     VERIFICATION MODAL - AESTHETIC
+     VERIFICATION MODAL
      ============================================= -->
 <div class="modal-overlay <?php echo $showModal ? 'active' : ''; ?>" id="verificationModal">
     <div class="modal-container">
@@ -985,12 +1018,18 @@ if (!empty($error)) {
 <div class="auth-wrapper">
     <div class="auth-card">
         <div class="auth-header">
+            <!-- ============================================= -->
+            <!-- LOGO - NO ANIMATION -->
+            <!-- ============================================= -->
+            <div class="auth-logo">
+                <img src="logo.png" alt="ISMERS Logo">
+            </div>
             <h1>Sign In</h1>
             <p>Access your account to continue.</p>
         </div>
 
         <!-- ============================================= -->
-        <!-- SUCCESS MESSAGE - ONLY SHOWS ON ACTUAL LOGOUT -->
+        <!-- SUCCESS MESSAGE -->
         <!-- ============================================= -->
         <div class="message success <?php echo empty($logoutMessage) ? 'hidden' : ''; ?>" id="successMessage">
             <span class="material-symbols-outlined">check_circle</span>
@@ -998,7 +1037,7 @@ if (!empty($error)) {
         </div>
 
         <!-- ============================================= -->
-        <!-- ERROR MESSAGE - OVERRIDES SUCCESS MESSAGE -->
+        <!-- ERROR MESSAGE -->
         <!-- ============================================= -->
         <div class="message error <?php echo empty($error) ? 'hidden' : ''; ?>" id="errorMessage">
             <span class="material-symbols-outlined">error</span>
@@ -1058,7 +1097,7 @@ if (!empty($error)) {
         </form>
 
         <!-- ============================================= -->
-        <!-- FACE LOGIN DIVIDER - NEW SECTION -->
+        <!-- FACE LOGIN DIVIDER -->
         <!-- ============================================= -->
         <div class="login-divider">
             <span>or continue with</span>
@@ -1108,17 +1147,12 @@ if (!empty($error)) {
     const errorText = document.getElementById('errorText');
     const successMsg = document.getElementById('successMessage');
 
-    // Store original button HTML for reset
     const originalBtnHTML = loginBtn.innerHTML;
 
     function showError(message) {
-        // Hide success message when error appears
         successMsg.classList.add('hidden');
-        
         errorText.textContent = message;
         errorMsg.classList.remove('hidden');
-        
-        // Reset button
         loginBtn.disabled = false;
         loginBtn.innerHTML = originalBtnHTML;
     }
@@ -1128,15 +1162,12 @@ if (!empty($error)) {
     }
 
     form.addEventListener('submit', function(e) {
-        // Clear previous errors
         errorMsg.classList.add('hidden');
-        // Hide success message on new login attempt
         successMsg.classList.add('hidden');
 
         const email = document.getElementById('email').value.trim();
         const password = passwordInput.value.trim();
 
-        // Validation
         if (!email) {
             e.preventDefault();
             showError('Please enter your email address.');
@@ -1165,19 +1196,16 @@ if (!empty($error)) {
             return false;
         }
 
-        // Show loading state
         loginBtn.disabled = true;
         loginBtn.innerHTML = `
             <span>Sending code...</span>
             <span class="material-symbols-outlined" style="font-size:1.25rem; animation: spin 1s linear infinite;">refresh</span>
         `;
 
-        // Add spin animation
         const style = document.createElement('style');
         style.textContent = '@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
         document.head.appendChild(style);
 
-        // Allow form to submit
         return true;
     });
 
@@ -1186,7 +1214,6 @@ if (!empty($error)) {
     // =============================================
     document.getElementById('email').addEventListener('input', function() {
         errorMsg.classList.add('hidden');
-        // Reset button if it was in loading state
         if (loginBtn.disabled) {
             loginBtn.disabled = false;
             loginBtn.innerHTML = originalBtnHTML;
@@ -1228,18 +1255,15 @@ if (!empty($error)) {
             document.getElementById('dot4')
         ];
 
-        // Show modal IMMEDIATELY
         modal.style.display = 'flex';
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
 
-        // Hide any messages when modal shows
         const successMsg = document.getElementById('successMessage');
         const errorMsg = document.getElementById('errorMessage');
         if (successMsg) successMsg.classList.add('hidden');
         if (errorMsg) errorMsg.classList.add('hidden');
 
-        // Reset button state (in case form submission got stuck)
         const btn = document.getElementById('loginBtn');
         btn.disabled = false;
         btn.innerHTML = `
@@ -1247,7 +1271,6 @@ if (!empty($error)) {
             <span class="material-symbols-outlined" style="font-size:1.25rem;">arrow_forward</span>
         `;
 
-        // Step 1: Update status after 0.8s
         setTimeout(function() {
             statusText.textContent = 'Sending verification code...';
             dots[0].classList.remove('active');
@@ -1255,7 +1278,6 @@ if (!empty($error)) {
             dots[1].classList.add('active');
         }, 800);
 
-        // Step 2: Update status after 1.6s
         setTimeout(function() {
             statusText.textContent = 'Almost there...';
             dots[1].classList.remove('active');
@@ -1263,7 +1285,6 @@ if (!empty($error)) {
             dots[2].classList.add('active');
         }, 1600);
 
-        // Step 3: Success state after 2.4s
         setTimeout(function() {
             modalIcon.style.display = 'none';
             successIcon.classList.add('show');
@@ -1284,14 +1305,10 @@ if (!empty($error)) {
             }, 400);
         }, 2400);
 
-        // Continue button redirect
         continueBtn.addEventListener('click', function() {
             window.location.href = 'verify.php';
         });
 
-        // =============================================
-        // SEND EMAIL VIA AJAX (BACKGROUND)
-        // =============================================
         <?php if ($showModal && isset($modalUserId) && $modalUserId > 0): ?>
         fetch('send_otp.php', {
             method: 'POST',
@@ -1329,18 +1346,7 @@ if (!empty($error)) {
         if (isSystem) {
             const badge = document.createElement('div');
             badge.className = 'system-badge-notice';
-            badge.style.cssText = `
-                background: #fef3c7;
-                border: 1px solid #fcd34d;
-                border-radius: 0.75rem;
-                padding: 0.5rem 0.75rem;
-                margin-top: 0.5rem;
-                text-align: center;
-                font-size: 0.75rem;
-                color: #92400e;
-                animation: fadeIn 0.3s ease;
-            `;
-            badge.innerHTML = '🔑 <strong>System Account</strong> — Direct login (no verification)';
+            badge.textContent = '🔑 System Account — Direct login (no verification)';
             emailInput.parentNode.parentNode.appendChild(badge);
         }
     });

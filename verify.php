@@ -2,6 +2,13 @@
 // verify.php - ISMERS Email Verification Page
 session_start();
 
+// =============================================
+// DEBUG: Enable error reporting
+// =============================================
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 // Include configuration
 require_once 'app/config.php';
 
@@ -11,60 +18,14 @@ if (!isset($_SESSION['temp_user_id']) || !isset($_SESSION['temp_email'])) {
     exit;
 }
 
-$userId = $_SESSION['temp_user_id'];
+$userId = (int)$_SESSION['temp_user_id'];
 $email = $_SESSION['temp_email'] ?? '';
 $fullName = $_SESSION['temp_full_name'] ?? 'User';
 $role = $_SESSION['temp_role'] ?? 'applicant';
 $firstName = $_SESSION['temp_first_name'] ?? '';
 $remember = $_SESSION['remember_me'] ?? false;
 
-// =============================================
-// REMOVED: This was causing the redirect!
-// =============================================
-// // Check if user is already verified
-// $user = getUserById($userId);
-// if ($user && $user['is_verified'] == 1) {
-//     // Already verified - direct login
-//     $_SESSION['user_id'] = $userId;
-//     $_SESSION['role'] = $role;
-//     $_SESSION['full_name'] = $fullName;
-//     $_SESSION['email'] = $email;
-//     $_SESSION['first_name'] = $firstName;
-//     
-//     if ($remember) {
-//         setcookie('remember_email', $email, time() + 86400 * 7, '/');
-//     }
-//     
-//     $redirects = [
-//         'admin' => 'portals/admin/dashboard.php',
-//         'hr_manager' => 'portals/hr/dashboard.php',
-//         'recruiter' => 'portals/hr/dashboard.php',
-//         'client' => 'portals/client/dashboard.php',
-//         'applicant' => 'portals/applicant/dashboard.php',
-//         'employee' => 'portals/employee/dashboard.php',
-//         'supervisor' => 'portals/supervisor/dashboard.php'
-//     ];
-//     header('Location: ' . ($redirects[$role] ?? 'index.php'));
-//     exit;
-// }
-
-// Generate verification code if not exists
-if (!isset($_SESSION['verification_code']) || !isset($_SESSION['verification_expires'])) {
-    $code = sprintf("%06d", rand(100000, 999999));
-    $expires = time() + 600; // 10 minutes
-    
-    $_SESSION['verification_code'] = $code;
-    $_SESSION['verification_expires'] = $expires;
-    
-    // Store in database
-    $updateSql = "UPDATE users SET verification_code = ?, verification_expires = FROM_UNIXTIME(?) WHERE id = ?";
-    updateRecord($updateSql, [$code, $expires, $userId], "sii");
-    
-    // Send verification email
-    sendVerificationEmail($email, $fullName, $code);
-}
-
-// Handle verification
+// Handle verification FIRST before generating new code
 $error = '';
 $success = '';
 $showResend = false;
@@ -88,19 +49,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Check code from database
             $user = getUserById($userId);
             $storedCode = $user['verification_code'] ?? '';
-            $storedExpires = strtotime($user['verification_expires'] ?? '');
+            $storedExpires = $user['verification_expires'] ?? '';
+            
+            // ✅ FIXED: Convert database timestamp to Unix timestamp
+            $expiresTimestamp = 0;
+            if (!empty($storedExpires)) {
+                try {
+                    // Create DateTime from stored timestamp
+                    $date = new DateTime($storedExpires);
+                    // PostgreSQL returns timestamps in UTC, convert to Asia/Manila
+                    $date->setTimezone(new DateTimeZone('Asia/Manila'));
+                    $expiresTimestamp = $date->getTimestamp();
+                } catch (Exception $e) {
+                    $expiresTimestamp = strtotime($storedExpires);
+                }
+            }
+            
+            $currentTime = time();
+            
+            // Debug logging
+            error_log("=== VERIFICATION DEBUG ===");
+            error_log("Stored Expires: " . $storedExpires);
+            error_log("Expires Timestamp: " . $expiresTimestamp . " (" . date('Y-m-d H:i:s', $expiresTimestamp) . ")");
+            error_log("Current Time: " . $currentTime . " (" . date('Y-m-d H:i:s', $currentTime) . ")");
+            error_log("Time Difference: " . ($expiresTimestamp - $currentTime) . " seconds");
             
             if ($storedCode && $code === $storedCode) {
-                if (time() > $storedExpires) {
+                if ($currentTime > $expiresTimestamp) {
                     $error = 'Verification code has expired. Please request a new one.';
                     $showResend = true;
                 } else {
-                    // Mark user as verified (if not already)
-                    $updateSql = "UPDATE users SET is_verified = 1, verification_code = NULL, verification_expires = NULL WHERE id = ?";
-                    updateRecord($updateSql, [$userId], "i");
+                    // ✅ FIXED: PostgreSQL - only 2 parameters
+                    $updateSql = "UPDATE users SET is_verified = 1, verification_code = NULL, verification_expires = NULL WHERE id = $1";
+                    updateRecord($updateSql, [$userId]);
                     
                     // Log activity
-                    logActivity($userId, 'Email Verified', 'users', $userId, 'User email verified successfully');
+                    if (function_exists('logActivity')) {
+                        logActivity($userId, 'Email Verified', 'users', $userId, 'User email verified successfully');
+                    }
                     
                     // Clear session verification data
                     unset($_SESSION['verification_code']);
@@ -115,8 +101,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     // Update last login
                     updateLastLogin($userId);
-                    $updateSql = "UPDATE users SET last_activity = NOW() WHERE id = ?";
-                    updateRecord($updateSql, [$userId], "i");
+                    $updateSql = "UPDATE users SET last_activity = NOW() WHERE id = $1";
+                    updateRecord($updateSql, [$userId]);
                     
                     if ($remember) {
                         setcookie('remember_email', $email, time() + 86400 * 7, '/');
@@ -141,20 +127,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     } elseif ($action === 'resend') {
-        // Generate new code
-        $code = sprintf("%06d", rand(100000, 999999));
-        $expires = time() + 600;
-        
-        $_SESSION['verification_code'] = $code;
-        $_SESSION['verification_expires'] = $expires;
-        
-        $updateSql = "UPDATE users SET verification_code = ?, verification_expires = FROM_UNIXTIME(?) WHERE id = ?";
-        updateRecord($updateSql, [$code, $expires, $userId], "sii");
-        
+        // ✅ FIXED: Properly handle resend with validation and rate limiting
+        try {
+            // Rate limiting - prevent spam
+            if (isset($_SESSION['last_resend_time']) && (time() - $_SESSION['last_resend_time']) < 60) {
+                $error = 'Please wait 60 seconds before requesting a new code.';
+                $showResend = true;
+            } else {
+                // Generate new code
+                $code = sprintf("%06d", rand(100000, 999999));
+                $expiresTimestamp = time() + 600; // 10 minutes from now
+                
+                $_SESSION['verification_code'] = $code;
+                $_SESSION['verification_expires'] = $expiresTimestamp;
+                $_SESSION['last_resend_time'] = time();
+                
+                // ✅ FIXED: Use NOW() with timezone
+                $updateSql = "UPDATE users SET verification_code = $1, verification_expires = (NOW() AT TIME ZONE 'Asia/Manila') + INTERVAL '10 minutes' WHERE id = $2";
+                $result = updateRecord($updateSql, [$code, $userId]);
+                
+                if ($result) {
+                    // Send verification email
+                    $emailSent = sendVerificationEmail($email, $fullName, $code);
+                    
+                    if ($emailSent) {
+                        $success = 'A new verification code has been sent to your email.';
+                        $showResend = false;
+                    } else {
+                        $error = 'Failed to send verification email. Please try again.';
+                        $showResend = true;
+                    }
+                } else {
+                    $error = 'Failed to update verification code in database.';
+                    $showResend = true;
+                }
+            }
+        } catch (Exception $e) {
+            error_log("Resend error: " . $e->getMessage());
+            $error = 'An error occurred. Please try again.';
+            $showResend = true;
+        }
+    }
+}
+
+// Generate verification code if not exists (only for GET requests or first load)
+if (!isset($_SESSION['verification_code']) || !isset($_SESSION['verification_expires'])) {
+    $code = sprintf("%06d", rand(100000, 999999));
+    $expiresTimestamp = time() + 600; // 10 minutes from now
+    
+    $_SESSION['verification_code'] = $code;
+    $_SESSION['verification_expires'] = $expiresTimestamp;
+    
+    // ✅ FIXED: Use NOW() with timezone
+    $updateSql = "UPDATE users SET verification_code = $1, verification_expires = (NOW() AT TIME ZONE 'Asia/Manila') + INTERVAL '10 minutes' WHERE id = $2";
+    $result = updateRecord($updateSql, [$code, $userId]);
+    
+    // Send verification email
+    if ($result) {
         sendVerificationEmail($email, $fullName, $code);
-        
-        $success = 'A new verification code has been sent to your email.';
-        $showResend = false;
+    } else {
+        error_log("Failed to save initial verification code to database");
     }
 }
 
@@ -162,14 +194,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * Send verification email using PHPMailer
  */
 function sendVerificationEmail($toEmail, $toName, $code) {
-    require_once 'PHPMailer-master/src/Exception.php';
-    require_once 'PHPMailer-master/src/PHPMailer.php';
-    require_once 'PHPMailer-master/src/SMTP.php';
+    // Check if PHPMailer files exist
+    $phpmailerPath = __DIR__ . '/PHPMailer-master/src/';
+    
+    if (!file_exists($phpmailerPath . 'Exception.php') || 
+        !file_exists($phpmailerPath . 'PHPMailer.php') || 
+        !file_exists($phpmailerPath . 'SMTP.php')) {
+        error_log("PHPMailer files not found at: " . $phpmailerPath);
+        return false;
+    }
+    
+    require_once $phpmailerPath . 'Exception.php';
+    require_once $phpmailerPath . 'PHPMailer.php';
+    require_once $phpmailerPath . 'SMTP.php';
     
     $mail = new PHPMailer\PHPMailer\PHPMailer(true);
     
     try {
-        $mail->SMTPDebug = SMTP::DEBUG_OFF;
+        $mail->SMTPDebug = \PHPMailer\PHPMailer\SMTP::DEBUG_OFF;
         $mail->isSMTP();
         $mail->Host       = SMTP_HOST;
         $mail->SMTPAuth   = true;
@@ -180,7 +222,13 @@ function sendVerificationEmail($toEmail, $toName, $code) {
         
         $mail->setFrom(MAIL_FROM, MAIL_FROM_NAME);
         $mail->addAddress($toEmail, $toName);
-        $mail->addReplyTo(MAIL_REPLY_TO, MAIL_REPLY_TO_NAME);
+        
+        // Check if REPLY_TO constants are defined
+        if (defined('MAIL_REPLY_TO') && defined('MAIL_REPLY_TO_NAME')) {
+            $mail->addReplyTo(MAIL_REPLY_TO, MAIL_REPLY_TO_NAME);
+        } else {
+            $mail->addReplyTo(MAIL_FROM, MAIL_FROM_NAME);
+        }
         
         $mail->isHTML(true);
         $mail->Subject = 'Verify Your Email - ISMERS';
@@ -240,7 +288,7 @@ function sendVerificationEmail($toEmail, $toName, $code) {
     }
 }
 
-// Get remaining time for display
+// Get remaining time for display - use the session value
 $remainingTime = 0;
 if (isset($_SESSION['verification_expires'])) {
     $remainingTime = max(0, $_SESSION['verification_expires'] - time());
@@ -313,7 +361,6 @@ if (isset($_SESSION['verification_expires'])) {
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ===== VERIFY CARD ===== */
         .verify-wrapper {
             width: 100%;
             max-width: 28rem;
@@ -331,13 +378,12 @@ if (isset($_SESSION['verification_expires'])) {
             text-align: center;
         }
 
-        /* ===== ICON ===== */
         .verify-icon {
             width: 4rem;
             height: 4rem;
             background: rgba(79, 70, 229, 0.1);
             color: var(--primary-container);
-            border-radius: var(--radius-full);
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -348,7 +394,6 @@ if (isset($_SESSION['verification_expires'])) {
             font-size: 1.75rem;
         }
 
-        /* ===== HEADER ===== */
         .verify-header {
             margin-bottom: 0.5rem;
         }
@@ -369,7 +414,6 @@ if (isset($_SESSION['verification_expires'])) {
             font-family: var(--font-label);
         }
 
-        /* ===== MESSAGES ===== */
         .message {
             padding: 0.75rem 1rem;
             border-radius: var(--radius-lg);
@@ -403,7 +447,6 @@ if (isset($_SESSION['verification_expires'])) {
             flex-shrink: 0;
         }
 
-        /* ===== OTP INPUT ===== */
         .otp-container {
             display: flex;
             justify-content: center;
@@ -442,7 +485,6 @@ if (isset($_SESSION['verification_expires'])) {
             -moz-appearance: textfield;
         }
 
-        /* ===== EXPIRY INFO ===== */
         .expiry-info {
             display: flex;
             align-items: center;
@@ -458,7 +500,6 @@ if (isset($_SESSION['verification_expires'])) {
             font-size: 1rem;
         }
 
-        /* ===== SUBMIT BUTTON ===== */
         .btn-verify {
             width: 100%;
             display: flex;
@@ -502,7 +543,6 @@ if (isset($_SESSION['verification_expires'])) {
             to { transform: rotate(360deg); }
         }
 
-        /* ===== RESEND LINK ===== */
         .resend-link {
             font-size: 0.875rem;
             color: var(--text-muted);
@@ -525,7 +565,6 @@ if (isset($_SESSION['verification_expires'])) {
             text-decoration: underline;
         }
 
-        /* ===== BACK LINK ===== */
         .verify-footer {
             margin-top: 1.5rem;
             padding-top: 1.5rem;
@@ -553,14 +592,12 @@ if (isset($_SESSION['verification_expires'])) {
             font-size: 1rem;
         }
 
-        /* ===== RESPONSIVE ===== */
         @media (min-width: 640px) {
             .otp-container input {
                 width: 3rem;
                 height: 3.5rem;
                 font-size: 1.5rem;
             }
-
             .otp-container {
                 gap: 0.75rem;
             }
@@ -570,15 +607,12 @@ if (isset($_SESSION['verification_expires'])) {
             .verify-card {
                 padding: 1.5rem;
             }
-
             .verify-header h1 {
                 font-size: 1.25rem;
             }
-
             .otp-container {
                 gap: 0.375rem;
             }
-
             .otp-container input {
                 width: 2.25rem;
                 height: 2.75rem;
@@ -592,30 +626,25 @@ if (isset($_SESSION['verification_expires'])) {
 <div class="verify-wrapper">
     <div class="verify-card">
 
-        <!-- Icon -->
         <div class="verify-icon">
             <span class="material-symbols-outlined">shield_lock</span>
         </div>
 
-        <!-- Header -->
         <div class="verify-header">
             <h1>Verify your identity</h1>
             <p>We've sent a 6-digit verification code to your email.</p>
         </div>
 
-        <!-- Success Message -->
         <div class="message success <?php echo empty($success) ? 'hidden' : ''; ?>" id="successMessage">
             <span class="material-symbols-outlined">check_circle</span>
             <span><?php echo htmlspecialchars($success); ?></span>
         </div>
 
-        <!-- Error Message -->
         <div class="message error <?php echo empty($error) ? 'hidden' : ''; ?>" id="errorMessage">
             <span class="material-symbols-outlined">error</span>
             <span id="errorText"><?php echo htmlspecialchars($error); ?></span>
         </div>
 
-        <!-- OTP Form -->
         <form method="POST" action="" id="verifyForm" class="w-full">
             <input type="hidden" name="action" value="verify">
 
@@ -628,28 +657,24 @@ if (isset($_SESSION['verification_expires'])) {
                 <input type="number" name="code6" maxlength="1" pattern="[0-9]" required>
             </div>
 
-            <!-- Expiry Info -->
             <div class="expiry-info">
                 <span class="material-symbols-outlined">schedule</span>
                 <span>Code expires in <span id="timer"><?php echo $remainingTime; ?></span> seconds</span>
             </div>
 
-            <!-- Submit -->
             <button type="submit" class="btn-verify" id="verifyBtn">
                 <span>Verify Code</span>
             </button>
         </form>
 
-        <!-- Resend Link -->
         <div class="resend-link">
             Didn't receive the code?
-            <form method="POST" action="" style="display: inline;">
+            <form method="POST" action="" style="display: inline;" id="resendForm">
                 <input type="hidden" name="action" value="resend">
                 <button type="submit" id="resendBtn">Resend code</button>
             </form>
         </div>
 
-        <!-- Back to Login -->
         <div class="verify-footer">
             <a href="login.php">
                 <span class="material-symbols-outlined">arrow_back</span>
@@ -660,7 +685,6 @@ if (isset($_SESSION['verification_expires'])) {
     </div>
 </div>
 
-<!-- ===== JAVASCRIPT ===== -->
 <script>
     // =============================================
     // 1. OTP AUTO-FOCUS
@@ -669,20 +693,17 @@ if (isset($_SESSION['verification_expires'])) {
 
     inputs.forEach((input, index) => {
         input.addEventListener('input', function(e) {
-            // Auto-advance to next input
             if (this.value.length === 1 && index < inputs.length - 1) {
                 inputs[index + 1].focus();
             }
         });
 
         input.addEventListener('keydown', function(e) {
-            // Backspace to previous input
             if (e.key === 'Backspace' && !this.value && index > 0) {
                 inputs[index - 1].focus();
             }
         });
 
-        // Only allow numbers
         input.addEventListener('keypress', function(e) {
             if (!/^\d$/.test(e.key)) {
                 e.preventDefault();
@@ -703,7 +724,6 @@ if (isset($_SESSION['verification_expires'])) {
                     input.value = digits[index];
                 }
             });
-            // Focus the last input
             inputs[inputs.length - 1].focus();
         }
     });
@@ -718,7 +738,6 @@ if (isset($_SESSION['verification_expires'])) {
     const successMsg = document.getElementById('successMessage');
 
     form.addEventListener('submit', function(e) {
-        // Check if all inputs are filled
         let code = '';
         inputs.forEach(input => {
             code += input.value;
@@ -726,11 +745,12 @@ if (isset($_SESSION['verification_expires'])) {
 
         if (code.length !== 6) {
             e.preventDefault();
-            showError('Please enter the complete 6-digit verification code.');
+            errorText.textContent = 'Please enter the complete 6-digit verification code.';
+            errorMsg.classList.remove('hidden');
+            successMsg.classList.add('hidden');
             return false;
         }
 
-        // Show loading state
         verifyBtn.disabled = true;
         verifyBtn.innerHTML = `
             <span>Verifying...</span>
@@ -739,12 +759,6 @@ if (isset($_SESSION['verification_expires'])) {
 
         return true;
     });
-
-    function showError(message) {
-        errorText.textContent = message;
-        errorMsg.classList.remove('hidden');
-        successMsg.classList.add('hidden');
-    }
 
     // =============================================
     // 4. CLEAR ERROR ON INPUT
@@ -781,18 +795,70 @@ if (isset($_SESSION['verification_expires'])) {
     }
 
     // =============================================
-    // 6. RESEND BUTTON HANDLER
+    // 6. RESEND BUTTON HANDLER - AJAX VERSION
     // =============================================
-    document.getElementById('resendBtn').addEventListener('click', function() {
-        // Reset timer
-        remainingTime = 600;
-        timerEl.textContent = remainingTime;
-        this.style.color = '';
-        this.style.fontWeight = '';
-
-        // Show success message
-        successMsg.classList.remove('hidden');
-        successMsg.querySelector('span:last-child').textContent = 'Resending verification code...';
+    document.getElementById('resendForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const resendBtn = document.getElementById('resendBtn');
+        const originalText = resendBtn.textContent;
+        
+        // Disable button and show loading
+        resendBtn.disabled = true;
+        resendBtn.textContent = 'Sending...';
+        
+        const formData = new FormData(this);
+        
+        fetch(window.location.href, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.text())
+        .then(html => {
+            // Parse the response to extract messages
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+            
+            const newSuccessMsg = tempDiv.querySelector('.message.success');
+            const newErrorMsg = tempDiv.querySelector('.message.error');
+            
+            // Update messages
+            if (newSuccessMsg) {
+                successMsg.innerHTML = newSuccessMsg.innerHTML;
+                successMsg.classList.remove('hidden');
+                errorMsg.classList.add('hidden');
+                
+                // Reset timer
+                remainingTime = 600;
+                timerEl.textContent = remainingTime;
+                
+                // Reset button
+                resendBtn.disabled = false;
+                resendBtn.textContent = originalText;
+            } else if (newErrorMsg) {
+                errorMsg.innerHTML = newErrorMsg.innerHTML;
+                errorMsg.classList.remove('hidden');
+                successMsg.classList.add('hidden');
+                
+                // Reset button
+                resendBtn.disabled = false;
+                resendBtn.textContent = originalText;
+            } else {
+                // No message found, but form was submitted
+                resendBtn.disabled = false;
+                resendBtn.textContent = originalText;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            errorText.textContent = 'An error occurred. Please try again.';
+            errorMsg.classList.remove('hidden');
+            successMsg.classList.add('hidden');
+            
+            // Reset button
+            resendBtn.disabled = false;
+            resendBtn.textContent = originalText;
+        });
     });
 
     console.log('ISMERS Verify Page loaded.');

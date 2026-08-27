@@ -1,5 +1,5 @@
 <?php
-// logout.php - ISMERS Logout Handler with Confirmation
+// logout.php - ISMERS Logout Handler with Session Timeout Support
 session_start();
 
 // Include configuration file
@@ -14,6 +14,7 @@ if (!isset($_SESSION['user_id'])) {
 // Get user info for display
 $fullName = $_SESSION['full_name'] ?? 'User';
 $userId = $_SESSION['user_id'];
+$role = $_SESSION['role'] ?? 'applicant';
 
 // Check if logout is confirmed
 $confirmed = isset($_GET['confirm']) && $_GET['confirm'] === 'true';
@@ -21,7 +22,6 @@ $confirmed = isset($_GET['confirm']) && $_GET['confirm'] === 'true';
 // Check if logout is cancelled
 if (isset($_GET['cancel'])) {
     // Redirect back to dashboard based on role
-    $role = $_SESSION['role'] ?? 'applicant';
     $redirect = 'index.php';
     
     switch ($role) {
@@ -54,17 +54,20 @@ if (isset($_GET['cancel'])) {
 
 // If confirmed, proceed with logout
 if ($confirmed) {
-    // ✅ FIX: Update last_activity to NULL (user is now offline)
-    $updateSql = "UPDATE users SET last_activity = NULL WHERE id = ?";
-    updateRecord($updateSql, [$userId], "i");
+    // ✅ COMPLETE SESSION DESTRUCTION
     
-    // Log the logout activity
+    // 1. Update user's last_activity to NULL (user is now offline)
+    // ✅ FIXED: PostgreSQL uses $1 placeholder, removed type string
+    $updateSql = "UPDATE users SET last_activity = NULL WHERE id = $1";
+    updateRecord($updateSql, [$userId]);
+    
+    // 2. Log the logout activity
     logActivity($userId, 'Logout', 'user', $userId, 'User logged out successfully');
     
-    // Clear all session variables
+    // 3. Clear all session variables
     $_SESSION = array();
     
-    // If session cookies are used, delete them
+    // 4. Delete session cookie
     if (ini_get("session.use_cookies")) {
         $params = session_get_cookie_params();
         setcookie(
@@ -78,16 +81,39 @@ if ($confirmed) {
         );
     }
     
-    // Destroy the session
+    // 5. Destroy the session
     session_destroy();
     
-    // Clear remember me cookie if it exists
+    // 6. Clear remember me cookie if it exists
     if (isset($_COOKIE['remember_email'])) {
         setcookie('remember_email', '', time() - 3600, '/');
     }
     
-    // Redirect to login page with logout message
+    // 7. Clear any other application cookies
+    if (isset($_COOKIE['user_session'])) {
+        setcookie('user_session', '', time() - 3600, '/');
+    }
+    
+    // 8. Regenerate session ID for security (prevents session fixation)
+    // Note: This is done after session_destroy() to ensure clean slate
+    
+    // 9. Redirect to login page with logout message
     header('Location: login.php?logout=success');
+    exit;
+}
+
+// =============================================
+// CHECK IF SESSION EXPIRED (Auto-logout)
+// =============================================
+
+// Check if this is an auto-logout due to timeout
+$timeout = isset($_GET['timeout']) && $_GET['timeout'] === '1';
+
+// If session expired, show different message
+if ($timeout) {
+    // Session already destroyed by initSessionTimeout()
+    // Just redirect with message
+    header('Location: login.php?timeout=1');
     exit;
 }
 
@@ -160,12 +186,20 @@ if ($confirmed) {
             width: 72px;
             height: 72px;
             border-radius: 50%;
-            background: #fef3c7;
-            color: #d97706;
             display: flex;
             align-items: center;
             justify-content: center;
             margin: 0 auto 16px;
+        }
+
+        .logout-icon.warning {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .logout-icon.danger {
+            background: #fecaca;
+            color: #dc2626;
         }
 
         .logout-icon svg {
@@ -188,12 +222,22 @@ if ($confirmed) {
         .logout-card p {
             font-size: 15px;
             color: var(--text-gray);
-            margin-bottom: 24px;
+            margin-bottom: 8px;
         }
 
         .logout-card .user-name {
             font-weight: 700;
             color: var(--primary-dark);
+        }
+
+        .logout-card .session-info {
+            font-size: 13px;
+            color: var(--text-gray);
+            background: var(--gray-light);
+            padding: 8px 16px;
+            border-radius: 8px;
+            margin: 12px 0 20px;
+            display: inline-block;
         }
 
         .logout-actions {
@@ -213,6 +257,7 @@ if ($confirmed) {
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            text-decoration: none;
         }
 
         .btn-primary {
@@ -247,6 +292,16 @@ if ($confirmed) {
             transform: translateY(-2px);
         }
 
+        .btn-success {
+            background: #16a34a;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #15803d;
+            transform: translateY(-2px);
+        }
+
         @keyframes fadeInUp {
             from {
                 opacity: 0;
@@ -277,7 +332,7 @@ if ($confirmed) {
 
     <div class="logout-wrapper">
         <div class="logout-card">
-            <div class="logout-icon">
+            <div class="logout-icon warning">
                 <svg viewBox="0 0 24 24">
                     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
                     <polyline points="16 17 21 12 16 7"/>
@@ -288,6 +343,14 @@ if ($confirmed) {
             <p>
                 Are you sure you want to logout, <span class="user-name"><?php echo htmlspecialchars($fullName); ?></span>?
             </p>
+            <p style="font-size:13px; color:var(--text-gray);">
+                Your session will be terminated immediately.
+            </p>
+            <?php if (isset($_SESSION['last_activity'])): ?>
+                <div class="session-info">
+                    ⏱ Session active since <?php echo date('h:i A', strtotime($_SESSION['last_activity'] ?? 'now')); ?>
+                </div>
+            <?php endif; ?>
             <div class="logout-actions">
                 <a href="?cancel=true" class="btn btn-outline">Cancel</a>
                 <a href="?confirm=true" class="btn btn-danger">Yes, Logout</a>

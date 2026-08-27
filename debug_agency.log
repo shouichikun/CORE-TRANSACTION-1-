@@ -1,0 +1,293 @@
+2026-08-22 15:08:40 - === SCRIPT STARTED ===
+2026-08-22 15:08:40 - Session user_id: 5
+2026-08-22 15:08:40 - User ID: 5, Role: client
+2026-08-22 15:08:40 - Getting client profile for user_id: 5
+2026-08-22 15:08:40 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-22 15:08:40 - Pending agency count: 1
+2026-08-22 15:08:40 - POST request received. Action: approve_agency
+2026-08-22 15:08:40 - POST data: Array
+(
+    [action] => approve_agency
+    [application_id] => 2
+)
+
+2026-08-22 15:08:40 - Application ID: 2, Client ID: 1
+2026-08-22 15:08:40 - Processing APPROVE action for application ID: 2
+2026-08-22 15:08:40 - Application data: Array
+(
+    [id] => 2
+    [user_id] => 10
+    [client_id] => 1
+    [agency_name] => Gym Wear
+    [agency_code] => GYM
+    [contact_person] => HR Manager User
+    [contact_email] => hr_manager@ismers.com
+    [contact_phone] => 096612121212121
+    [address] => Ph 1
+    [website] => https://www.gymshark.com/
+    [specialization] => magma
+    [years_experience] => 3-5 years
+    [team_size] => 11-20
+    [status] => pending
+    [reviewed_by] => 
+    [reviewed_at] => 
+    [rejection_reason] => 
+    [created_at] => 2026-08-20 18:05:26.191644
+    [updated_at] => 2026-08-20 18:05:26.191644
+    [first_name] => HR
+    [last_name] => Manager
+    [user_email] => hr_manager@ismers.com
+)
+
+2026-08-22 15:08:40 - Application found, checking if agency already exists
+2026-08-22 15:08:40 - No existing agency found, proceeding with INSERT
+2026-08-22 15:08:40 - Transaction started
+2026-08-22 15:08:40 - Status value: approved
+2026-08-22 15:08:41 - ENUM values: {pending,approved,rejected}
+2026-08-22 15:08:41 - Found matching ENUM value: approved
+2026-08-22 15:08:41 - === SQL DEBUG ===
+2026-08-22 15:08:41 - SQL: INSERT INTO recruitment_agencies (
+                        user_id, client_id, agency_name, agency_code, contact_person, 
+                        contact_email, contact_phone, address, website, is_active, 
+                        application_status, approved_at, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::agency_status, $12, NOW(), NOW()) RETURNING id
+2026-08-22 15:08:41 - PARAMETERS:
+2026-08-22 15:08:41 -   user_id: 10 (type: integer)
+2026-08-22 15:08:41 -   client_id: 1 (type: integer)
+2026-08-22 15:08:41 -   agency_name: Gym Wear (type: string)
+2026-08-22 15:08:41 -   agency_code: GYM (type: string)
+2026-08-22 15:08:41 -   contact_person: HR Manager User (type: string)
+2026-08-22 15:08:41 -   contact_email: hr_manager@ismers.com (type: string)
+2026-08-22 15:08:41 -   contact_phone: 096612121212121 (type: string)
+2026-08-22 15:08:41 -   address: Ph 1 (type: string)
+2026-08-22 15:08:41 -   website: https://www.gymshark.com/ (type: string)
+2026-08-22 15:08:41 -   is_active: true (type: boolean)
+2026-08-22 15:08:41 -   application_status: approved (type: string)
+2026-08-22 15:08:41 -   approved_at: 2026-08-22 15:08:41 (type: string)
+2026-08-22 15:08:41 - === END DEBUG ===
+2026-08-22 15:08:41 - Executing pg_query_params...
+2026-08-22 15:12:45 - === SCRIPT STARTED ===
+2026-08-22 15:12:45 - Session user_id: 5
+2026-08-22 15:12:45 - User ID: 5, Role: client
+2026-08-22 15:12:45 - Getting client profile for user_id: 5
+2026-08-22 15:12:45 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-22 15:12:45 - Pending agency count: 1
+2026-08-22 15:12:45 - POST request received. Action: approve_agency
+2026-08-22 15:12:45 - POST data: Array
+(
+    [action] => approve_agency
+    [application_id] => 2
+)
+
+2026-08-22 15:12:45 - Application ID: 2, Client ID: 1
+2026-08-22 15:12:45 - Processing APPROVE action for application ID: 2
+2026-08-22 15:12:45 - Application data: Array
+(
+    [id] => 2
+    [user_id] => 10
+    [client_id] => 1
+    [agency_name] => Gym Wear
+    [agency_code] => GYM
+    [contact_person] => HR Manager User
+    [contact_email] => hr_manager@ismers.com
+    [contact_phone] => 096612121212121
+    [address] => Ph 1
+    [website] => https://www.gymshark.com/
+    [specialization] => magma
+    [years_experience] => 3-5 years
+    [team_size] => 11-20
+    [status] => pending
+    [reviewed_by] => 
+    [reviewed_at] => 
+    [rejection_reason] => 
+    [created_at] => 2026-08-20 18:05:26.191644
+    [updated_at] => 2026-08-20 18:05:26.191644
+    [first_name] => HR
+    [last_name] => Manager
+    [user_email] => hr_manager@ismers.com
+)
+
+2026-08-22 15:12:45 - Application found, checking if agency already exists
+2026-08-22 15:12:45 - No existing agency found, proceeding with INSERT
+2026-08-22 15:12:45 - Transaction started
+2026-08-22 15:12:45 - Status value: approved
+2026-08-22 15:12:45 - ENUM values: {pending,approved,rejected}
+2026-08-22 15:12:45 - Found matching ENUM value: approved
+2026-08-22 15:12:45 - === SQL DEBUG ===
+2026-08-22 15:12:45 - SQL: INSERT INTO recruitment_agencies (
+                        user_id, client_id, agency_name, agency_code, contact_person, 
+                        contact_email, contact_phone, address, website, is_active, 
+                        application_status, approved_at, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::agency_status, $12, NOW(), NOW()) RETURNING id
+2026-08-22 15:12:45 - PARAMETERS:
+2026-08-22 15:12:45 -   user_id: 10 (type: integer)
+2026-08-22 15:12:45 -   client_id: 1 (type: integer)
+2026-08-22 15:12:45 -   agency_name: Gym Wear (type: string)
+2026-08-22 15:12:45 -   agency_code: GYM (type: string)
+2026-08-22 15:12:45 -   contact_person: HR Manager User (type: string)
+2026-08-22 15:12:45 -   contact_email: hr_manager@ismers.com (type: string)
+2026-08-22 15:12:45 -   contact_phone: 096612121212121 (type: string)
+2026-08-22 15:12:45 -   address: Ph 1 (type: string)
+2026-08-22 15:12:45 -   website: https://www.gymshark.com/ (type: string)
+2026-08-22 15:12:45 -   is_active: true (type: boolean)
+2026-08-22 15:12:45 -   application_status: approved (type: string)
+2026-08-22 15:12:45 -   approved_at: 2026-08-22 15:12:45 (type: string)
+2026-08-22 15:12:45 - === END DEBUG ===
+2026-08-22 15:12:45 - Executing pg_query_params...
+2026-08-22 15:12:45 - === POSTGRESQL ERROR ===
+2026-08-22 15:12:45 - pg_last_error: ERROR:  duplicate key value violates unique constraint "recruitment_agencies_agency_code_key"
+DETAIL:  Key (agency_code)=(GYM) already exists.
+2026-08-22 15:12:45 - Transaction rolled back
+2026-08-22 15:12:45 - Fetching pending applications for client_id: 1
+2026-08-22 15:12:45 - Found 1 pending applications
+2026-08-22 15:12:45 - Fetching approved agencies for client_id: 1
+2026-08-22 15:12:46 - Found 0 approved agencies
+2026-08-22 15:12:46 - Fetching rejected applications for client_id: 1
+2026-08-22 15:12:46 - Found 0 rejected applications
+2026-08-22 15:12:46 - === SCRIPT COMPLETED SUCCESSFULLY ===
+2026-08-22 15:26:15 - === SCRIPT STARTED ===
+2026-08-22 15:26:15 - Session user_id: 5
+2026-08-22 15:26:15 - User ID: 5, Role: client
+2026-08-22 15:26:15 - Getting client profile for user_id: 5
+2026-08-22 15:26:15 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-22 15:26:15 - Pending agency count: 1
+2026-08-22 15:26:15 - Fetching pending applications for client_id: 1
+2026-08-22 15:26:16 - Found 1 pending applications
+2026-08-22 15:26:16 - Fetching approved agencies for client_id: 1
+2026-08-22 15:26:16 - Found 0 approved agencies
+2026-08-22 15:26:16 - Fetching rejected applications for client_id: 1
+2026-08-22 15:26:16 - Found 0 rejected applications
+2026-08-22 15:26:16 - === SCRIPT COMPLETED SUCCESSFULLY ===
+2026-08-22 15:26:28 - === SCRIPT STARTED ===
+2026-08-22 15:26:28 - Session user_id: 5
+2026-08-22 15:26:28 - User ID: 5, Role: client
+2026-08-22 15:26:28 - Getting client profile for user_id: 5
+2026-08-22 15:26:28 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-22 15:26:28 - Pending agency count: 1
+2026-08-22 15:26:28 - POST request received. Action: approve_agency
+2026-08-22 15:26:28 - POST data: Array
+(
+    [action] => approve_agency
+    [application_id] => 2
+)
+
+2026-08-22 15:26:28 - Application ID: 2, Client ID: 1
+2026-08-22 15:26:28 - Processing APPROVE action for application ID: 2
+2026-08-22 15:26:28 - Application data: Array
+(
+    [id] => 2
+    [user_id] => 10
+    [client_id] => 1
+    [agency_name] => Gym Wear
+    [agency_code] => GYM
+    [contact_person] => HR Manager User
+    [contact_email] => hr_manager@ismers.com
+    [contact_phone] => 096612121212121
+    [address] => Ph 1
+    [website] => https://www.gymshark.com/
+    [specialization] => magma
+    [years_experience] => 3-5 years
+    [team_size] => 11-20
+    [status] => pending
+    [reviewed_by] => 
+    [reviewed_at] => 
+    [rejection_reason] => 
+    [created_at] => 2026-08-20 18:05:26.191644
+    [updated_at] => 2026-08-20 18:05:26.191644
+    [first_name] => HR
+    [last_name] => Manager
+    [user_email] => hr_manager@ismers.com
+)
+
+2026-08-22 15:26:28 - Application found, checking if agency already exists for this client
+2026-08-22 15:26:28 - Agency already exists for 1 other client(s) - this is allowed
+2026-08-22 15:26:28 - No existing agency found for this client, proceeding with INSERT
+2026-08-22 15:26:28 - Transaction started
+2026-08-22 15:26:28 - Status value: approved
+2026-08-22 15:26:28 - ENUM values: {pending,approved,rejected}
+2026-08-22 15:26:28 - Found matching ENUM value: approved
+2026-08-22 15:26:28 - === SQL DEBUG ===
+2026-08-22 15:26:28 - SQL: INSERT INTO recruitment_agencies (
+                        user_id, client_id, agency_name, agency_code, contact_person, 
+                        contact_email, contact_phone, address, website, is_active, 
+                        application_status, approved_at, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::agency_status, $12, NOW(), NOW()) RETURNING id
+2026-08-22 15:26:28 - PARAMETERS:
+2026-08-22 15:26:28 -   user_id: 10 (type: integer)
+2026-08-22 15:26:28 -   client_id: 1 (type: integer)
+2026-08-22 15:26:28 -   agency_name: Gym Wear (type: string)
+2026-08-22 15:26:28 -   agency_code: GYM (type: string)
+2026-08-22 15:26:28 -   contact_person: HR Manager User (type: string)
+2026-08-22 15:26:28 -   contact_email: hr_manager@ismers.com (type: string)
+2026-08-22 15:26:28 -   contact_phone: 096612121212121 (type: string)
+2026-08-22 15:26:28 -   address: Ph 1 (type: string)
+2026-08-22 15:26:28 -   website: https://www.gymshark.com/ (type: string)
+2026-08-22 15:26:28 -   is_active: true (type: boolean)
+2026-08-22 15:26:28 -   application_status: approved (type: string)
+2026-08-22 15:26:28 -   approved_at: 2026-08-22 15:26:28 (type: string)
+2026-08-22 15:26:28 - === END DEBUG ===
+2026-08-22 15:26:28 - Executing pg_query_params...
+2026-08-22 15:26:28 - Query executed successfully, fetching result...
+2026-08-22 15:26:28 - Agency ID returned: 33
+2026-08-22 15:26:28 - Updating application status to approved...
+2026-08-22 15:26:29 - Transaction committed successfully
+2026-08-22 15:26:29 - Activity logged
+2026-08-22 15:26:29 - Fetching pending applications for client_id: 1
+2026-08-22 15:26:29 - Found 0 pending applications
+2026-08-22 15:26:29 - Fetching approved agencies for client_id: 1
+2026-08-22 15:26:29 - Found 1 approved agencies
+2026-08-22 15:26:29 - Fetching rejected applications for client_id: 1
+2026-08-22 15:26:29 - Found 0 rejected applications
+2026-08-22 15:26:29 - === SCRIPT COMPLETED SUCCESSFULLY ===
+2026-08-22 15:29:24 - === SCRIPT STARTED ===
+2026-08-22 15:29:24 - Session user_id: 5
+2026-08-22 15:29:24 - User ID: 5, Role: client
+2026-08-22 15:29:24 - Getting client profile for user_id: 5
+2026-08-22 15:29:24 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-22 15:29:24 - Pending agency count: 0
+2026-08-22 15:29:24 - Fetching pending applications for client_id: 1
+2026-08-22 15:29:24 - Found 0 pending applications
+2026-08-22 15:29:24 - Fetching approved agencies for client_id: 1
+2026-08-22 15:29:24 - Found 1 approved agencies
+2026-08-22 15:29:24 - Fetching rejected applications for client_id: 1
+2026-08-22 15:29:24 - Found 0 rejected applications
+2026-08-22 15:29:24 - === SCRIPT COMPLETED SUCCESSFULLY ===
+2026-08-22 15:38:05 - === SCRIPT STARTED ===
+2026-08-22 15:38:05 - Session user_id: 5
+2026-08-22 15:38:05 - User ID: 5, Role: client
+2026-08-22 15:38:05 - Getting client profile for user_id: 5
+2026-08-22 15:38:05 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-22 15:38:05 - Pending agency count: 0
+2026-08-22 15:38:05 - Fetching pending applications for client_id: 1
+2026-08-22 15:38:06 - Found 0 pending applications
+2026-08-22 15:38:06 - Fetching approved agencies for client_id: 1
+2026-08-22 15:38:06 - Found 1 approved agencies
+2026-08-22 15:38:06 - Fetching rejected applications for client_id: 1
+2026-08-22 15:38:06 - Found 0 rejected applications
+2026-08-22 15:38:06 - === SCRIPT COMPLETED SUCCESSFULLY ===
+2026-08-25 23:32:47 - === SCRIPT STARTED ===
+2026-08-25 23:32:47 - Session user_id: 5
+2026-08-25 23:32:47 - User ID: 5, Role: client
+2026-08-25 23:32:47 - Getting client profile for user_id: 5
+2026-08-25 23:32:47 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-25 23:32:47 - Pending agency count: 0
+2026-08-25 23:32:47 - Fetching pending applications for client_id: 1
+2026-08-25 23:32:47 - Found 0 pending applications
+2026-08-25 23:32:47 - Fetching approved agencies for client_id: 1
+2026-08-25 23:32:47 - Found 1 approved agencies
+2026-08-25 23:32:47 - Fetching rejected applications for client_id: 1
+2026-08-25 23:32:47 - Found 0 rejected applications
+2026-08-25 23:32:47 - === SCRIPT COMPLETED SUCCESSFULLY ===
+2026-08-25 23:36:42 - === SCRIPT STARTED ===
+2026-08-25 23:36:42 - Session user_id: 5
+2026-08-25 23:36:42 - User ID: 5, Role: client
+2026-08-25 23:36:42 - Getting client profile for user_id: 5
+2026-08-25 23:36:43 - Client found: ID=1, Company=Tech Solutions Inc.
+2026-08-25 23:36:43 - Pending agency count: 0
+2026-08-25 23:36:43 - Fetching pending applications for client_id: 1
+2026-08-25 23:36:43 - Found 0 pending applications
+2026-08-25 23:36:43 - Fetching approved agencies for client_id: 1
+2026-08-25 23:36:43 - Found 1 approved agencies
+2026-08-25 23:36:43 - Fetching rejected applications for client_id: 1
+2026-08-25 23:36:43 - Found 0 rejected applications
+2026-08-25 23:36:43 - === SCRIPT COMPLETED SUCCESSFULLY ===

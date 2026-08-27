@@ -1,0 +1,515 @@
+2026-08-22 18:40:48 - === JOB-DETAILS.PHP STARTED ===
+2026-08-23 00:40:49 - Job ID from URL: 6
+2026-08-22 18:43:49 - === JOB-DETAILS.PHP STARTED ===
+2026-08-23 00:43:49 - Job ID from URL: 6
+2026-08-22 18:44:03 - === JOB-DETAILS.PHP STARTED ===
+2026-08-23 00:44:03 - Job ID from URL: 6
+2026-08-22 18:48:45 - === JOB-DETAILS.PHP STARTED ===
+2026-08-22 18:48:45 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-23 00:48:46 - User ID: 5, Role: client
+2026-08-23 00:48:46 - Client query result: FOUND
+2026-08-23 00:48:46 - Client data: Array
+(
+    [id] => 1
+    [user_id] => 5
+    [company_name] => Tech Solutions Inc.
+    [industry] => Information Technology
+    [company_size] => 50-100
+    [contact_person] => John Smith
+    [contact_phone] => +63 900 000 0001
+    [website] => 
+    [address] => 
+    [logo_path] => 
+    [is_active] => t
+    [created_at] => 2026-07-04 15:58:48
+    [updated_at] => 2026-07-04 15:58:48
+    [company_description] => 
+    [year_established] => 
+    [business_type] => 
+    [parent_company] => 
+    [subsidiaries] => 
+    [secondary_contact_person] => 
+    [secondary_contact_phone] => 
+    [secondary_contact_email] => 
+    [hr_contact_person] => 
+    [hr_contact_phone] => 
+    [hr_contact_email] => 
+    [city] => 
+    [province] => 
+    [zip_code] => 
+    [country] => Philippines
+    [facebook_url] => 
+    [linkedin_url] => 
+    [twitter_url] => 
+    [tax_id] => 
+    [registration_number] => 
+    [dti_registration] => 
+    [sec_registration] => 
+    [contract_start_date] => 
+    [contract_end_date] => 
+    [contract_terms] => 
+    [preferred_communication] => email
+    [timezone] => Asia/Manila
+    [language_preference] => English
+    [notification_preferences] => 
+    [notes] => 
+    [tags] => 
+    [user_email] => client@ismers.com
+    [full_name] => Client User
+)
+
+2026-08-23 00:48:46 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-23 00:48:46 - Job ID from URL: 6
+2026-08-23 00:48:46 - Job query result: NOT FOUND
+2026-08-23 00:48:46 - Job not found, redirecting to jobs.php
+2026-08-22 18:50:25 - === JOB-DETAILS.PHP STARTED ===
+2026-08-22 18:50:25 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-23 00:50:26 - User ID: 5, Role: client
+2026-08-23 00:50:26 - Client query result: FOUND
+2026-08-23 00:50:26 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-23 00:50:26 - Job ID from URL: 6
+2026-08-23 00:50:26 - Simple check SQL: SELECT id, client_id, title, status FROM job_orders WHERE id = 6
+2026-08-23 00:50:26 - Simple query result: FOUND
+2026-08-23 00:50:26 - Simple row data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [title] => fitness coach
+    [status] => open
+)
+
+2026-08-23 00:50:26 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'reviewed') as reviewed_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-23 00:50:26 - pg_query_params result: FAILED
+2026-08-23 00:50:26 - pg_query_params error: ERROR:  invalid input value for enum application_status: "reviewed"
+LINE 4: ...plications WHERE job_order_id = j.id AND status = 'reviewed'...
+                                                             ^
+2026-08-23 00:50:26 - Trying getRecord fallback...
+2026-08-23 00:50:26 - getRecord fallback result: NOT FOUND
+2026-08-23 00:50:26 - Job not found, redirecting to jobs.php
+2026-08-22 19:11:57 - === JOB-DETAILS.PHP STARTED ===
+2026-08-22 19:11:57 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-23 01:11:57 - User ID: 5, Role: client
+2026-08-23 01:11:57 - Client query result: FOUND
+2026-08-23 01:11:57 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-23 01:11:57 - Job ID from URL: 6
+2026-08-23 01:11:57 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-23 01:11:57 - Job query result: FOUND
+2026-08-23 01:11:57 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 0
+)
+
+2026-08-23 01:11:57 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-23 01:11:57 - ✅ All checks passed, loading job details
+2026-08-22 19:12:05 - === JOB-DETAILS.PHP STARTED ===
+2026-08-22 19:12:05 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-23 01:12:05 - User ID: 5, Role: client
+2026-08-23 01:12:05 - Client query result: FOUND
+2026-08-23 01:12:05 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-23 01:12:05 - Job ID from URL: 6
+2026-08-23 01:12:05 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-23 01:12:06 - Job query result: FOUND
+2026-08-23 01:12:06 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 0
+)
+
+2026-08-23 01:12:06 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-23 01:12:06 - ✅ All checks passed, loading job details
+2026-08-22 19:12:13 - === JOB-DETAILS.PHP STARTED ===
+2026-08-22 19:12:13 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-23 01:12:14 - User ID: 5, Role: client
+2026-08-23 01:12:14 - Client query result: FOUND
+2026-08-23 01:12:14 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-23 01:12:14 - Job ID from URL: 6
+2026-08-23 01:12:14 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-23 01:12:14 - Job query result: FOUND
+2026-08-23 01:12:14 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 0
+)
+
+2026-08-23 01:12:14 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-23 01:12:14 - ✅ All checks passed, loading job details
+2026-08-24 13:12:41 - === JOB-DETAILS.PHP STARTED ===
+2026-08-24 13:12:41 - GET parameters: Array
+(
+    [id] => 7
+)
+
+2026-08-24 19:12:42 - User ID: 5, Role: client
+2026-08-24 19:12:42 - Client query result: FOUND
+2026-08-24 19:12:42 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-24 19:12:42 - Job ID from URL: 7
+2026-08-24 19:12:42 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-24 19:12:42 - Job query result: FOUND
+2026-08-24 19:12:42 - Job data: Array
+(
+    [id] => 7
+    [client_id] => 1
+    [agency_id] => 
+    [title] => software engineer
+    [description] => akakl
+    [skills_required] => Git, GitHub, HTML5, cook
+    [salary_range] => ₱1,000 - ₱100,000
+    [location] => bulacan
+    [job_type] => Full-time
+    [salary_min] => 1000.00
+    [salary_max] => 100000.00
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => medium
+    [positions_available] => 1
+    [application_deadline] => 
+    [created_by] => 5
+    [created_at] => 2026-08-01 07:24:11
+    [updated_at] => 2026-08-20 17:47:00.69001
+    [request_notes] => 
+
+--- HR APPROVAL ---
+okay
+    [requested_by] => 
+    [total_applicants] => 0
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 0
+)
+
+2026-08-24 19:12:42 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-24 19:12:42 - ✅ All checks passed, loading job details
+2026-08-24 13:12:55 - === JOB-DETAILS.PHP STARTED ===
+2026-08-24 13:12:55 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-24 19:12:56 - User ID: 5, Role: client
+2026-08-24 19:12:56 - Client query result: FOUND
+2026-08-24 19:12:56 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-24 19:12:56 - Job ID from URL: 6
+2026-08-24 19:12:56 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-24 19:12:56 - Job query result: FOUND
+2026-08-24 19:12:56 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 1
+)
+
+2026-08-24 19:12:56 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-24 19:12:56 - ✅ All checks passed, loading job details
+2026-08-24 13:13:03 - === JOB-DETAILS.PHP STARTED ===
+2026-08-24 13:13:03 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-24 19:13:04 - User ID: 5, Role: client
+2026-08-24 19:13:04 - Client query result: FOUND
+2026-08-24 19:13:04 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-24 19:13:04 - Job ID from URL: 6
+2026-08-24 19:13:04 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-24 19:13:04 - Job query result: FOUND
+2026-08-24 19:13:04 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 1
+)
+
+2026-08-24 19:13:04 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-24 19:13:04 - ✅ All checks passed, loading job details
+2026-08-25 17:46:54 - === JOB-DETAILS.PHP STARTED ===
+2026-08-25 17:46:54 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-25 23:46:55 - User ID: 5, Role: client
+2026-08-25 23:46:55 - Client query result: FOUND
+2026-08-25 23:46:55 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-25 23:46:55 - Job ID from URL: 6
+2026-08-25 23:46:55 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-25 23:46:55 - Job query result: FOUND
+2026-08-25 23:46:55 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 1
+)
+
+2026-08-25 23:46:55 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-25 23:46:55 - ✅ All checks passed, loading job details
+2026-08-25 17:47:02 - === JOB-DETAILS.PHP STARTED ===
+2026-08-25 17:47:02 - GET parameters: Array
+(
+    [id] => 6
+)
+
+2026-08-25 23:47:03 - User ID: 5, Role: client
+2026-08-25 23:47:03 - Client query result: FOUND
+2026-08-25 23:47:03 - Client ID: 1, Company: Tech Solutions Inc.
+2026-08-25 23:47:03 - Job ID from URL: 6
+2026-08-25 23:47:03 - Full query SQL: SELECT j.*, 
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as total_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'pending') as pending_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'shortlisted') as shortlisted_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'hired') as hired_applicants,
+           (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id AND status = 'rejected') as rejected_applicants
+           FROM job_orders j
+           WHERE j.id = $1
+2026-08-25 23:47:03 - Job query result: FOUND
+2026-08-25 23:47:03 - Job data: Array
+(
+    [id] => 6
+    [client_id] => 1
+    [agency_id] => 
+    [title] => fitness coach
+    [description] => fitness coach with experience on work
+    [skills_required] => experience on training, diet,
+    [salary_range] => 5,000
+    [location] => bagong silang, caloocan city
+    [job_type] => Full-time
+    [salary_min] => 
+    [salary_max] => 
+    [experience_level] => Entry
+    [status] => open
+    [urgency] => low
+    [positions_available] => 3
+    [application_deadline] => 
+    [created_by] => 10
+    [created_at] => 2026-07-22 04:55:59
+    [updated_at] => 2026-07-22 04:55:59
+    [request_notes] => 
+    [requested_by] => 
+    [total_applicants] => 1
+    [pending_applicants] => 0
+    [shortlisted_applicants] => 0
+    [hired_applicants] => 0
+    [rejected_applicants] => 1
+)
+
+2026-08-25 23:47:03 - Checking job ownership - job client_id: 1, current client_id: 1
+2026-08-25 23:47:03 - ✅ All checks passed, loading job details
