@@ -1,0 +1,100 @@
+[21-Jul-2026 16:08:11 Asia/Manila] AJAX Request: action=move_stage, id=2, status=shortlisted
+[21-Jul-2026 16:08:13 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 16:08:24 Asia/Manila] AJAX Request: action=move_stage, id=2, status=interviewed
+[21-Jul-2026 16:08:26 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 16:08:35 Asia/Manila] AJAX Request: action=move_stage, id=2, status=shortlisted
+[21-Jul-2026 16:08:37 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 17:34:18 Asia/Manila] AJAX Request: action=move_stage, id=5, status=shortlisted
+[21-Jul-2026 17:34:20 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
+[21-Jul-2026 17:34:20 Asia/Manila] AJAX Request: action=move_stage, id=5, status=pending
+[22-Jul-2026 11:37:00 Asia/Manila] AJAX Request: action=move_stage, id=4, status=scheduled
+[22-Jul-2026 11:37:03 Asia/Manila] AJAX Request: action=move_stage, id=4, status=pending
+[22-Jul-2026 12:36:55 Asia/Manila] AJAX Request: action=move_stage, id=2, status=pending
+[22-Jul-2026 12:38:33 Asia/Manila] AJAX Request: action=move_stage, id=4, status=pending
+[22-Jul-2026 12:43:49 Asia/Manila] AJAX Request: action=move_stage, id=2, status=pending
+[26-Jul-2026 16:18:23 Asia/Manila] PHP Warning:  Undefined variable $statusCounts in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[26-Jul-2026 16:18:23 Asia/Manila] PHP Warning:  Trying to access array offset on value of type null in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[26-Jul-2026 16:18:30 Asia/Manila] PHP Warning:  Undefined variable $statusCounts in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[26-Jul-2026 16:18:30 Asia/Manila] PHP Warning:  Trying to access array offset on value of type null in C:\xampp1\htdocs\CT1\portals\hr\pipeline.php on line 1020
+[28-Jul-2026 23:43:40 Asia/Manila] AJAX Request: action=move_stage, id=2, status=pending
+[11-Aug-2026 13:50:42 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:50:42 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:50:42 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:50:42 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:50:42 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:50:42 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:50:42 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:50:42 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:50:42 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:50:42 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:53:39 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:53:39 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:53:39 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:53:39 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:53:39 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:53:39 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:53:39 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:53:39 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:53:39 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:53:39 Asia/Manila]   - GEMINI: ❌ DISABLED
+[11-Aug-2026 13:55:12 Asia/Manila] permissions.php loaded successfully
+[11-Aug-2026 13:55:12 Asia/Manila] 🔍 Loading Gemini configuration...
+[11-Aug-2026 13:55:12 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[11-Aug-2026 13:55:12 Asia/Manila] ⚙️ USE_GEMINI: false
+[11-Aug-2026 13:55:12 Asia/Manila] 🔍 Loading Groq configuration...
+[11-Aug-2026 13:55:12 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[11-Aug-2026 13:55:12 Asia/Manila] ⚙️ USE_GROQ: true
+[11-Aug-2026 13:55:12 Asia/Manila] 📊 AI Configuration Summary:
+[11-Aug-2026 13:55:12 Asia/Manila]   - GROQ: ✅ ENABLED
+[11-Aug-2026 13:55:12 Asia/Manila]   - GEMINI: ❌ DISABLED
+[14-Aug-2026 22:06:27 Asia/Manila] permissions.php loaded successfully
+[14-Aug-2026 22:06:27 Asia/Manila] 🔍 Loading Gemini configuration...
+[14-Aug-2026 22:06:27 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[14-Aug-2026 22:06:27 Asia/Manila] ⚙️ USE_GEMINI: false
+[14-Aug-2026 22:06:27 Asia/Manila] 🔍 Loading Groq configuration...
+[14-Aug-2026 22:06:27 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[14-Aug-2026 22:06:27 Asia/Manila] ⚙️ USE_GROQ: true
+[14-Aug-2026 22:06:27 Asia/Manila] 📊 AI Configuration Summary:
+[14-Aug-2026 22:06:27 Asia/Manila]   - GROQ: ✅ ENABLED
+[14-Aug-2026 22:06:27 Asia/Manila]   - GEMINI: ❌ DISABLED
+[14-Aug-2026 22:06:31 Asia/Manila] permissions.php loaded successfully
+[14-Aug-2026 22:06:31 Asia/Manila] 🔍 Loading Gemini configuration...
+[14-Aug-2026 22:06:31 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[14-Aug-2026 22:06:31 Asia/Manila] ⚙️ USE_GEMINI: false
+[14-Aug-2026 22:06:31 Asia/Manila] 🔍 Loading Groq configuration...
+[14-Aug-2026 22:06:31 Asia/Manila] 🔑 Groq key loaded: gsk_jF8yipuHO4NMtvtO...
+[14-Aug-2026 22:06:31 Asia/Manila] ⚙️ USE_GROQ: true
+[14-Aug-2026 22:06:31 Asia/Manila] 📊 AI Configuration Summary:
+[14-Aug-2026 22:06:31 Asia/Manila]   - GROQ: ✅ ENABLED
+[14-Aug-2026 22:06:31 Asia/Manila]   - GEMINI: ❌ DISABLED
+[18-Aug-2026 22:27:01 Asia/Manila] permissions.php loaded successfully
+[18-Aug-2026 22:27:01 Asia/Manila] 🔍 Loading Gemini configuration...
+[18-Aug-2026 22:27:01 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[18-Aug-2026 22:27:01 Asia/Manila] ⚙️ USE_GEMINI: false
+[18-Aug-2026 22:27:01 Asia/Manila] 🔍 Loading Groq configuration...
+[18-Aug-2026 22:27:01 Asia/Manila] 🔑 Groq key loaded: gsk_JX5V1036BNNN448I...
+[18-Aug-2026 22:27:01 Asia/Manila] ⚙️ USE_GROQ: true
+[18-Aug-2026 22:27:01 Asia/Manila] 📊 AI Configuration Summary:
+[18-Aug-2026 22:27:01 Asia/Manila]   - GROQ: ✅ ENABLED
+[18-Aug-2026 22:27:01 Asia/Manila]   - GEMINI: ❌ DISABLED
+[18-Aug-2026 23:55:44 Asia/Manila] permissions.php loaded successfully
+[18-Aug-2026 23:55:44 Asia/Manila] 🔍 Loading Gemini configuration...
+[18-Aug-2026 23:55:44 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[18-Aug-2026 23:55:44 Asia/Manila] ⚙️ USE_GEMINI: false
+[18-Aug-2026 23:55:44 Asia/Manila] 🔍 Loading Groq configuration...
+[18-Aug-2026 23:55:44 Asia/Manila] 🔑 Groq key loaded: gsk_JX5V1036BNNN448I...
+[18-Aug-2026 23:55:44 Asia/Manila] ⚙️ USE_GROQ: true
+[18-Aug-2026 23:55:44 Asia/Manila] 📊 AI Configuration Summary:
+[18-Aug-2026 23:55:44 Asia/Manila]   - GROQ: ✅ ENABLED
+[18-Aug-2026 23:55:44 Asia/Manila]   - GEMINI: ❌ DISABLED
+[18-Aug-2026 23:55:50 Asia/Manila] permissions.php loaded successfully
+[18-Aug-2026 23:55:50 Asia/Manila] 🔍 Loading Gemini configuration...
+[18-Aug-2026 23:55:50 Asia/Manila] 🔑 Gemini key loaded: NOT FOUND
+[18-Aug-2026 23:55:50 Asia/Manila] ⚙️ USE_GEMINI: false
+[18-Aug-2026 23:55:50 Asia/Manila] 🔍 Loading Groq configuration...
+[18-Aug-2026 23:55:50 Asia/Manila] 🔑 Groq key loaded: gsk_JX5V1036BNNN448I...
+[18-Aug-2026 23:55:50 Asia/Manila] ⚙️ USE_GROQ: true
+[18-Aug-2026 23:55:50 Asia/Manila] 📊 AI Configuration Summary:
+[18-Aug-2026 23:55:50 Asia/Manila]   - GROQ: ✅ ENABLED
+[18-Aug-2026 23:55:50 Asia/Manila]   - GEMINI: ❌ DISABLED
+[21-Aug-2026 01:54:34 Asia/Manila] permissions.php loaded successfully

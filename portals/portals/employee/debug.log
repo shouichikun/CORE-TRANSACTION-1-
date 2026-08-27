@@ -1,0 +1,155 @@
+[03-Aug-2026 20:53:45 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Table 'core1_db.departments' doesn't exist in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 20:55:50 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'e.employee_id' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:00:52 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'e.employee_id' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:00:52 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'e.employee_id' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:00:53 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'e.employee_id' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:00:56 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'e.employee_id' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:10:41 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.address' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:10:45 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.address' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:10:48 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.address' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:15:03 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.address' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:21:21 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.address' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:26:12 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.civil_status' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:26:13 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.civil_status' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:26:13 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'u.civil_status' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT e....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT e....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\dashboard.php(35): getRecord('\r\n    SELECT e....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 21:48:41 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'e.employee_id' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT u....')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT u....', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\profile.php(39): getRecord('\r\n    SELECT u....', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 22:20:24 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'is_late' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT \r\n...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT \r\n...', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\attendance.php(58): getRecord('\r\n    SELECT \r\n...', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 22:25:04 Asia/Manila] PHP Warning:  Undefined variable $daysLate in C:\xampp1\htdocs\CT1\portals\employee\attendance.php on line 938
+[03-Aug-2026 22:51:09 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'rating' in 'field list' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT \r\n...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(82): executeQuery('\r\n    SELECT \r\n...', Array, 'i')
+#2 C:\xampp1\htdocs\CT1\portals\employee\performance.php(64): getRecord('\r\n    SELECT \r\n...', Array, 'i')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 23:05:12 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'is_pinned' in 'order clause' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT * ...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(93): executeQuery('\r\n    SELECT * ...', Array, '')
+#2 C:\xampp1\htdocs\CT1\portals\employee\announcements.php(46): getRecords('\r\n    SELECT * ...', Array, '')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 23:05:29 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'is_pinned' in 'order clause' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT * ...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(93): executeQuery('\r\n    SELECT * ...', Array, '')
+#2 C:\xampp1\htdocs\CT1\portals\employee\announcements.php(46): getRecords('\r\n    SELECT * ...', Array, '')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 23:05:29 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'is_pinned' in 'order clause' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT * ...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(93): executeQuery('\r\n    SELECT * ...', Array, '')
+#2 C:\xampp1\htdocs\CT1\portals\employee\announcements.php(46): getRecords('\r\n    SELECT * ...', Array, '')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 23:05:30 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'is_pinned' in 'order clause' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT * ...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(93): executeQuery('\r\n    SELECT * ...', Array, '')
+#2 C:\xampp1\htdocs\CT1\portals\employee\announcements.php(46): getRecords('\r\n    SELECT * ...', Array, '')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
+[03-Aug-2026 23:05:30 Asia/Manila] PHP Fatal error:  Uncaught mysqli_sql_exception: Unknown column 'is_pinned' in 'order clause' in C:\xampp1\htdocs\CT1\app\config.php:59
+Stack trace:
+#0 C:\xampp1\htdocs\CT1\app\config.php(59): mysqli_prepare(Object(mysqli), '\r\n    SELECT * ...')
+#1 C:\xampp1\htdocs\CT1\app\config.php(93): executeQuery('\r\n    SELECT * ...', Array, '')
+#2 C:\xampp1\htdocs\CT1\portals\employee\announcements.php(46): getRecords('\r\n    SELECT * ...', Array, '')
+#3 {main}
+  thrown in C:\xampp1\htdocs\CT1\app\config.php on line 59
