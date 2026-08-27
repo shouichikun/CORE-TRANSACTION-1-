@@ -16,17 +16,15 @@ $sql = "SELECT fs.user_id, fs.face_encoding, fs.image_path, fs.liveness_score,
         WHERE fs.is_active = 1";
 
 $params = [];
-$types = "";
 
 if ($userId > 0) {
-    $sql .= " AND fs.user_id = ?";
+    $sql .= " AND fs.user_id = $1";
     $params[] = $userId;
-    $types .= "i";
 }
 
 $sql .= " ORDER BY fs.created_at DESC";
 
-$results = getRecords($sql, $params, $types);
+$results = getRecords($sql, $params);
 
 if ($results) {
     $descriptors = [];

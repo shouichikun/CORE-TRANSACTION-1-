@@ -25,37 +25,37 @@ $snapshot = $data['snapshot'] ?? null;
 $expressions = json_encode($data['expressions'] ?? []);
 $livenessScore = floatval($data['liveness_score'] ?? 0);
 
-// Validate user exists
-$user = getRecord("SELECT id, first_name, last_name FROM users WHERE id = ?", [$userId], "i");
+// Validate user exists - PostgreSQL uses $1 placeholder
+$user = getRecord("SELECT id, first_name, last_name FROM users WHERE id = $1", [$userId]);
 if (!$user) {
     echo json_encode(['success' => false, 'error' => 'User not found']);
     exit;
 }
 
 // Check if face already exists for this user
-$existing = getRecord("SELECT id FROM face_scans WHERE user_id = ?", [$userId], "i");
+$existing = getRecord("SELECT id FROM face_scans WHERE user_id = $1", [$userId]);
 
 if ($existing) {
     // Update existing
-    $sql = "UPDATE face_scans SET face_encoding = ?, image_path = ?, expressions = ?, liveness_score = ?, updated_at = NOW() WHERE user_id = ?";
-    $result = updateRecord($sql, [$descriptor, $snapshot, $expressions, $livenessScore, $userId], "sssdi");
+    $sql = "UPDATE face_scans SET face_encoding = $1, image_path = $2, expressions = $3, liveness_score = $4, updated_at = NOW() WHERE user_id = $5";
+    $result = updateRecord($sql, [$descriptor, $snapshot, $expressions, $livenessScore, $userId]);
 } else {
     // Insert new
-    $sql = "INSERT INTO face_scans (user_id, face_encoding, image_path, expressions, liveness_score, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
-    $result = insertRecord($sql, [$userId, $descriptor, $snapshot, $expressions, $livenessScore], "isssd");
+    $sql = "INSERT INTO face_scans (user_id, face_encoding, image_path, expressions, liveness_score, created_at) VALUES ($1, $2, $3, $4, $5, NOW())";
+    $result = insertRecord($sql, [$userId, $descriptor, $snapshot, $expressions, $livenessScore]);
 }
 
 if ($result) {
     // Log the enrollment
     $logSql = "INSERT INTO face_logs (user_id, action_type, status, confidence_score, liveness_score, ip_address, user_agent) 
-               VALUES (?, 'enroll', 'success', ?, ?, ?, ?)";
+               VALUES ($1, 'enroll', 'success', $2, $3, $4, $5)";
     insertRecord($logSql, [
         $userId,
         100.00,
         $livenessScore,
         $_SERVER['REMOTE_ADDR'] ?? null,
         $_SERVER['HTTP_USER_AGENT'] ?? null
-    ], "iddss");
+    ]);
     
     // Log activity
     logActivity($_SESSION['user_id'], 'Face Enrolled', 'face_scans', $userId, 'Face enrolled for user: ' . $user['first_name'] . ' ' . $user['last_name']);

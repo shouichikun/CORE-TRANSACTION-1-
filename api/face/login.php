@@ -1,5 +1,5 @@
 <?php
-// /CT1/api/face/login.php - Face Login API
+// /CT1/api/face/login.php - Face Login API (PostgreSQL Fixed)
 session_start();
 header('Content-Type: application/json');
 
@@ -17,16 +17,51 @@ $matchScore = floatval($data['match_score']);
 $livenessScore = floatval($data['liveness_score'] ?? 0);
 $snapshot = $data['snapshot'] ?? null;
 
-// Verify user exists
-$user = getRecord("SELECT id, first_name, last_name, role, is_active FROM users WHERE id = ?", [$userId], "i");
+// Verify user exists - PostgreSQL uses $1 placeholder
+$user = getRecord("SELECT id, first_name, last_name, role, is_active FROM users WHERE id = $1", [$userId]);
 
 if (!$user) {
     echo json_encode(['success' => false, 'error' => 'User not found']);
     exit;
 }
 
-if ($user['is_active'] != 1) {
-    echo json_encode(['success' => false, 'error' => 'Account is inactive']);
+// ✅ FIXED: PostgreSQL boolean handling
+// In PostgreSQL, is_active can be:
+// - boolean true/false
+// - string 't'/'f'
+// - integer 1/0 (if stored as integer)
+// This handles all cases
+
+$isActive = false;
+
+// Check if is_active exists
+if (isset($user['is_active'])) {
+    $val = $user['is_active'];
+    
+    // Case 1: It's a boolean (true/false)
+    if (is_bool($val)) {
+        $isActive = $val === true;
+    }
+    // Case 2: It's a string ('t'/'f' or 'true'/'false')
+    else if (is_string($val)) {
+        $lower = strtolower($val);
+        $isActive = ($lower === 't' || $lower === 'true' || $lower === '1');
+    }
+    // Case 3: It's an integer (1/0)
+    else if (is_numeric($val)) {
+        $isActive = intval($val) === 1;
+    }
+}
+
+if (!$isActive) {
+    echo json_encode([
+        'success' => false, 
+        'error' => 'Account is inactive',
+        'debug' => [
+            'is_active_value' => $user['is_active'],
+            'is_active_type' => gettype($user['is_active'])
+        ]
+    ]);
     exit;
 }
 
@@ -34,14 +69,14 @@ if ($user['is_active'] != 1) {
 if ($matchScore < 65) {
     // Log failed attempt
     $logSql = "INSERT INTO face_logs (user_id, action_type, status, confidence_score, liveness_score, ip_address, user_agent) 
-               VALUES (?, 'login', 'failed', ?, ?, ?, ?)";
+               VALUES ($1, 'login', 'failed', $2, $3, $4, $5)";
     insertRecord($logSql, [
         $userId,
         $matchScore,
         $livenessScore,
         $_SERVER['REMOTE_ADDR'] ?? null,
         $_SERVER['HTTP_USER_AGENT'] ?? null
-    ], "iddss");
+    ]);
     
     echo json_encode([
         'success' => false,
@@ -58,23 +93,23 @@ $_SESSION['full_name'] = $user['first_name'] . ' ' . $user['last_name'];
 $_SESSION['role'] = $user['role'];
 
 // Update last activity
-updateRecord("UPDATE users SET last_activity = NOW() WHERE id = ?", [$userId], "i");
+updateRecord("UPDATE users SET last_activity = NOW() WHERE id = $1", [$userId]);
 
 // Log successful attempt
 $logSql = "INSERT INTO face_logs (user_id, action_type, status, confidence_score, liveness_score, ip_address, user_agent) 
-           VALUES (?, 'login', 'success', ?, ?, ?, ?)";
+           VALUES ($1, 'login', 'success', $2, $3, $4, $5)";
 insertRecord($logSql, [
     $userId,
     $matchScore,
     $livenessScore,
     $_SERVER['REMOTE_ADDR'] ?? null,
     $_SERVER['HTTP_USER_AGENT'] ?? null
-], "iddss");
+]);
 
 // Log activity
 logActivity($userId, 'Face Login', 'users', $userId, 'User logged in via face recognition');
 
-// ✅ FIXED: Return redirect with /CT1/ prefix
+// Return redirect
 $redirectPath = getRedirectUrl($user['role']);
 
 echo json_encode([
@@ -86,11 +121,10 @@ echo json_encode([
         'role' => $user['role']
     ],
     'match_score' => $matchScore,
-    'redirect' => $redirectPath  // This should now include /CT1/
+    'redirect' => $redirectPath
 ]);
 
 function getRedirectUrl($role) {
-    // ✅ FIXED: All redirects now include /CT1/ prefix
     switch ($role) {
         case 'admin':
             return '/CT1/portals/admin/dashboard.php';

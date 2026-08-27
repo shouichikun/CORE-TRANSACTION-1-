@@ -23,9 +23,9 @@ $status = $data['status'];
 $confidenceScore = $data['confidence_score'] ?? 0;
 $actionType = $data['action_type'] ?? 'verify';
 
-// Log the verification
+// Log the verification - PostgreSQL uses $1, $2, etc.
 $logSql = "INSERT INTO face_logs (user_id, action_type, status, confidence_score, ip_address, user_agent) 
-           VALUES (?, ?, ?, ?, ?, ?)";
+           VALUES ($1, $2, $3, $4, $5, $6)";
 $result = insertRecord($logSql, [
     $userId,
     $actionType,
@@ -33,7 +33,7 @@ $result = insertRecord($logSql, [
     $confidenceScore,
     $_SERVER['REMOTE_ADDR'] ?? null,
     $_SERVER['HTTP_USER_AGENT'] ?? null
-], "isdss");
+]);
 
 if ($result) {
     echo json_encode(['success' => true, 'message' => 'Verification logged']);
