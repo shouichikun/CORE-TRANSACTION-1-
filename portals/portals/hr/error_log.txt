@@ -1,2 +1,0 @@
-[21-Jul-2026 15:54:50 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 193
-[21-Jul-2026 15:57:59 Asia/Manila] PHP Warning:  mail(): Failed to connect to mailserver at &quot;localhost&quot; port 25, verify your &quot;SMTP&quot; and &quot;smtp_port&quot; setting in php.ini or use ini_set() in C:\xampp1\htdocs\CT1\portals\hr\includes\functions.php on line 202
