@@ -1,4 +1,11 @@
 <?php
+// =============================================
+// START SESSION - MUST BE FIRST (no output before this)
+// =============================================
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 // app/config.php - Main Configuration File with Supabase PostgreSQL
 
 // =============================================
@@ -1321,12 +1328,7 @@ if (file_exists($permissionsFile)) {
     }
 }
 
-// =============================================
-// START SESSION IF NOT ALREADY STARTED
-// =============================================
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+
 
 // =============================================
 // SESSION TIMEOUT CONFIGURATION
