@@ -1,6 +1,18 @@
 <?php
-// portals/hr/dashboard.php - AI-Powered HR Dashboard
 session_start();
+require_once '../../app/config.php';
+
+// Check if user is logged in
+if (!isset($_SESSION['user_id'])) {
+    header('Location: ../../login.php');
+    exit;
+}
+
+// Check if user has HR role
+if ($_SESSION['role'] !== 'hr_manager' && $_SESSION['role'] !== 'admin') {
+    header('Location: ../../login.php');
+    exit;
+}
 
 // =============================================
 // ERROR REPORTING - DISABLE WARNINGS
