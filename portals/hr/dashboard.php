@@ -3,6 +3,29 @@
 session_start();
 
 // =============================================
+// DEBUG LOGGING
+// =============================================
+error_log("=== HR DASHBOARD LOAD ===");
+error_log("User ID: " . ($_SESSION['user_id'] ?? 'not set'));
+error_log("Role: " . ($_SESSION['role'] ?? 'not set'));
+
+// Check database connection
+global $conn;
+if (!$conn) {
+    error_log("❌ Database connection is NULL");
+} else {
+    error_log("✅ Database connection exists");
+    // Test query
+    $test = @pg_query($conn, "SELECT 1 as test");
+    if ($test) {
+        error_log("✅ Database query works");
+        pg_free_result($test);
+    } else {
+        error_log("❌ Database query failed: " . @pg_last_error($conn));
+    }
+}
+
+// =============================================
 // ERROR REPORTING - ENABLE FOR DEBUGGING
 // =============================================
 error_reporting(E_ALL);
