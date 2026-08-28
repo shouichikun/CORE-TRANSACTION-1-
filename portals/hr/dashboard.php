@@ -3,13 +3,24 @@
 session_start();
 
 // =============================================
-// DEBUG LOGGING
+// ERROR REPORTING - ENABLE FOR DEBUGGING
+// =============================================
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+
+require_once '../../app/config.php';
+initSessionTimeout();
+require_once '../../app/ai/AiService.php';
+
+// =============================================
+// DEBUG LOGGING - AFTER config.php IS LOADED
 // =============================================
 error_log("=== HR DASHBOARD LOAD ===");
 error_log("User ID: " . ($_SESSION['user_id'] ?? 'not set'));
 error_log("Role: " . ($_SESSION['role'] ?? 'not set'));
 
-// Check database connection
+// Check database connection (NOW $conn exists)
 global $conn;
 if (!$conn) {
     error_log("❌ Database connection is NULL");
@@ -24,17 +35,6 @@ if (!$conn) {
         error_log("❌ Database query failed: " . @pg_last_error($conn));
     }
 }
-
-// =============================================
-// ERROR REPORTING - ENABLE FOR DEBUGGING
-// =============================================
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-
-require_once '../../app/config.php';
-initSessionTimeout();
-require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
