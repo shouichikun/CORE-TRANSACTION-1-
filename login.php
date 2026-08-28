@@ -240,7 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     $redirects = [
                         'admin' => 'portals/admin/dashboard.php',
-                        'hr_manager' => 'portals/hr/dashboard.php',
+                        'hr_manager' => 'portals/portals/hr/dashboard.php',
                         'recruiter' => 'portals/hr/dashboard.php',
                         'client' => 'portals/client/dashboard.php',
                         'applicant' => 'portals/applicant/dashboard.php',
