@@ -1,12 +1,10 @@
-    <?php
-    // portals/hr/jobs.php - Manage Jobs with Advanced AI Insights + Client Job Requests
-    // FIXED: PostgreSQL compatibility + proper error handling
-
-
+<?php
+// portals/hr/jobs.php - Manage Jobs with Advanced AI Insights + Client Job Requests
+// FIXED: PostgreSQL compatibility + proper error handling
 
 require_once '../../app/config.php';
 initSessionTimeout();
-    require_once '../../app/ai/AiService.php';
+require_once '../../app/ai/AiService.php';
 
     // =============================================
     // ERROR REPORTING - DISABLE WARNINGS
