@@ -2,7 +2,7 @@
     // portals/hr/jobs.php - Manage Jobs with Advanced AI Insights + Client Job Requests
     // FIXED: PostgreSQL compatibility + proper error handling
 
-    session_start();
+
 
 require_once '../../app/config.php';
 initSessionTimeout();
