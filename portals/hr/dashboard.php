@@ -2,7 +2,15 @@
 // portals/hr/dashboard.php - AI-Powered HR Dashboard
 session_start();
 
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('display_startup_errors', 0);
+
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
@@ -12,7 +20,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
 }
 
 // Check if user has HR role
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter', 'admin'])) {
     header('Location: ../../login.php');
     exit;
 }
@@ -30,86 +38,22 @@ $roleLabel = $role === 'hr_manager' ? 'HR Manager' : 'Recruiter';
 $aiService = new AiService();
 
 // =============================================
-// AI HELPER FUNCTIONS - COMPLETE FIX
+// AI HELPER FUNCTIONS
 // =============================================
 
 /**
- * Get AI-powered dashboard insights
- */
-function getAIInsights($stats, $recentApplications, $activeJobs) {
-    global $aiService;
-    
-    // Build context
-    $context = [
-        'total_jobs' => $stats['total_jobs'] ?? 0,
-        'active_jobs' => $stats['active_jobs'] ?? 0,
-        'total_applications' => $stats['total_applications'] ?? 0,
-        'pending_applications' => $stats['pending_applications'] ?? 0,
-        'total_applicants' => $stats['total_applicants'] ?? 0,
-        'upcoming_interviews' => $stats['upcoming_interviews'] ?? 0,
-    ];
-    
-    // Try to get AI insights using public method
-    try {
-        $jobData = [
-            'title' => 'HR Analytics Dashboard',
-            'description' => "Recruitment Metrics: {$context['total_jobs']} total jobs, {$context['active_jobs']} active jobs, {$context['total_applications']} applications, {$context['pending_applications']} pending review, {$context['total_applicants']} unique applicants, {$context['upcoming_interviews']} upcoming interviews.",
-            'skills_required' => 'HR Analytics, Recruitment, Data Analysis, Dashboard Reporting',
-            'experience_level' => 'Mid'
-        ];
-        
-        $result = $aiService->optimizeJobDescription($jobData);
-        
-        if ($result && !isset($result['error'])) {
-            // Extract skills as recommendations
-            $recommendations = $result['suggested_skills'] ?? [
-                'Review pending applications',
-                'Post more jobs to attract talent',
-                'Schedule interviews for qualified candidates'
-            ];
-            
-            // Generate summary
-            $summary = "Your recruitment shows {$context['total_applications']} applications across {$context['active_jobs']} active jobs.";
-            if ($context['pending_applications'] > 0) {
-                $summary .= " You have {$context['pending_applications']} applications pending review.";
-            }
-            
-            return [
-                'summary' => $summary,
-                'recommendations' => $recommendations,
-                'alerts' => $context['pending_applications'] > 5 
-                    ? ["⚠️ {$context['pending_applications']} applications pending review"] 
-                    : ["✅ Recruitment is on track"],
-                'trends' => [
-                    "📈 {$context['total_applications']} total applications",
-                    "📊 " . ($context['active_jobs'] > 0 
-                        ? round($context['total_applications'] / $context['active_jobs'], 1) 
-                        : 0) . " applications per active job"
-                ],
-                'provider' => 'groq'
-            ];
-        }
-    } catch (Exception $e) {
-        error_log("AI Error: " . $e->getMessage());
-    }
-    
-    // Fallback insights
-    return getFallbackInsights($context);
-}
-
-/**
- * Get fallback insights when AI fails - FIXED: Added this function
+ * Get fallback insights when AI fails
  */
 function getFallbackInsights($context) {
     $recommendations = [];
     
-    if ($context['pending_applications'] > 5) {
-        $recommendations[] = "📋 Review {$context['pending_applications']} pending applications";
+    if (($context['pending_applications'] ?? 0) > 5) {
+        $recommendations[] = "📋 Review " . ($context['pending_applications'] ?? 0) . " pending applications";
     }
-    if ($context['active_jobs'] < 3 && $context['total_jobs'] > 0) {
+    if (($context['active_jobs'] ?? 0) < 3 && ($context['total_jobs'] ?? 0) > 0) {
         $recommendations[] = "📌 Post more jobs to increase your talent pipeline";
     }
-    if ($context['total_applications'] > 0 && $context['upcoming_interviews'] == 0) {
+    if (($context['total_applications'] ?? 0) > 0 && ($context['upcoming_interviews'] ?? 0) == 0) {
         $recommendations[] = "📅 Schedule interviews for qualified candidates";
     }
     if (empty($recommendations)) {
@@ -121,44 +65,139 @@ function getFallbackInsights($context) {
     }
     
     return [
-        'summary' => "Your recruitment shows {$context['total_applications']} applications across {$context['active_jobs']} active jobs.",
+        'summary' => "Your recruitment shows " . ($context['total_applications'] ?? 0) . " applications across " . ($context['active_jobs'] ?? 0) . " active jobs.",
         'recommendations' => $recommendations,
-        'alerts' => $context['pending_applications'] > 5 
-            ? ["⚠️ {$context['pending_applications']} applications pending review"] 
+        'alerts' => ($context['pending_applications'] ?? 0) > 5 
+            ? ["⚠️ " . ($context['pending_applications'] ?? 0) . " applications pending review"] 
             : ["✅ Recruitment is on track"],
         'trends' => [
-            "📈 {$context['total_applications']} total applications",
-            "📊 " . ($context['active_jobs'] > 0 
-                ? round($context['total_applications'] / $context['active_jobs'], 1) 
+            "📈 " . ($context['total_applications'] ?? 0) . " total applications",
+            "📊 " . (($context['active_jobs'] ?? 0) > 0 
+                ? round(($context['total_applications'] ?? 0) / ($context['active_jobs'] ?? 0), 1) 
                 : 0) . " applications per active job"
         ],
         'provider' => 'fallback'
     ];
 }
 
+/**
+ * Get AI-powered dashboard insights
+ */
+function getAIInsights($stats, $recentApplications, $activeJobs) {
+    global $aiService;
+    
+    // Build context with safe defaults
+    $context = [
+        'total_jobs' => $stats['total_jobs'] ?? 0,
+        'active_jobs' => $stats['active_jobs'] ?? 0,
+        'total_applications' => $stats['total_applications'] ?? 0,
+        'pending_applications' => $stats['pending_applications'] ?? 0,
+        'total_applicants' => $stats['total_applicants'] ?? 0,
+        'upcoming_interviews' => $stats['upcoming_interviews'] ?? 0,
+    ];
+    
+    // Try to get AI insights
+    try {
+        $jobData = [
+            'title' => 'HR Analytics Dashboard',
+            'description' => "Recruitment Metrics: " . ($context['total_jobs'] ?? 0) . " total jobs, " . ($context['active_jobs'] ?? 0) . " active jobs, " . ($context['total_applications'] ?? 0) . " applications, " . ($context['pending_applications'] ?? 0) . " pending review, " . ($context['total_applicants'] ?? 0) . " unique applicants, " . ($context['upcoming_interviews'] ?? 0) . " upcoming interviews.",
+            'skills_required' => 'HR Analytics, Recruitment, Data Analysis, Dashboard Reporting',
+            'experience_level' => 'Mid'
+        ];
+        
+        $result = @$aiService->optimizeJobDescription($jobData);
+        
+        if ($result && !isset($result['error'])) {
+            $recommendations = $result['suggested_skills'] ?? [
+                'Review pending applications',
+                'Post more jobs to attract talent',
+                'Schedule interviews for qualified candidates'
+            ];
+            
+            $summary = "Your recruitment shows " . ($context['total_applications'] ?? 0) . " applications across " . ($context['active_jobs'] ?? 0) . " active jobs.";
+            if (($context['pending_applications'] ?? 0) > 0) {
+                $summary .= " You have " . ($context['pending_applications'] ?? 0) . " applications pending review.";
+            }
+            
+            return [
+                'summary' => $summary,
+                'recommendations' => $recommendations,
+                'alerts' => ($context['pending_applications'] ?? 0) > 5 
+                    ? ["⚠️ " . ($context['pending_applications'] ?? 0) . " applications pending review"] 
+                    : ["✅ Recruitment is on track"],
+                'trends' => [
+                    "📈 " . ($context['total_applications'] ?? 0) . " total applications",
+                    "📊 " . (($context['active_jobs'] ?? 0) > 0 
+                        ? round(($context['total_applications'] ?? 0) / ($context['active_jobs'] ?? 0), 1) 
+                        : 0) . " applications per active job"
+                ],
+                'provider' => 'groq'
+            ];
+        }
+    } catch (Exception $e) {
+        @error_log("AI Error: " . $e->getMessage());
+    }
+    
+    // Fallback insights
+    return getFallbackInsights($context);
+}
+
 // =============================================
-// GET HR STATS - Using config.php functions
+// GET HR STATS - REMOVED DUPLICATE FUNCTION
+// USING THE ONE FROM CONFIG.PHP INSTEAD
 // =============================================
 
+// Get stats - USE THE CONFIG.PHP FUNCTION
 $stats = getHRStats($userId);
-$recentApplications = getRecentApplications($userId, 10);
-$activeJobs = getActiveJobs($userId);
+
+// Get recent applications safely
+$recentApplications = [];
+try {
+    $sql = "SELECT a.*, u.first_name, u.last_name, u.email, 
+                   jo.title as job_title, c.company_name
+            FROM applications a
+            JOIN applicants ap ON a.applicant_id = ap.id
+            JOIN users u ON ap.user_id = u.id
+            JOIN job_orders jo ON a.job_order_id = jo.id
+            JOIN clients c ON jo.client_id = c.id
+            ORDER BY a.applied_at DESC 
+            LIMIT 10";
+    $recentApplications = @getRecords($sql);
+    if (!is_array($recentApplications)) {
+        $recentApplications = [];
+    }
+} catch (Exception $e) {
+    $recentApplications = [];
+}
+
+// Get active jobs safely
+$activeJobs = [];
+try {
+    $sql = "SELECT jo.*, c.company_name, 
+            (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id) as application_count
+            FROM job_orders jo
+            JOIN clients c ON jo.client_id = c.id
+            WHERE jo.status IN ('open', 'ongoing')
+            ORDER BY jo.created_at DESC
+            LIMIT 5";
+    $activeJobs = @getRecords($sql);
+    if (!is_array($activeJobs)) {
+        $activeJobs = [];
+    }
+} catch (Exception $e) {
+    $activeJobs = [];
+}
 
 // =============================================
 // GET AI INSIGHTS
 // =============================================
 $aiInsights = getAIInsights($stats, $recentApplications, $activeJobs);
 
-// Get total clients count for sidebar badge
-$clientsCount = 0;
-$clientsResult = mysqli_query($conn, "SELECT COUNT(*) as count FROM clients");
-if ($clientsResult) {
-    $clientsRow = mysqli_fetch_assoc($clientsResult);
-    $clientsCount = $clientsRow['count'] ?? 0;
-}
-
 // Determine AI provider
 $aiProvider = $aiInsights['provider'] ?? 'unknown';
+
+// Get user profile data
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -169,9 +208,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - HR DASHBOARD
-           ========================================================================== */
+        /* ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
             --bg-surface: #ffffff;
@@ -329,7 +366,9 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         .ai-provider-tag .provider-name.groq { color: #7c3aed; }
         .ai-provider-tag .provider-name.fallback { color: #6b7280; }
 
-        /* Rest of styles (same as before) */
+        /* =============================================
+           REST OF STYLES
+           ============================================= */
         * {
             margin: 0;
             padding: 0;
@@ -353,9 +392,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             color: inherit;
         }
 
-        /* =============================================
-           SIDEBAR - FIXED
-        ============================================= */
+        /* ===== SIDEBAR ===== */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -374,17 +411,9 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             flex-shrink: 0;
         }
 
-        .dashboard-sidebar.collapsed {
-            width: var(--sidebar-collapsed);
-        }
-
-        .dashboard-sidebar.mobile-hidden {
-            transform: translateX(-100%);
-        }
-
-        .dashboard-sidebar.mobile-open {
-            transform: translateX(0);
-        }
+        .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
+        .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
 
         .dashboard-sidebar .sidebar-brand-text,
         .dashboard-sidebar .sidebar-brand-category,
@@ -411,42 +440,20 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             padding: 0;
         }
 
-        .dashboard-sidebar.collapsed .sidebar-brand-card {
-            padding: 1rem 0.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-nav {
-            padding: 0.5rem 0.25rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-main-link {
-            justify-content: center;
-            padding: 0.75rem 0.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
-            justify-content: center;
-            padding: 0.5rem;
-        }
-
-        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-            width: 2.5rem;
-            height: 2.5rem;
-            font-size: 0.875rem;
-        }
+        .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-nav { padding: 0.5rem 0.25rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: center; padding: 0.75rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: center; padding: 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar { width: 2.5rem; height: 2.5rem; font-size: 0.875rem; }
 
         .sidebar-brand-card {
-            border-radius: 2rem;
             padding: 1.5rem;
             display: flex;
             flex-direction: column;
             align-items: center;
             text-align: center;
-            gap: 0.75rem;
+            gap: 0.5rem;
         }
 
         .sidebar-brand-icon {
@@ -462,28 +469,11 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             flex-shrink: 0;
         }
 
-        .sidebar-brand-icon .material-symbols-outlined {
-            font-size: 1.5rem;
-        }
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 0.875rem; font-weight: 600; color: var(--slate-900); }
+        .sidebar-brand-category { font-size: 0.75rem; color: var(--slate-500); margin-top: 0.25rem; }
 
-        .sidebar-brand-text {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--slate-900);
-        }
-
-        .sidebar-brand-category {
-            font-size: 0.75rem;
-            color: var(--slate-500);
-            margin-top: 0.25rem;
-        }
-
-        .sidebar-nav {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem 1.25rem;
-        }
-
+        .sidebar-nav { flex: 1; overflow-y: auto; padding: 1.5rem 1.25rem; }
         .sidebar-nav .nav-label {
             font-size: 0.75rem;
             font-weight: 700;
@@ -508,23 +498,17 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             font-size: 0.875rem;
         }
 
-        .sidebar-main-link:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .sidebar-main-link.active {
-            background: var(--bg-surface-container-high);
-            color: var(--primary);
-        }
-
-        .sidebar-main-link .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
-
-        .sidebar-main-link .nav-text {
-            transition: opacity 0.3s ease;
+        .sidebar-main-link:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .sidebar-main-link.active { background: var(--bg-surface-container-high); color: var(--primary); }
+        .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; flex-shrink: 0; }
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 50px;
         }
 
         .sidebar-footer {
@@ -555,45 +539,8 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             flex-shrink: 0;
         }
 
-        .sidebar-footer .user-card .user-info .user-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .sidebar-footer .user-card .user-info .user-email {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.875rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-
-        .sidebar-footer .logout-btn:hover {
-            background: #fef2f2;
-        }
-
-        .sidebar-footer .logout-btn .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
+        .sidebar-footer .user-card .user-info .user-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .sidebar-footer .user-card .user-info .user-email { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
         .sidebar-backdrop {
             display: none;
@@ -609,18 +556,88 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             opacity: 0;
         }
 
-        .sidebar-backdrop.active {
-            display: block;
-            opacity: 1;
+        .sidebar-backdrop.active { display: block; opacity: 1; }
+
+        .main-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            margin-left: var(--sidebar-width);
+            transition: margin-left 0.3s ease;
         }
 
-        /* =============================================
-           PROFILE DROPDOWN
-        ============================================= */
-        .profile-dropdown-wrapper {
-            position: relative;
+        .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+
+        .top-header {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 4rem;
+            padding: 0 1.5rem;
+            flex-shrink: 0;
+            z-index: 30;
+            width: 100%;
         }
 
+        .top-header-left { display: flex; align-items: center; gap: 0.75rem; }
+        .top-header-left .logo {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.5rem;
+            background: var(--slate-100);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.875rem;
+            color: var(--primary);
+            border: 1px solid rgba(199, 196, 216, 0.3);
+        }
+
+        .top-header-left .separator { color: var(--outline-variant); font-weight: 300; user-select: none; }
+
+        .sidebar-toggle-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .sidebar-toggle-btn:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .sidebar-toggle-btn .material-symbols-outlined { font-size: 1.25rem; }
+
+        .mobile-menu-btn {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            background: transparent;
+            color: var(--text-on-surface-variant);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            min-width: 2.5rem;
+            min-height: 2.5rem;
+        }
+
+        .mobile-menu-btn:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .mobile-menu-btn .material-symbols-outlined { font-size: 1.25rem; }
+
+        .profile-dropdown-wrapper { position: relative; }
         .profile-dropdown-toggle {
             display: flex;
             align-items: center;
@@ -633,11 +650,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             transition: all var(--transition-fast);
         }
 
-        .profile-dropdown-toggle:hover {
-            background: var(--bg-surface-low);
-            border-color: rgba(199, 196, 216, 0.3);
-        }
-
+        .profile-dropdown-toggle:hover { background: var(--bg-surface-low); border-color: rgba(199, 196, 216, 0.3); }
         .profile-dropdown-toggle .avatar-small {
             width: 2.25rem;
             height: 2.25rem;
@@ -652,27 +665,10 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             flex-shrink: 0;
         }
 
-        .profile-dropdown-toggle .profile-name {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-        }
-
-        .profile-dropdown-toggle .profile-role {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            font-weight: 400;
-        }
-
-        .profile-dropdown-toggle .material-symbols-outlined {
-            font-size: 1rem;
-            color: var(--text-on-surface-variant);
-            transition: transform var(--transition-fast);
-        }
-
-        .profile-dropdown-toggle.open .material-symbols-outlined:last-child {
-            transform: rotate(180deg);
-        }
+        .profile-dropdown-toggle .profile-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .profile-dropdown-toggle .profile-role { font-size: 0.75rem; color: var(--text-on-surface-variant); font-weight: 400; }
+        .profile-dropdown-toggle .material-symbols-outlined { font-size: 1rem; color: var(--text-on-surface-variant); transition: transform var(--transition-fast); }
+        .profile-dropdown-toggle.open .material-symbols-outlined:last-child { transform: rotate(180deg); }
 
         .profile-dropdown-menu {
             position: absolute;
@@ -692,21 +688,8 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             transform-origin: top right;
         }
 
-        .profile-dropdown-menu.open {
-            opacity: 1;
-            visibility: visible;
-            transform: translateY(0) scale(1);
-        }
-
-        .profile-dropdown-menu .dropdown-header {
-            padding: 0.5rem 0.875rem 0.25rem;
-            font-size: 0.65rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-on-surface-variant);
-        }
-
+        .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
+        .profile-dropdown-menu .dropdown-header { padding: 0.5rem 0.875rem 0.25rem; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-on-surface-variant); }
         .profile-dropdown-menu .dropdown-item {
             display: flex;
             align-items: center;
@@ -725,164 +708,17 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             font-family: var(--font-sans);
         }
 
-        .profile-dropdown-menu .dropdown-item:hover {
-            background: var(--bg-surface-low);
-            color: var(--primary);
-        }
+        .profile-dropdown-menu .dropdown-item:hover { background: var(--bg-surface-low); color: var(--primary); }
+        .profile-dropdown-menu .dropdown-item .material-symbols-outlined { font-size: 1.125rem; color: var(--text-on-surface-variant); }
+        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined { color: var(--primary); }
+        .profile-dropdown-menu .dropdown-item.danger { color: #dc2626; }
+        .profile-dropdown-menu .dropdown-item.danger:hover { background: #fef2f2; color: #dc2626; }
+        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined { color: #dc2626; }
+        .profile-dropdown-menu .dropdown-divider { height: 1px; background: var(--slate-200); margin: 0.25rem 0.5rem; }
 
-        .profile-dropdown-menu .dropdown-item .material-symbols-outlined {
-            font-size: 1.125rem;
-            color: var(--text-on-surface-variant);
-        }
+        .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
+        .main-scroll .container { max-width: 80rem; margin: 0 auto; }
 
-        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
-            color: var(--primary);
-        }
-
-        .profile-dropdown-menu .dropdown-item.danger {
-            color: #dc2626;
-        }
-
-        .profile-dropdown-menu .dropdown-item.danger:hover {
-            background: #fef2f2;
-            color: #dc2626;
-        }
-
-        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
-            color: #dc2626;
-        }
-
-        .profile-dropdown-menu .dropdown-divider {
-            height: 1px;
-            background: var(--slate-200);
-            margin: 0.25rem 0.5rem;
-        }
-
-        /* =============================================
-           MAIN CONTENT - PUSHED BY SIDEBAR
-        ============================================= */
-        .main-wrapper {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            overflow: hidden;
-            margin-left: var(--sidebar-width);
-            transition: margin-left 0.3s ease;
-        }
-
-        .dashboard-sidebar.collapsed ~ .main-wrapper {
-            margin-left: var(--sidebar-collapsed);
-        }
-
-        /* =============================================
-           TOP HEADER
-        ============================================= */
-        .top-header {
-            background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            height: 4rem;
-            padding: 0 1.5rem;
-            flex-shrink: 0;
-            z-index: 30;
-            width: 100%;
-        }
-
-        .top-header-left {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .top-header-left .logo {
-            width: 2rem;
-            height: 2rem;
-            border-radius: 0.5rem;
-            background: var(--slate-100);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 0.875rem;
-            color: var(--primary);
-            border: 1px solid rgba(199, 196, 216, 0.3);
-        }
-
-        .top-header-left .separator {
-            color: var(--outline-variant);
-            font-weight: 300;
-            user-select: none;
-        }
-
-        .sidebar-toggle-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border-radius: 0.75rem;
-            border: 1px solid rgba(199, 196, 216, 0.3);
-            background: transparent;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            min-width: 2.5rem;
-            min-height: 2.5rem;
-        }
-
-        .sidebar-toggle-btn:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .sidebar-toggle-btn .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
-        .mobile-menu-btn {
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem;
-            border-radius: 0.75rem;
-            border: 1px solid rgba(199, 196, 216, 0.3);
-            background: transparent;
-            color: var(--text-on-surface-variant);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            min-width: 2.5rem;
-            min-height: 2.5rem;
-        }
-
-        .mobile-menu-btn:hover {
-            background: var(--bg-surface-low);
-            color: var(--text-on-surface);
-        }
-
-        .mobile-menu-btn .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
-        /* =============================================
-           MAIN SCROLLABLE AREA
-        ============================================= */
-        .main-scroll {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem 2rem;
-        }
-
-        .main-scroll .container {
-            max-width: 80rem;
-            margin: 0 auto;
-        }
-
-        /* =============================================
-           BREADCRUMB
-        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface-container-lowest);
             border-radius: var(--radius-xl);
@@ -895,12 +731,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         }
 
         @media (min-width: 640px) {
-            .breadcrumb-bar {
-                border-radius: var(--radius-2xl);
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
+            .breadcrumb-bar { border-radius: var(--radius-2xl); flex-direction: row; align-items: center; justify-content: space-between; }
         }
 
         .breadcrumb-view {
@@ -916,10 +747,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             border: 1px solid rgba(79, 70, 229, 0.2);
         }
 
-        .breadcrumb-view .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
+        .breadcrumb-view .material-symbols-outlined { font-size: 1.25rem; }
         .breadcrumb-view .status-dot {
             width: 0.5rem;
             height: 0.5rem;
@@ -928,14 +756,8 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             animation: pulse 2s infinite;
         }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-        /* =============================================
-           PAGE HEADER
-        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
@@ -944,25 +766,11 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         }
 
         @media (min-width: 640px) {
-            .page-header {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
+            .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
         }
 
-        .page-header h1 {
-            font-size: 1.875rem;
-            font-weight: 700;
-            color: var(--text-on-surface);
-            letter-spacing: -0.025em;
-        }
-
-        .page-header p {
-            font-size: 0.875rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.25rem;
-        }
+        .page-header h1 { font-size: 1.875rem; font-weight: 700; color: var(--text-on-surface); letter-spacing: -0.025em; }
+        .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.25rem; }
 
         .btn-primary {
             display: inline-flex;
@@ -985,9 +793,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35);
         }
 
-        .btn-primary .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
+        .btn-primary .material-symbols-outlined { font-size: 1.125rem; }
 
         .btn-outline {
             display: inline-flex;
@@ -1004,23 +810,10 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             transition: all var(--transition-fast);
         }
 
-        .btn-outline:hover {
-            background: var(--primary);
-            color: var(--on-primary);
-        }
+        .btn-outline:hover { background: var(--primary); color: var(--on-primary); }
+        .btn-outline .material-symbols-outlined { font-size: 1.125rem; }
+        .btn-sm { padding: 0.375rem 0.875rem; font-size: 0.75rem; }
 
-        .btn-outline .material-symbols-outlined {
-            font-size: 1.125rem;
-        }
-
-        .btn-sm {
-            padding: 0.375rem 0.875rem;
-            font-size: 0.75rem;
-        }
-
-        /* =============================================
-           STATS GRID
-        ============================================= */
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -1028,23 +821,9 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             margin-bottom: 1.5rem;
         }
 
-        @media (min-width: 640px) {
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-
-        @media (min-width: 1024px) {
-            .stats-grid {
-                grid-template-columns: repeat(3, 1fr);
-            }
-        }
-
-        @media (min-width: 1280px) {
-            .stats-grid {
-                grid-template-columns: repeat(6, 1fr);
-            }
-        }
+        @media (min-width: 640px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (min-width: 1024px) { .stats-grid { grid-template-columns: repeat(3, 1fr); } }
+        @media (min-width: 1280px) { .stats-grid { grid-template-columns: repeat(6, 1fr); } }
 
         .stat-card {
             background: var(--bg-surface);
@@ -1058,10 +837,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             transition: all var(--transition-fast);
         }
 
-        .stat-card:hover {
-            box-shadow: var(--shadow-md);
-            transform: translateY(-2px);
-        }
+        .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
 
         .stat-card .stat-header {
             display: flex;
@@ -1087,35 +863,12 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             flex-shrink: 0;
         }
 
-        .stat-card .stat-icon.blue {
-            background: #eff6ff;
-            color: #2563eb;
-        }
-
-        .stat-card .stat-icon.yellow {
-            background: #fef3c7;
-            color: #d97706;
-        }
-
-        .stat-card .stat-icon.purple {
-            background: #ede9fe;
-            color: #7c3aed;
-        }
-
-        .stat-card .stat-icon.green {
-            background: #d1fae5;
-            color: #059669;
-        }
-
-        .stat-card .stat-icon.red {
-            background: #fecaca;
-            color: #dc2626;
-        }
-
-        .stat-card .stat-icon.orange {
-            background: #ffedd5;
-            color: #ea580c;
-        }
+        .stat-card .stat-icon.blue { background: #eff6ff; color: #2563eb; }
+        .stat-card .stat-icon.yellow { background: #fef3c7; color: #d97706; }
+        .stat-card .stat-icon.purple { background: #ede9fe; color: #7c3aed; }
+        .stat-card .stat-icon.green { background: #d1fae5; color: #059669; }
+        .stat-card .stat-icon.red { background: #fecaca; color: #dc2626; }
+        .stat-card .stat-icon.orange { background: #ffedd5; color: #ea580c; }
 
         .stat-card .stat-number {
             font-size: 2rem;
@@ -1124,9 +877,6 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             line-height: 1;
         }
 
-        /* =============================================
-           DASHBOARD GRID
-        ============================================= */
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -1134,14 +884,9 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         }
 
         @media (min-width: 1024px) {
-            .dashboard-grid {
-                grid-template-columns: 2fr 1fr;
-            }
+            .dashboard-grid { grid-template-columns: 2fr 1fr; }
         }
 
-        /* =============================================
-           CARDS
-        ============================================= */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -1174,21 +919,11 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             transition: color var(--transition-fast);
         }
 
-        .card-header a:hover {
-            color: var(--on-primary-fixed-variant);
-        }
+        .card-header a:hover { color: var(--on-primary-fixed-variant); }
+        .card-header a .material-symbols-outlined { font-size: 1rem; }
 
-        .card-header a .material-symbols-outlined {
-            font-size: 1rem;
-        }
+        .card-body { padding: 0.75rem 1.5rem; }
 
-        .card-body {
-            padding: 0.75rem 1.5rem;
-        }
-
-        /* =============================================
-           APPLICATION ITEMS
-        ============================================= */
         .app-item {
             display: flex;
             justify-content: space-between;
@@ -1197,9 +932,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             border-bottom: 1px solid var(--slate-200);
         }
 
-        .app-item:last-child {
-            border-bottom: none;
-        }
+        .app-item:last-child { border-bottom: none; }
 
         .app-item .app-info {
             display: flex;
@@ -1251,9 +984,6 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         .badge-rejected { background: #fecaca; color: #dc2626; }
         .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
 
-        /* =============================================
-           JOB ITEMS
-        ============================================= */
         .job-item {
             display: flex;
             justify-content: space-between;
@@ -1262,9 +992,7 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             border-bottom: 1px solid var(--slate-200);
         }
 
-        .job-item:last-child {
-            border-bottom: none;
-        }
+        .job-item:last-child { border-bottom: none; }
 
         .job-item .job-info h4 {
             font-size: 0.875rem;
@@ -1277,132 +1005,39 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
             color: var(--text-on-surface-variant);
         }
 
-        /* =============================================
-           EMPTY STATE
-        ============================================= */
         .empty-state {
             text-align: center;
             padding: 2rem 1rem;
         }
 
-        .empty-state .empty-icon {
-            margin-bottom: 0.75rem;
-            opacity: 0.3;
-        }
+        .empty-state .empty-icon { margin-bottom: 0.75rem; opacity: 0.3; }
+        .empty-state h4 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
 
-        .empty-state h4 {
-            font-size: 1.125rem;
-            font-weight: 700;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-
-        .empty-state p {
-            font-size: 0.875rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        /* =============================================
-           RESPONSIVE
-        ============================================= */
         @media (min-width: 768px) {
-            .sidebar-backdrop {
-                display: none !important;
-            }
-
-            .mobile-menu-btn {
-                display: none !important;
-            }
-
-            .dashboard-sidebar {
-                position: fixed;
-                transform: translateX(0) !important;
-                box-shadow: var(--shadow-xl);
-                height: 100vh;
-            }
-
-            .dashboard-sidebar.mobile-hidden {
-                transform: translateX(0) !important;
-            }
-
-            .main-wrapper {
-                margin-left: var(--sidebar-width);
-            }
-
-            .dashboard-sidebar.collapsed ~ .main-wrapper {
-                margin-left: var(--sidebar-collapsed);
-            }
-
-            .page-header {
-                flex-direction: row;
-                align-items: center;
-                justify-content: space-between;
-            }
-
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role {
-                display: inline;
-            }
+            .sidebar-backdrop { display: none !important; }
+            .mobile-menu-btn { display: none !important; }
+            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-xl); height: 100vh; }
+            .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
+            .main-wrapper { margin-left: var(--sidebar-width); }
+            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+            .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: inline; }
         }
 
         @media (max-width: 767px) {
-            .dashboard-sidebar {
-                position: fixed;
-                width: var(--sidebar-width);
-                transform: translateX(-100%);
-                box-shadow: var(--shadow-xl);
-            }
-
-            .dashboard-sidebar.mobile-open {
-                transform: translateX(0);
-            }
-
-            .dashboard-sidebar.collapsed {
-                width: var(--sidebar-width);
-            }
-
-            .sidebar-toggle-btn {
-                display: none !important;
-            }
-
-            .mobile-menu-btn {
-                display: flex;
-            }
-
-            .main-wrapper {
-                margin-left: 0 !important;
-            }
-
-            .main-scroll {
-                padding: 1rem;
-            }
-
-            .top-header-left .separator {
-                display: none;
-            }
-
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role {
-                display: none;
-            }
-
-            .app-item {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 0.5rem;
-            }
-
-            .job-item {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 0.5rem;
-            }
-
-            .job-item .btn {
-                width: 100%;
-                justify-content: center;
-            }
-
+            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-xl); }
+            .dashboard-sidebar.mobile-open { transform: translateX(0); }
+            .dashboard-sidebar.collapsed { width: var(--sidebar-width); }
+            .sidebar-toggle-btn { display: none !important; }
+            .mobile-menu-btn { display: flex; }
+            .main-wrapper { margin-left: 0 !important; }
+            .main-scroll { padding: 1rem; }
+            .top-header-left .separator { display: none; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
+            .app-item { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+            .job-item { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+            .job-item .btn { width: 100%; justify-content: center; }
             .dashboard-sidebar.collapsed .sidebar-brand-text,
             .dashboard-sidebar.collapsed .sidebar-brand-category,
             .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
@@ -1413,115 +1048,91 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
                 width: auto;
                 overflow: visible;
             }
-.sidebar-main-link .nav-badge.empty {
-    background: #e2e8f0;
-    color: #94a3b8;
-    box-shadow: none;
-}
-            .dashboard-sidebar.collapsed .sidebar-brand-card {
-                padding: 1.5rem;
-            }
-
-            .dashboard-sidebar.collapsed .sidebar-nav {
-                padding: 1.5rem 1.25rem;
-            }
-
-            .dashboard-sidebar.collapsed .sidebar-main-link {
-                justify-content: flex-start;
-                padding: 0.75rem 1rem;
-            }
-
-            .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-                font-size: 1.25rem;
-            }
-
-            .dashboard-sidebar.collapsed .sidebar-footer .user-card {
-                justify-content: flex-start;
-                padding: 0.5rem 0.75rem;
-            }
-
-            .stats-grid {
-                grid-template-columns: 1fr 1fr;
-            }
+            .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1.5rem; }
+            .dashboard-sidebar.collapsed .sidebar-nav { padding: 1.5rem 1.25rem; }
+            .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: flex-start; padding: 0.75rem 1rem; }
+            .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; }
+            .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: flex-start; padding: 0.5rem 0.75rem; }
+            .stats-grid { grid-template-columns: 1fr 1fr; }
         }
 
         @media (max-width: 480px) {
-            .main-scroll {
-                padding: 0.75rem;
-            }
-
-            .breadcrumb-bar {
-                padding: 0.75rem 1rem;
-            }
-
-            .page-header h1 {
-                font-size: 1.5rem;
-            }
-
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .stat-card .stat-number {
-                font-size: 1.5rem;
-            }
-
-            .card-header {
-                padding: 0.75rem 1rem;
-            }
-
-            .card-body {
-                padding: 0.5rem 1rem;
-            }
+            .main-scroll { padding: 0.75rem; }
+            .breadcrumb-bar { padding: 0.75rem 1rem; }
+            .page-header h1 { font-size: 1.5rem; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .stat-card .stat-number { font-size: 1.5rem; }
+            .card-header { padding: 0.75rem 1rem; }
+            .card-body { padding: 0.5rem 1rem; }
         }
 
-        /* Scrollbar Styling */
-        .main-scroll::-webkit-scrollbar {
-            width: 6px;
+        .main-scroll::-webkit-scrollbar { width: 6px; }
+        .main-scroll::-webkit-scrollbar-track { background: transparent; }
+        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 3px; }
+        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-500); }
+
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: #4f46e5;
+            color: #ffffff;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            min-width: 1.25rem;
+            min-height: 1.25rem;
+            border-radius: 50px;
+            transition: opacity 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            line-height: 1;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
         }
 
-        .main-scroll::-webkit-scrollbar-track {
-            background: transparent;
+        .dashboard-sidebar.collapsed .sidebar-main-link .nav-badge {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+            min-width: 0;
+            min-height: 0;
         }
-
-        .main-scroll::-webkit-scrollbar-thumb {
-            background: var(--slate-200);
-            border-radius: 3px;
-        }
-
-        .main-scroll::-webkit-scrollbar-thumb:hover {
-            background: var(--slate-500);
-        }
-
-        /* Sidebar Navigation - Badge */
-.sidebar-main-link .nav-badge {
-    margin-left: auto;
-    background: #4f46e5; /* Purple background */
-    color: #ffffff;
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 0.125rem 0.5rem;
-    min-width: 1.25rem;
-    min-height: 1.25rem;
-    border-radius: 50px;
-    transition: opacity 0.3s ease;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    line-height: 1;
-    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
 }
 
-/* When sidebar is collapsed */
-.dashboard-sidebar.collapsed .sidebar-main-link .nav-badge {
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-    min-width: 0;
-    min-height: 0;
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
 }
     </style>
 </head>
@@ -1530,10 +1141,9 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">dashboard</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1549,18 +1159,14 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         <a href="jobs.php" class="sidebar-main-link <?php echo in_array(basename($_SERVER['PHP_SELF']), ['jobs.php', 'job_view.php', 'post_job.php']) ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">work</span>
             <span class="nav-text">My Jobs</span>
+            <?php if ($stats['pending_review'] > 0): ?>
+                <span class="nav-badge" style="background:#d97706;"><?php echo $stats['pending_review']; ?></span>
+            <?php endif; ?>
         </a>
-      <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-    <span class="material-symbols-outlined">people</span>
-    <span class="nav-text">Applicants</span>
-    <?php 
-    $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
-    ?>
-    <span class="nav-badge <?php echo $pendingApps > 0 ? '' : 'empty'; ?>"><?php echo $pendingApps; ?></span>
-</a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
+        <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+            <span class="material-symbols-outlined">people</span>
+            <span class="nav-text">Applicants</span>
+            <span class="nav-badge"><?php echo $stats['pending_applications']; ?></span>
         </a>
         <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">calendar_month</span>
@@ -1573,29 +1179,6 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
         <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">archive</span>
             <span class="nav-text">Archive</span>
-            <span class="nav-badge"><?php 
-                // Get total archive count from all archive tables
-                $totalArchived = 0;
-                
-                // Check if tables exist before querying
-                $tables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
-                foreach ($tables as $table) {
-                    $checkTable = mysqli_query($conn, "SHOW TABLES LIKE '$table'");
-                    if (mysqli_num_rows($checkTable) > 0) {
-                        $result = getRecord("SELECT COUNT(*) as count FROM $table", [], "");
-                        $totalArchived += $result['count'] ?? 0;
-                    }
-                }
-                
-                // Also check offers with status 'rejected' or 'expired' as archived
-                $checkTable = mysqli_query($conn, "SHOW TABLES LIKE 'offers'");
-                if (mysqli_num_rows($checkTable) > 0) {
-                    $result = getRecord("SELECT COUNT(*) as count FROM offers WHERE status IN ('rejected', 'expired')", [], "");
-                    $totalArchived += $result['count'] ?? 0;
-                }
-                
-                echo $totalArchived;
-            ?></span>
         </a>
         <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">apartment</span>
@@ -1617,32 +1200,29 @@ $aiProvider = $aiInsights['provider'] ?? 'unknown';
     </div>
 </aside>
 
-<!-- =============================================
-MAIN CONTENT - PUSHED BY SIDEBAR
-============================================= -->
+<!-- ===== MAIN CONTENT ===== -->
 <div class="main-wrapper" id="mainWrapper">
 
     <!-- ===== TOP HEADER ===== -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                <span class="material-symbols-outlined">menu</span>
-            </button>
-            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                <?php 
-                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                    echo ucwords(str_replace('_', ' ', $pageTitle));
-                ?>
-            </span>
-            <span class="ai-badge" style="display:inline-flex; align-items:center; gap:0.25rem; padding:0.125rem 0.5rem; border-radius:12px; font-size:0.55rem; font-weight:700; background:linear-gradient(135deg,#7c3aed,#4f46e5); color:white; text-transform:uppercase; letter-spacing:0.03em; margin-left:0.5rem;">
-                <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
-                AI Powered
-            </span>
-        </div>
+   <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
         <!-- Profile Dropdown -->
         <div class="profile-dropdown-wrapper">
             <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
@@ -1921,8 +1501,15 @@ JAVASCRIPT
     // =============================================
     const sidebar = document.getElementById('appSidebar');
     const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
     const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebarBackdrop = document.querySelector('.sidebar-backdrop') || document.createElement('div');
+    
+    // Create backdrop if doesn't exist
+    if (!document.querySelector('.sidebar-backdrop')) {
+        sidebarBackdrop.className = 'sidebar-backdrop';
+        sidebarBackdrop.id = 'sidebarBackdrop';
+        document.body.prepend(sidebarBackdrop);
+    }
 
     const savedState = localStorage.getItem('sidebarCollapsed');
     const isDesktop = window.innerWidth >= 768;
@@ -2021,6 +1608,268 @@ JAVASCRIPT
         }, 250);
     });
 
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
     // =============================================
     // 5. INITIAL STATE
     // =============================================
@@ -2032,6 +1881,6 @@ JAVASCRIPT
     console.log('📊 AI Provider: <?php echo $aiProvider; ?>');
 })();
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

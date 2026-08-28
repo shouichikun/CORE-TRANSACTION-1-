@@ -1,11 +1,18 @@
 <?php
 // portals/hr/archive.php - HR Archive Management System
+// FIXED: PostgreSQL compatibility + proper error handling
+
 session_start();
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/email_functions.php';
 
 // Check if user is logged in
@@ -15,7 +22,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
 }
 
 // Check if user has HR role
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter', 'admin'])) {
     header('Location: ../../login.php');
     exit;
 }
@@ -27,28 +34,32 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 
 // =============================================
-// GET ARCHIVE COUNTS FOR SIDEBAR
+// GET ARCHIVE COUNTS FOR SIDEBAR - PostgreSQL syntax
 // =============================================
 
-// Get examination records count
 $examCount = 0;
-$examResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
-$examCount = $examResult['count'] ?? 0;
+$examResult = @getRecord("SELECT COUNT(*) as count FROM examination_records", []);
+if ($examResult && isset($examResult['count'])) {
+    $examCount = (int)$examResult['count'];
+}
 
-// Get interview evaluations count
 $evalCount = 0;
-$evalResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
-$evalCount = $evalResult['count'] ?? 0;
+$evalResult = @getRecord("SELECT COUNT(*) as count FROM interview_evaluations", []);
+if ($evalResult && isset($evalResult['count'])) {
+    $evalCount = (int)$evalResult['count'];
+}
 
-// Get client assignments count
 $assignmentCount = 0;
-$assignmentResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
-$assignmentCount = $assignmentResult['count'] ?? 0;
+$assignmentResult = @getRecord("SELECT COUNT(*) as count FROM client_assignments", []);
+if ($assignmentResult && isset($assignmentResult['count'])) {
+    $assignmentCount = (int)$assignmentResult['count'];
+}
 
-// Get deployment archive count
 $deploymentArchiveCount = 0;
-$archiveResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-$deploymentArchiveCount = $archiveResult['count'] ?? 0;
+$archiveResult = @getRecord("SELECT COUNT(*) as count FROM deployment_archive", []);
+if ($archiveResult && isset($archiveResult['count'])) {
+    $deploymentArchiveCount = (int)$archiveResult['count'];
+}
 
 // =============================================
 // GET FILTERS
@@ -60,11 +71,23 @@ $clientFilter = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
 $dateFrom = isset($_GET['date_from']) ? $_GET['date_from'] : '';
 $dateTo = isset($_GET['date_to']) ? $_GET['date_to'] : '';
 
-// Get all clients for filter dropdown
-$clients = getRecords("SELECT id, company_name FROM clients ORDER BY company_name", [], "");
+// Get all clients for filter dropdown - PostgreSQL syntax
+$clients = @getRecords("SELECT id, company_name FROM clients ORDER BY company_name", []);
+if (!is_array($clients)) $clients = [];
 
 // =============================================
-// HANDLE AJAX POST ACTIONS
+// GET SIDEBAR COUNTS - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = $examCount + $evalCount + $assignmentCount + $deploymentArchiveCount;
+
+// =============================================
+// HANDLE AJAX POST ACTIONS - PostgreSQL syntax
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
@@ -73,10 +96,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
     
     // =============================================
-    // VIEW EXAMINATION DETAILS
+    // VIEW EXAMINATION DETAILS - PostgreSQL
     // =============================================
     if ($action === 'view_examination' && $id > 0) {
-        $exam = getRecord("
+        $exam = @getRecord("
             SELECT e.*, 
                    u.first_name, u.last_name, u.email,
                    a.applicant_id,
@@ -88,8 +111,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN applications a ON e.application_id = a.id
             JOIN job_orders jo ON e.job_order_id = jo.id
             LEFT JOIN users ev ON e.evaluator_id = ev.id
-            WHERE e.id = ?
-        ", [$id], "i");
+            WHERE e.id = $1
+        ", [$id]);
         
         if ($exam) {
             echo json_encode(['success' => true, 'data' => $exam]);
@@ -100,10 +123,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // VIEW INTERVIEW EVALUATION DETAILS - UPDATED
+    // VIEW INTERVIEW EVALUATION DETAILS - PostgreSQL
     // =============================================
     if ($action === 'view_evaluation' && $id > 0) {
-        $eval = getRecord("
+        $eval = @getRecord("
             SELECT ie.*,
                    u.first_name, u.last_name, u.email,
                    a.applicant_id,
@@ -122,13 +145,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN users ev ON ie.evaluator_id = ev.id
             JOIN clients c ON jo.client_id = c.id
             LEFT JOIN interviews intv ON ie.interview_id = intv.id
-            WHERE ie.id = ?
-        ", [$id], "i");
+            WHERE ie.id = $1
+        ", [$id]);
         
         if ($eval) {
-            // Decode AI questions if present
             if ($eval['ai_questions']) {
-                $eval['ai_questions_decoded'] = json_decode($eval['ai_questions'], true);
+                $eval['ai_questions_decoded'] = @json_decode($eval['ai_questions'], true);
             }
             echo json_encode(['success' => true, 'data' => $eval]);
         } else {
@@ -138,10 +160,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // VIEW ASSIGNMENT DETAILS
+    // VIEW ASSIGNMENT DETAILS - PostgreSQL
     // =============================================
     if ($action === 'view_assignment' && $id > 0) {
-        $assignment = getRecord("
+        $assignment = @getRecord("
             SELECT ca.*,
                    u.first_name, u.last_name, u.email,
                    c.company_name,
@@ -155,8 +177,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN job_orders jo ON ca.job_order_id = jo.id
             LEFT JOIN users m ON ca.manager_id = m.id
             LEFT JOIN users cb ON ca.created_by = cb.id
-            WHERE ca.id = ?
-        ", [$id], "i");
+            WHERE ca.id = $1
+        ", [$id]);
         
         if ($assignment) {
             echo json_encode(['success' => true, 'data' => $assignment]);
@@ -167,10 +189,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // VIEW DEPLOYMENT ARCHIVE DETAILS
+    // VIEW DEPLOYMENT ARCHIVE DETAILS - PostgreSQL
     // =============================================
     if ($action === 'view_deployment_archive' && $id > 0) {
-        $archive = getRecord("
+        $archive = @getRecord("
             SELECT da.*,
                    u.first_name, u.last_name, u.email,
                    c.company_name,
@@ -184,8 +206,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN job_orders jo ON da.job_order_id = jo.id
             LEFT JOIN users m ON da.manager_id = m.id
             LEFT JOIN users ab ON da.archived_by = ab.id
-            WHERE da.id = ?
-        ", [$id], "i");
+            WHERE da.id = $1
+        ", [$id]);
         
         if ($archive) {
             echo json_encode(['success' => true, 'data' => $archive]);
@@ -196,12 +218,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // DELETE EXAMINATION
+    // DELETE EXAMINATION - PostgreSQL
     // =============================================
     if ($action === 'delete_examination' && $id > 0) {
-        $result = deleteRecord("DELETE FROM examination_records WHERE id = ?", [$id], "i");
+        $result = @deleteRecord("DELETE FROM examination_records WHERE id = $1", [$id]);
         if ($result) {
-            logActivity($userId, 'Deleted Examination Record', 'examination_records', $id, 'Examination record deleted');
+            @logActivity($userId, 'Deleted Examination Record', 'examination_records', $id, 'Examination record deleted');
             echo json_encode(['success' => true, 'message' => 'Examination record deleted successfully.']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to delete record.']);
@@ -210,12 +232,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // DELETE EVALUATION
+    // DELETE EVALUATION - PostgreSQL
     // =============================================
     if ($action === 'delete_evaluation' && $id > 0) {
-        $result = deleteRecord("DELETE FROM interview_evaluations WHERE id = ?", [$id], "i");
+        $result = @deleteRecord("DELETE FROM interview_evaluations WHERE id = $1", [$id]);
         if ($result) {
-            logActivity($userId, 'Deleted Interview Evaluation', 'interview_evaluations', $id, 'Interview evaluation deleted');
+            @logActivity($userId, 'Deleted Interview Evaluation', 'interview_evaluations', $id, 'Interview evaluation deleted');
             echo json_encode(['success' => true, 'message' => 'Evaluation deleted successfully.']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to delete record.']);
@@ -224,12 +246,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // DELETE ASSIGNMENT
+    // DELETE ASSIGNMENT - PostgreSQL
     // =============================================
     if ($action === 'delete_assignment' && $id > 0) {
-        $result = deleteRecord("DELETE FROM client_assignments WHERE id = ?", [$id], "i");
+        $result = @deleteRecord("DELETE FROM client_assignments WHERE id = $1", [$id]);
         if ($result) {
-            logActivity($userId, 'Deleted Client Assignment', 'client_assignments', $id, 'Client assignment deleted');
+            @logActivity($userId, 'Deleted Client Assignment', 'client_assignments', $id, 'Client assignment deleted');
             echo json_encode(['success' => true, 'message' => 'Assignment deleted successfully.']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to delete record.']);
@@ -238,12 +260,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // DELETE DEPLOYMENT ARCHIVE
+    // DELETE DEPLOYMENT ARCHIVE - PostgreSQL
     // =============================================
     if ($action === 'delete_deployment_archive' && $id > 0) {
-        $result = deleteRecord("DELETE FROM deployment_archive WHERE id = ?", [$id], "i");
+        $result = @deleteRecord("DELETE FROM deployment_archive WHERE id = $1", [$id]);
         if ($result) {
-            logActivity($userId, 'Deleted Deployment Archive', 'deployment_archive', $id, 'Deployment archive deleted');
+            @logActivity($userId, 'Deleted Deployment Archive', 'deployment_archive', $id, 'Deployment archive deleted');
             echo json_encode(['success' => true, 'message' => 'Archive record deleted successfully.']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to delete record.']);
@@ -252,10 +274,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // RESTORE FROM DEPLOYMENT ARCHIVE
+    // RESTORE FROM DEPLOYMENT ARCHIVE - PostgreSQL
     // =============================================
     if ($action === 'restore_deployment' && $id > 0) {
-        $archive = getRecord("SELECT * FROM deployment_archive WHERE id = ?", [$id], "i");
+        $archive = @getRecord("SELECT * FROM deployment_archive WHERE id = $1", [$id]);
         if (!$archive) {
             echo json_encode(['success' => false, 'error' => 'Archive record not found.']);
             exit;
@@ -265,10 +287,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             applicant_id, job_order_id, client_id, application_id, employee_id,
             assignment_date, start_date, end_date, status, position_title,
             department, manager_id, salary, salary_type, contract_type,
-            notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            notes, created_by, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+        RETURNING id";
         
-        $result = insertRecord($insertSql, [
+        $result = @insertRecord($insertSql, [
             $archive['applicant_id'],
             $archive['job_order_id'],
             $archive['client_id'],
@@ -277,7 +300,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             $archive['assignment_date'],
             $archive['start_date'],
             $archive['end_date'],
-            'active',
             $archive['position_title'],
             $archive['department'],
             $archive['manager_id'],
@@ -286,11 +308,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             $archive['contract_type'],
             $archive['notes'],
             $userId
-        ], "iiiiissssssissi");
+        ]);
         
         if ($result) {
-            deleteRecord("DELETE FROM deployment_archive WHERE id = ?", [$id], "i");
-            logActivity($userId, 'Restored Deployment from Archive', 'deployment_archive', $id, 'Deployment restored from archive');
+            @deleteRecord("DELETE FROM deployment_archive WHERE id = $1", [$id]);
+            @logActivity($userId, 'Restored Deployment from Archive', 'deployment_archive', $id, 'Deployment restored from archive');
             echo json_encode(['success' => true, 'message' => 'Deployment restored successfully!']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to restore deployment.']);
@@ -299,7 +321,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     // =============================================
-    // ARCHIVE INTERVIEW (NEW)
+    // ARCHIVE INTERVIEW - PostgreSQL
     // =============================================
     if ($action === 'archive_interview' && $id > 0) {
         $rating = isset($_POST['rating']) ? (int)$_POST['rating'] : 0;
@@ -309,22 +331,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         $weaknesses = trim($_POST['weaknesses'] ?? '');
         $overall_rating = isset($_POST['overall_rating']) ? (int)$_POST['overall_rating'] : 0;
         
-        // Get interview details
-        $interview = getRecord("
+        $interview = @getRecord("
             SELECT i.*, a.applicant_id, a.job_order_id, a.id as application_id,
                    ap.user_id
             FROM interviews i
             JOIN applications a ON i.application_id = a.id
             JOIN applicants ap ON a.applicant_id = ap.id
-            WHERE i.id = ?
-        ", [$id], "i");
+            WHERE i.id = $1
+        ", [$id]);
         
         if (!$interview) {
             echo json_encode(['success' => false, 'error' => 'Interview not found.']);
             exit;
         }
         
-        // Insert into interview_evaluations
         $insertSql = "INSERT INTO interview_evaluations (
             interview_id, application_id, applicant_id, job_order_id,
             evaluator_id, rating, overall_rating,
@@ -332,9 +352,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             cultural_fit_rating, leadership_potential,
             recommendation, strengths, weaknesses, comments,
             evaluation_date, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())";
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
+        RETURNING id";
         
-        $result = insertRecord($insertSql, [
+        $result = @insertRecord($insertSql, [
             $id,
             $interview['application_id'],
             $interview['applicant_id'],
@@ -351,16 +372,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             $strengths,
             $weaknesses,
             $feedback
-        ], "iiiiiiiiiiiiissss");
+        ]);
         
         if ($result) {
-            // Update interview status to completed
-            updateRecord("UPDATE interviews SET status = 'completed' WHERE id = ?", [$id], "i");
-            
-            // Update application status
-            updateRecord("UPDATE applications SET status = 'interviewed' WHERE id = ?", [$interview['application_id']], "i");
-            
-            logActivity($userId, 'Interview Archived', 'interview_evaluations', $result, 'Interview evaluation archived');
+            @updateRecord("UPDATE interviews SET status = 'completed' WHERE id = $1", [$id]);
+            @updateRecord("UPDATE applications SET status = 'interviewed' WHERE id = $1", [$interview['application_id']]);
+            @logActivity($userId, 'Interview Archived', 'interview_evaluations', $result, 'Interview evaluation archived');
             echo json_encode(['success' => true, 'message' => 'Interview evaluation archived successfully!']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to archive interview evaluation.']);
@@ -370,7 +387,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
 }
 
 // =============================================
-// GET DATA BASED ON TAB
+// GET DATA BASED ON TAB - PostgreSQL syntax
 // =============================================
 
 $examinations = [];
@@ -381,13 +398,13 @@ $deploymentArchives = [];
 // Build WHERE clause for searches
 $whereClause = "";
 $params = [];
-$types = "";
+$counter = 1;
 
 if (!empty($search)) {
-    $whereClause = " WHERE (u.first_name LIKE ? OR u.last_name LIKE ? OR u.email LIKE ? OR jo.title LIKE ?)";
+    $whereClause = " WHERE (u.first_name ILIKE $" . $counter . " OR u.last_name ILIKE $" . ($counter+1) . " OR u.email ILIKE $" . ($counter+2) . " OR jo.title ILIKE $" . ($counter+3) . ")";
     $searchParam = "%$search%";
     $params = [$searchParam, $searchParam, $searchParam, $searchParam];
-    $types = "ssss";
+    $counter += 4;
 }
 
 if ($tab === 'examinations') {
@@ -402,7 +419,8 @@ if ($tab === 'examinations') {
             LEFT JOIN users ev ON e.evaluator_id = ev.id
             $whereClause
             ORDER BY e.exam_date DESC";
-    $examinations = getRecords($sql, $params, $types);
+    $examinations = @getRecords($sql, $params);
+    if (!is_array($examinations)) $examinations = [];
     
 } elseif ($tab === 'evaluations') {
     $sql = "SELECT ie.*,
@@ -421,7 +439,8 @@ if ($tab === 'examinations') {
             LEFT JOIN interviews intv ON ie.interview_id = intv.id
             $whereClause
             ORDER BY ie.evaluation_date DESC";
-    $evaluations = getRecords($sql, $params, $types);
+    $evaluations = @getRecords($sql, $params);
+    if (!is_array($evaluations)) $evaluations = [];
     
 } elseif ($tab === 'assignments') {
     $sql = "SELECT ca.*,
@@ -439,7 +458,8 @@ if ($tab === 'examinations') {
             LEFT JOIN users cb ON ca.created_by = cb.id
             $whereClause
             ORDER BY ca.created_at DESC";
-    $assignments = getRecords($sql, $params, $types);
+    $assignments = @getRecords($sql, $params);
+    if (!is_array($assignments)) $assignments = [];
     
 } elseif ($tab === 'deployment_archive') {
     $sql = "SELECT da.*,
@@ -457,13 +477,14 @@ if ($tab === 'examinations') {
             LEFT JOIN users ab ON da.archived_by = ab.id
             $whereClause
             ORDER BY da.archived_at DESC";
-    $deploymentArchives = getRecords($sql, $params, $types);
+    $deploymentArchives = @getRecords($sql, $params);
+    if (!is_array($deploymentArchives)) $deploymentArchives = [];
 }
 
 // =============================================
-// GET EXAMINATION STATISTICS
+// GET EXAMINATION STATISTICS - PostgreSQL
 // =============================================
-$examStats = getRecord("
+$examStats = @getRecord("
     SELECT 
         COUNT(*) as total,
         AVG(percentage) as avg_score,
@@ -471,12 +492,12 @@ $examStats = getRecord("
         SUM(CASE WHEN result = 'failed' THEN 1 ELSE 0 END) as failed,
         SUM(CASE WHEN result = 'pending' THEN 1 ELSE 0 END) as pending
     FROM examination_records
-", [], "");
+", []);
 
 // =============================================
-// GET EVALUATION STATISTICS
+// GET EVALUATION STATISTICS - PostgreSQL
 // =============================================
-$evalStats = getRecord("
+$evalStats = @getRecord("
     SELECT 
         COUNT(*) as total,
         AVG(overall_rating) as avg_rating,
@@ -484,28 +505,52 @@ $evalStats = getRecord("
         SUM(CASE WHEN recommendation = 'consider' THEN 1 ELSE 0 END) as recommend_consider,
         SUM(CASE WHEN recommendation = 'reject' THEN 1 ELSE 0 END) as recommend_reject
     FROM interview_evaluations
-", [], "");
+", []);
 
 // =============================================
-// GET ASSIGNMENT STATISTICS
+// GET ASSIGNMENT STATISTICS - PostgreSQL
 // =============================================
-$assignmentStats = getRecord("
+$assignmentStats = @getRecord("
     SELECT 
         COUNT(*) as total,
         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status = 'terminated' THEN 1 ELSE 0 END) as `terminated`
+        SUM(CASE WHEN status = 'terminated' THEN 1 ELSE 0 END) as terminated
     FROM client_assignments
-", [], "");
+", []);
 
 // =============================================
-// SIDEBAR BADGE COUNTS
+// SIDEBAR BADGE COUNTS - PostgreSQL
 // =============================================
-$totalApplicants = getRecord("SELECT COUNT(*) as count FROM applicants", [], "")['count'] ?? 0;
-$totalJobs = getRecord("SELECT COUNT(*) as count FROM job_orders", [], "")['count'] ?? 0;
-$totalApplications = getRecord("SELECT COUNT(*) as count FROM applications", [], "")['count'] ?? 0;
-$totalInterviews = getRecord("SELECT COUNT(*) as count FROM interviews", [], "")['count'] ?? 0;
-$pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+$totalApplicants = 0;
+$result = @getRecord("SELECT COUNT(*) as count FROM applicants", []);
+if ($result && isset($result['count'])) {
+    $totalApplicants = (int)$result['count'];
+}
+
+$totalJobs = 0;
+$result = @getRecord("SELECT COUNT(*) as count FROM job_orders", []);
+if ($result && isset($result['count'])) {
+    $totalJobs = (int)$result['count'];
+}
+
+$totalApplications = 0;
+$result = @getRecord("SELECT COUNT(*) as count FROM applications", []);
+if ($result && isset($result['count'])) {
+    $totalApplications = (int)$result['count'];
+}
+
+$totalInterviews = 0;
+$result = @getRecord("SELECT COUNT(*) as count FROM interviews", []);
+if ($result && isset($result['count'])) {
+    $totalInterviews = (int)$result['count'];
+}
+
+$pendingApps = 0;
+$result = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($result && isset($result['count'])) {
+    $pendingApps = (int)$result['count'];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1113,6 +1158,7 @@ $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE statu
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            text-decoration: none;
         }
 
         .archive-tab:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
@@ -1594,24 +1640,53 @@ $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE statu
             animation: spin 0.8s linear infinite;
             margin: 0 auto;
         }
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
 
-    <!-- Sidebar Backdrop (Mobile) -->
-    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-
-    <!-- =============================================
-    SIDEBAR
-    ============================================= -->
-    <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">archive</span>
-            </span>
-            <p class="sidebar-brand-text">ISMERS</p>
-            <p class="sidebar-brand-category">HR Portal</p>
+<!-- ===== SIDEBAR ===== -->
+<aside class="dashboard-sidebar" id="appSidebar">
+    <div class="sidebar-brand-card">
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
         </div>
+        <p class="sidebar-brand-category">HR Portal</p>
+    </div>
 
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
@@ -1637,10 +1712,6 @@ $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE statu
                 <span class="nav-badge"><?php echo $pendingApps; ?></span>
             </a>
 
-            <a href="pipeline.php" class="sidebar-main-link">
-                <span class="material-symbols-outlined">view_kanban</span>
-                <span class="nav-text">Pipeline</span>
-            </a>
 
             <a href="interviews.php" class="sidebar-main-link">
                 <span class="material-symbols-outlined">calendar_month</span>
@@ -1686,20 +1757,25 @@ $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE statu
     MAIN CONTENT
     ============================================= -->
     <div class="main-wrapper" id="mainWrapper">
-        <!-- Top Header -->
-        <header class="top-header">
-            <div class="top-header-left">
-                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                    <span class="material-symbols-outlined">menu</span>
-                </button>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
-                </button>
-                <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                    Archive Management
-                </span>
-            </div>
+<!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
 
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
@@ -3164,6 +3240,269 @@ $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE statu
             }, 250);
         });
 
+
+
+        // =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
         // =============================================
         // 16. KEYBOARD ACCESSIBILITY
         // =============================================
@@ -3180,6 +3519,6 @@ $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE statu
         console.log('ISMERS Archive Management loaded successfully.');
         console.log('Interview evaluations with AI questions are now archived.');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

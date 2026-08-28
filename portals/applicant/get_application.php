@@ -6,8 +6,9 @@ session_start();
 error_reporting(0);
 ini_set('display_errors', 0);
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Set JSON header
 header('Content-Type: application/json');
 
@@ -35,10 +36,8 @@ if ($applicantId <= 0) {
 }
 
 try {
+    // ✅ FIXED: PostgreSQL uses $1, $2 placeholders instead of ?
     // Fetch application details with job, company, AND APPLICANT USER INFO
-    global $conn;
-    
-    // FIXED: Added joins to get applicant's name from users table
     $sql = "SELECT 
                 a.id, 
                 a.cover_letter, 
@@ -60,14 +59,10 @@ try {
             JOIN clients c ON jo.client_id = c.id
             JOIN applicants ap ON a.applicant_id = ap.id
             JOIN users u ON ap.user_id = u.id
-            WHERE a.id = ? AND a.applicant_id = ?";
+            WHERE a.id = $1 AND a.applicant_id = $2";
     
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "ii", $appId, $applicantId);
-    mysqli_stmt_execute($stmt);
-    $result = mysqli_stmt_get_result($stmt);
-    $application = mysqli_fetch_assoc($result);
-    mysqli_stmt_close($stmt);
+    // ✅ FIXED: Use getRecord with PostgreSQL $1, $2 placeholders
+    $application = getRecord($sql, [$appId, $applicantId]);
     
     if (!$application) {
         echo json_encode([
@@ -77,39 +72,37 @@ try {
         exit;
     }
     
-    // Fetch feedback from system_logs
+    // ✅ FIXED: Fetch feedback from system_logs using PostgreSQL
     $feedbackSql = "SELECT sl.*, u.first_name, u.last_name 
                     FROM system_logs sl
                     LEFT JOIN users u ON sl.user_id = u.id
                     WHERE sl.entity_type = 'applications' 
-                    AND sl.entity_id = ? 
+                    AND sl.entity_id = $1 
                     AND sl.action = 'Application Status Updated'
                     ORDER BY sl.created_at DESC";
     
-    $stmt = mysqli_prepare($conn, $feedbackSql);
-    mysqli_stmt_bind_param($stmt, "i", $appId);
-    mysqli_stmt_execute($stmt);
-    $result = mysqli_stmt_get_result($stmt);
-    
     $feedbackList = [];
-    while ($row = mysqli_fetch_assoc($result)) {
-        $feedbackText = '';
-        
-        // Try multiple patterns
-        if (preg_match('/Feedback:\s*(.+)$/i', $row['details'], $matches)) {
-            $feedbackText = trim($matches[1]);
-        } elseif (preg_match('/\|\s*Feedback:\s*(.+)$/i', $row['details'], $matches)) {
-            $feedbackText = trim($matches[1]);
-        } elseif (preg_match('/Feedback\s*[-:]\s*(.+)$/i', $row['details'], $matches)) {
-            $feedbackText = trim($matches[1]);
-        }
-        
-        if (!empty($feedbackText) && $feedbackText !== 'No feedback provided' && $feedbackText !== '') {
-            $row['feedback'] = $feedbackText;
-            $feedbackList[] = $row;
+    $feedbackResults = getRecords($feedbackSql, [$appId]);
+    
+    if ($feedbackResults) {
+        foreach ($feedbackResults as $row) {
+            $feedbackText = '';
+            
+            // Try multiple patterns
+            if (preg_match('/Feedback:\s*(.+)$/i', $row['details'], $matches)) {
+                $feedbackText = trim($matches[1]);
+            } elseif (preg_match('/\|\s*Feedback:\s*(.+)$/i', $row['details'], $matches)) {
+                $feedbackText = trim($matches[1]);
+            } elseif (preg_match('/Feedback\s*[-:]\s*(.+)$/i', $row['details'], $matches)) {
+                $feedbackText = trim($matches[1]);
+            }
+            
+            if (!empty($feedbackText) && $feedbackText !== 'No feedback provided' && $feedbackText !== '') {
+                $row['feedback'] = $feedbackText;
+                $feedbackList[] = $row;
+            }
         }
     }
-    mysqli_stmt_close($stmt);
     
     // If no feedback and status is pending, add pending message
     if (empty($feedbackList) && $application['status'] === 'pending') {

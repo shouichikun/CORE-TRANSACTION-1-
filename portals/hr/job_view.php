@@ -1,9 +1,18 @@
 <?php
 // portals/hr/job_view.php - View Job Details
+// FIXED: PostgreSQL compatibility + proper error handling
+
 session_start();
 
-require_once '../../app/config.php';
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
+require_once '../../app/config.php';
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -11,7 +20,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
 }
 
 // Check if user has HR role
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter', 'admin'])) {
     header('Location: ../../login.php');
     exit;
 }
@@ -21,7 +30,7 @@ $fullName = $_SESSION['full_name'] ?? 'HR User';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
-$isHRManager = $role === 'hr_manager';
+$isHRManager = $role === 'hr_manager' || $role === 'admin';
 
 // Get job ID from URL
 $jobId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -31,26 +40,9 @@ if ($jobId <= 0) {
     exit;
 }
 
-// Database helper function
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn;
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
-        }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
-    }
-}
-
-// Get job details with company info
+// =============================================
+// Get job details with company info - PostgreSQL syntax
+// =============================================
 $sql = "SELECT jo.*, c.company_name, c.id as company_id,
         (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id) as application_count,
         (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'pending') as pending_count,
@@ -60,9 +52,9 @@ $sql = "SELECT jo.*, c.company_name, c.id as company_id,
         (SELECT COUNT(*) FROM applications WHERE job_order_id = jo.id AND status = 'rejected') as rejected_count
         FROM job_orders jo
         JOIN clients c ON jo.client_id = c.id
-        WHERE jo.id = ? AND jo.created_by = ?";
+        WHERE jo.id = $1 AND jo.created_by = $2";
 
-$job = getRecord($sql, [$jobId, $userId], "ii");
+$job = @getRecord($sql, [$jobId, $userId]);
 
 if (!$job) {
     header('Location: jobs.php');
@@ -70,22 +62,41 @@ if (!$job) {
 }
 
 // =============================================
-// FIXED: Correct SQL query with proper joins for applicants
+// Get recent applicants - PostgreSQL syntax
 // The chain is: applications → applicants → users
 // applications.applicant_id = applicants.id
 // applicants.user_id = users.id
 // =============================================
-$recentApplicants = getRecords("
+$recentApplicants = @getRecords("
     SELECT a.id, a.status, a.applied_at, a.resume_path,
            u.id as user_id, u.first_name, u.last_name, u.email,
            ap.skills, ap.profile_picture
     FROM applications a
     JOIN applicants ap ON a.applicant_id = ap.id
     JOIN users u ON ap.user_id = u.id
-    WHERE a.job_order_id = ?
+    WHERE a.job_order_id = $1
     ORDER BY a.applied_at DESC
     LIMIT 5
-", [$jobId], "i");
+", [$jobId]);
+if (!is_array($recentApplicants)) $recentApplicants = [];
+
+// =============================================
+// Get sidebar counts - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = 0;
+$archivedTables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($archivedTables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
+    }
+}
 
 // Status badge mapping
 $statusBadges = [
@@ -199,256 +210,181 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
             color: inherit;
         }
 
-      /* =============================================
-   SIDEBAR - STANDARDIZED
-   ============================================= */
-.dashboard-sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 50;
-    background: var(--bg-surface);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    width: var(--sidebar-width);
-    border-right: 1px solid var(--slate-200);
-    transition: width 0.3s ease, transform 0.3s ease;
-    overflow: hidden;
-    box-shadow: var(--shadow-xl);
-    flex-shrink: 0;
-}
+        /* =============================================
+           SIDEBAR - STANDARDIZED
+           ============================================= */
+        .dashboard-sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 50;
+            background: var(--bg-surface);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: var(--sidebar-width);
+            border-right: 1px solid var(--slate-200);
+            transition: width 0.3s ease, transform 0.3s ease;
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed {
-    width: var(--sidebar-collapsed);
-}
+        .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
+        .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
 
-.dashboard-sidebar.mobile-hidden {
-    transform: translateX(-100%);
-}
+        .dashboard-sidebar .sidebar-brand-text,
+        .dashboard-sidebar .sidebar-brand-category,
+        .dashboard-sidebar .sidebar-nav .nav-label,
+        .dashboard-sidebar .sidebar-nav .nav-text,
+        .dashboard-sidebar .sidebar-nav .nav-badge,
+        .dashboard-sidebar .sidebar-footer .user-info {
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
+        }
 
-.dashboard-sidebar.mobile-open {
-    transform: translateX(0);
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-text,
+        .dashboard-sidebar.collapsed .sidebar-brand-category,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
 
-/* Hide text when collapsed */
-.dashboard-sidebar .sidebar-brand-text,
-.dashboard-sidebar .sidebar-brand-category,
-.dashboard-sidebar .sidebar-nav .nav-label,
-.dashboard-sidebar .sidebar-nav .nav-text,
-.dashboard-sidebar .sidebar-nav .nav-badge,
-.dashboard-sidebar .sidebar-footer .user-info {
-    opacity: 1;
-    transition: opacity 0.3s ease;
-    overflow: hidden;
-    white-space: nowrap;
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-nav { padding: 0.5rem 0.25rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: center; padding: 0.75rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: center; padding: 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar { width: 2.5rem; height: 2.5rem; font-size: 0.875rem; }
 
-.dashboard-sidebar.collapsed .sidebar-brand-text,
-.dashboard-sidebar.collapsed .sidebar-brand-category,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-.dashboard-sidebar.collapsed .sidebar-footer .user-info {
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-}
+        .sidebar-brand-card {
+            border-radius: 2rem;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 0.75rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-brand-card {
-    padding: 1rem 0.5rem;
-}
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background: var(--slate-100);
+            color: var(--primary);
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-nav {
-    padding: 0.5rem 0.25rem;
-}
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 0.875rem; font-weight: 600; color: var(--slate-900); }
+        .sidebar-brand-category { font-size: 0.75rem; color: var(--slate-500); margin-top: 0.25rem; }
 
-.dashboard-sidebar.collapsed .sidebar-main-link {
-    justify-content: center;
-    padding: 0.75rem 0.5rem;
-}
+        .sidebar-nav {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 1.25rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-nav .nav-label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--slate-500);
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card {
-    justify-content: center;
-    padding: 0.5rem;
-}
+        .sidebar-main-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-label);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    font-size: 0.875rem;
-}
+        .sidebar-main-link:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .sidebar-main-link.active { background: var(--bg-surface-container-high); color: var(--primary); }
+        .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; flex-shrink: 0; }
+        .sidebar-main-link .nav-text { transition: opacity 0.3s ease; }
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 50px;
+            transition: opacity 0.3s ease;
+        }
 
-/* Sidebar Brand */
-.sidebar-brand-card {
-    border-radius: 2rem;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 0.75rem;
-}
+        .sidebar-footer {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
+        }
 
-.sidebar-brand-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 1.75rem;
-    background: var(--slate-100);
-    color: var(--primary);
-    font-size: 1.5rem;
-    flex-shrink: 0;
-}
+        .sidebar-footer .user-card {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 1rem;
+            background: var(--bg-surface-low);
+        }
 
-.sidebar-brand-icon .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
 
-.sidebar-brand-text {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--slate-900);
-}
+        .sidebar-footer .user-card .user-info .user-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .sidebar-footer .user-card .user-info .user-email { font-size: 0.75rem; color: var(--text-on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.sidebar-brand-category {
-    font-size: 0.75rem;
-    color: var(--slate-500);
-    margin-top: 0.25rem;
-}
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
 
-/* Sidebar Navigation */
-.sidebar-nav {
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem 1.25rem;
-}
-
-.sidebar-nav .nav-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--slate-500);
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.5rem;
-}
-
-.sidebar-main-link {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    color: var(--text-on-surface-variant);
-    transition: all var(--transition-fast);
-    margin-bottom: 0.25rem;
-    font-family: var(--font-label);
-    font-weight: 500;
-    font-size: 0.875rem;
-}
-
-.sidebar-main-link:hover {
-    background: var(--bg-surface-low);
-    color: var(--text-on-surface);
-}
-
-.sidebar-main-link.active {
-    background: var(--bg-surface-container-high);
-    color: var(--primary);
-}
-
-.sidebar-main-link .material-symbols-outlined {
-    font-size: 1.25rem;
-    flex-shrink: 0;
-}
-
-.sidebar-main-link .nav-text {
-    transition: opacity 0.3s ease;
-}
-
-.sidebar-main-link .nav-badge {
-    margin-left: auto;
-    background: var(--primary);
-    color: white;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 0.125rem 0.5rem;
-    border-radius: 50px;
-    transition: opacity 0.3s ease;
-}
-
-/* Sidebar Footer */
-.sidebar-footer {
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--slate-200);
-}
-
-.sidebar-footer .user-card {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 1rem;
-    background: var(--bg-surface-low);
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.875rem;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .user-info .user-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
-
-.sidebar-footer .user-card .user-info .user-email {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Sidebar Backdrop */
-.sidebar-backdrop {
-    display: none;
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: rgba(17, 24, 39, 0.5);
-    backdrop-filter: blur(8px);
-    z-index: 40;
-    transition: opacity 0.3s ease;
-    opacity: 0;
-}
-
-.sidebar-backdrop.active {
-    display: block;
-    opacity: 1;
-}
+        .sidebar-backdrop.active { display: block; opacity: 1; }
 
         /* =============================================
            MAIN CONTENT
@@ -463,9 +399,7 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
             transition: margin-left 0.3s ease;
         }
 
-        .dashboard-sidebar.collapsed ~ .main-wrapper {
-            margin-left: var(--sidebar-collapsed);
-        }
+        .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
 
         /* =============================================
            TOP HEADER
@@ -1350,16 +1284,52 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
         .main-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--slate-500);
         }
+
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
+
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">work</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1379,15 +1349,7 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
         <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
-            <span class="nav-badge"><?php 
-                // Get pending applications count
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
-                echo $pendingApps; 
-            ?></span>
-        </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
+            <span class="nav-badge"><?php echo $pendingAppsCount; ?></span>
         </a>
         <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">calendar_month</span>
@@ -1400,19 +1362,7 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
         <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">archive</span>
             <span class="nav-text">Archive</span>
-            <span class="nav-badge"><?php 
-                // Get total archive count
-                $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                echo $totalArchived;
-            ?></span>
+            <span class="nav-badge"><?php echo $totalArchived; ?></span>
         </a>
         <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">apartment</span>
@@ -1434,21 +1384,21 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
     </div>
 </aside>
 
-
-    <!-- =============================================
-    MAIN CONTENT
-    ============================================= -->
-    <div class="main-wrapper" id="mainWrapper">
-        <!-- Top Header -->
-       <!-- ===== TOP HEADER ===== -->
+<!-- =============================================
+MAIN CONTENT
+============================================= -->
+<div class="main-wrapper" id="mainWrapper">
+   <!-- ===== TOP HEADER ===== -->
 <header class="top-header">
     <div class="top-header-left">
         <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
             <span class="material-symbols-outlined">menu</span>
         </button>
         <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-            <span class="material-symbols-outlined">chevron_left</span>
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
         </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
         <span class="separator">|</span>
         <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
             <?php 
@@ -1457,226 +1407,227 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
             ?>
         </span>
     </div>
-    <div class="profile-dropdown-wrapper">
-        <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-            <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-            <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
-            <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-            <span class="material-symbols-outlined">expand_more</span>
-        </button>
-        <div class="profile-dropdown-menu" id="profileMenu">
-            <div class="dropdown-header">Account</div>
-            <button class="dropdown-item" onclick="window.location.href='profile.php'">
-                <span class="material-symbols-outlined">person</span> Profile
+        <div class="profile-dropdown-wrapper">
+            <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
+                <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                <span class="material-symbols-outlined">expand_more</span>
             </button>
-            <div class="dropdown-divider"></div>
-            <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                <span class="material-symbols-outlined">logout</span> Logout
-            </button>
+            <div class="profile-dropdown-menu" id="profileMenu">
+                <div class="dropdown-header">Account</div>
+                <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                    <span class="material-symbols-outlined">person</span> Profile
+                </button>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                    <span class="material-symbols-outlined">logout</span> Logout
+                </button>
+            </div>
         </div>
-    </div>
-</header>
-        <!-- Scrollable Content -->
-        <main class="main-scroll">
-            <div class="container">
+    </header>
 
-                <!-- Breadcrumb -->
-                <div class="breadcrumb-bar">
-                    <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">work</span>
-                        <span>Job Details</span>
-                        <span class="status-dot"></span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
-                            <?php echo htmlspecialchars($job['title']); ?>
-                        </span>
-                    </div>
-                    <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                        Posted: <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
+    <!-- Scrollable Content -->
+    <main class="main-scroll">
+        <div class="container">
+
+            <!-- Breadcrumb -->
+            <div class="breadcrumb-bar">
+                <div class="breadcrumb-view">
+                    <span class="material-symbols-outlined">work</span>
+                    <span>Job Details</span>
+                    <span class="status-dot"></span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                    <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                        <?php echo htmlspecialchars($job['title']); ?>
                     </span>
                 </div>
-
-                <!-- Page Header -->
-                <div class="page-header">
-                    <div class="header-left">
-                        <h1>Job Details</h1>
-                        <p>Full overview of the job posting</p>
-                    </div>
-                    <div class="header-actions">
-                        <a href="jobs.php" class="btn btn-outline">
-                            <span class="material-symbols-outlined">arrow_back</span>
-                            Back to Jobs
-                        </a>
-                        <a href="edit_job.php?id=<?php echo $job['id']; ?>" class="btn btn-primary">
-                            <span class="material-symbols-outlined">edit</span>
-                            Edit Job
-                        </a>
-                    </div>
-                </div>
-
-                <!-- Job Details Card -->
-                <div class="job-details-card">
-                    <!-- Header -->
-                    <div class="job-header">
-                        <div class="job-title-section">
-                            <h2><?php echo htmlspecialchars($job['title']); ?></h2>
-                            <div class="company-name">
-                                <span class="material-symbols-outlined">business</span>
-                                <?php echo htmlspecialchars($job['company_name']); ?>
-                            </div>
-                        </div>
-                        <div class="job-status">
-                            <span class="badge badge-lg <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
-                                <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
-                            </span>
-                            <span class="badge badge-lg <?php echo $urgencyBadges[$job['urgency']] ?? 'badge-urgency-low'; ?>">
-                                <?php echo ucfirst($job['urgency'] ?? 'Low'); ?> Urgency
-                            </span>
-                        </div>
-                    </div>
-
-                    <!-- Body -->
-                    <div class="job-body">
-                        <!-- Meta Grid -->
-                        <div class="job-meta-grid">
-                            <div class="meta-item">
-                                <span class="material-symbols-outlined">work_history</span>
-                                <div>
-                                    <div class="meta-label">Job Type</div>
-                                    <div class="meta-value"><?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?></div>
-                                </div>
-                            </div>
-                            <div class="meta-item">
-                                <span class="material-symbols-outlined">trending_up</span>
-                                <div>
-                                    <div class="meta-label">Experience Level</div>
-                                    <div class="meta-value"><?php echo htmlspecialchars($job['experience_level'] ?? 'Entry'); ?></div>
-                                </div>
-                            </div>
-                            <div class="meta-item">
-                                <span class="material-symbols-outlined">location_on</span>
-                                <div>
-                                    <div class="meta-label">Location</div>
-                                    <div class="meta-value"><?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?></div>
-                                </div>
-                            </div>
-                            <div class="meta-item">
-                                <span class="material-symbols-outlined">payments</span>
-                                <div>
-                                    <div class="meta-label">Salary Range</div>
-                                    <div class="meta-value"><?php echo htmlspecialchars($job['salary_range'] ?? 'Not specified'); ?></div>
-                                </div>
-                            </div>
-                            <div class="meta-item">
-                                <span class="material-symbols-outlined">groups</span>
-                                <div>
-                                    <div class="meta-label">Positions Available</div>
-                                    <div class="meta-value"><?php echo $job['positions_available'] ?? 1; ?></div>
-                                </div>
-                            </div>
-                            <div class="meta-item">
-                                <span class="material-symbols-outlined">calendar_today</span>
-                                <div>
-                                    <div class="meta-label">Application Deadline</div>
-                                    <div class="meta-value">
-                                        <?php echo !empty($job['application_deadline']) ? date('M d, Y', strtotime($job['application_deadline'])) : 'Ongoing'; ?>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Skills -->
-                        <?php if (!empty($skills)): ?>
-                        <div class="skills-section">
-                            <div class="section-label">Required Skills</div>
-                            <?php foreach ($skills as $skill): ?>
-                                <?php $skill = trim($skill); if (!empty($skill)): ?>
-                                    <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
-                                <?php endif; ?>
-                            <?php endforeach; ?>
-                        </div>
-                        <?php endif; ?>
-
-                        <!-- Description -->
-                        <div class="description-section">
-                            <div class="section-label">Job Description</div>
-                            <div class="description-text"><?php echo nl2br(htmlspecialchars($job['description'] ?? 'No description provided.')); ?></div>
-                        </div>
-
-                        <!-- Stats -->
-                        <div class="stats-grid">
-                            <div class="stat-item">
-                                <div class="stat-number"><?php echo $job['application_count'] ?? 0; ?></div>
-                                <div class="stat-label">Total Applications</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-number" style="color:#d97706;"><?php echo $job['pending_count'] ?? 0; ?></div>
-                                <div class="stat-label">Pending</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-number" style="color:#2563eb;"><?php echo $job['shortlisted_count'] ?? 0; ?></div>
-                                <div class="stat-label">Shortlisted</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-number" style="color:#4f46e5;"><?php echo $job['interviewed_count'] ?? 0; ?></div>
-                                <div class="stat-label">Interviewed</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-number" style="color:#059669;"><?php echo $job['hired_count'] ?? 0; ?></div>
-                                <div class="stat-label">Hired</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-number" style="color:#dc2626;"><?php echo $job['rejected_count'] ?? 0; ?></div>
-                                <div class="stat-label">Rejected</div>
-                            </div>
-                        </div>
-
-                        <!-- Recent Applicants -->
-                        <div class="applicants-section">
-                            <div class="section-header">
-                                <h3>Recent Applicants</h3>
-                                <a href="applicants.php?job_id=<?php echo $job['id']; ?>">
-                                    View All <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">arrow_forward</span>
-                                </a>
-                            </div>
-                            <?php if (!empty($recentApplicants)): ?>
-                                <?php foreach ($recentApplicants as $applicant): ?>
-                                    <div class="applicant-item">
-                                        <div class="applicant-info">
-                                            <span class="avatar">
-                                                <?php echo strtoupper(substr($applicant['first_name'] ?? 'A', 0, 1)); ?>
-                                            </span>
-                                            <div class="details">
-                                                <div class="name"><?php echo htmlspecialchars($applicant['first_name'] . ' ' . $applicant['last_name']); ?></div>
-                                                <div class="email"><?php echo htmlspecialchars($applicant['email']); ?></div>
-                                            </div>
-                                        </div>
-                                        <div class="applicant-status">
-                                            <span class="badge <?php echo $applicationStatusBadges[$applicant['status']] ?? 'badge-pending'; ?>">
-                                                <?php echo $applicationStatusLabels[$applicant['status']] ?? ucfirst($applicant['status']); ?>
-                                            </span>
-                                            <span class="applied-date"><?php echo date('M d, Y', strtotime($applicant['applied_at'])); ?></span>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div class="empty-applicants">
-                                    <span class="material-symbols-outlined">person_off</span>
-                                    <p>No applicants have applied to this job yet.</p>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-
+                <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                    Posted: <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
+                </span>
             </div>
-        </main>
-    </div>
 
-    <!-- =============================================
-    JAVASCRIPT
-    ============================================= -->
-   <script>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div class="header-left">
+                    <h1>Job Details</h1>
+                    <p>Full overview of the job posting</p>
+                </div>
+                <div class="header-actions">
+                    <a href="jobs.php" class="btn btn-outline">
+                        <span class="material-symbols-outlined">arrow_back</span>
+                        Back to Jobs
+                    </a>
+                    <a href="edit_job.php?id=<?php echo $job['id']; ?>" class="btn btn-primary">
+                        <span class="material-symbols-outlined">edit</span>
+                        Edit Job
+                    </a>
+                </div>
+            </div>
+
+            <!-- Job Details Card -->
+            <div class="job-details-card">
+                <!-- Header -->
+                <div class="job-header">
+                    <div class="job-title-section">
+                        <h2><?php echo htmlspecialchars($job['title']); ?></h2>
+                        <div class="company-name">
+                            <span class="material-symbols-outlined">business</span>
+                            <?php echo htmlspecialchars($job['company_name']); ?>
+                        </div>
+                    </div>
+                    <div class="job-status">
+                        <span class="badge badge-lg <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
+                            <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
+                        </span>
+                        <span class="badge badge-lg <?php echo $urgencyBadges[$job['urgency']] ?? 'badge-urgency-low'; ?>">
+                            <?php echo ucfirst($job['urgency'] ?? 'Low'); ?> Urgency
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Body -->
+                <div class="job-body">
+                    <!-- Meta Grid -->
+                    <div class="job-meta-grid">
+                        <div class="meta-item">
+                            <span class="material-symbols-outlined">work_history</span>
+                            <div>
+                                <div class="meta-label">Job Type</div>
+                                <div class="meta-value"><?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?></div>
+                            </div>
+                        </div>
+                        <div class="meta-item">
+                            <span class="material-symbols-outlined">trending_up</span>
+                            <div>
+                                <div class="meta-label">Experience Level</div>
+                                <div class="meta-value"><?php echo htmlspecialchars($job['experience_level'] ?? 'Entry'); ?></div>
+                            </div>
+                        </div>
+                        <div class="meta-item">
+                            <span class="material-symbols-outlined">location_on</span>
+                            <div>
+                                <div class="meta-label">Location</div>
+                                <div class="meta-value"><?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?></div>
+                            </div>
+                        </div>
+                        <div class="meta-item">
+                            <span class="material-symbols-outlined">payments</span>
+                            <div>
+                                <div class="meta-label">Salary Range</div>
+                                <div class="meta-value"><?php echo htmlspecialchars($job['salary_range'] ?? 'Not specified'); ?></div>
+                            </div>
+                        </div>
+                        <div class="meta-item">
+                            <span class="material-symbols-outlined">groups</span>
+                            <div>
+                                <div class="meta-label">Positions Available</div>
+                                <div class="meta-value"><?php echo $job['positions_available'] ?? 1; ?></div>
+                            </div>
+                        </div>
+                        <div class="meta-item">
+                            <span class="material-symbols-outlined">calendar_today</span>
+                            <div>
+                                <div class="meta-label">Application Deadline</div>
+                                <div class="meta-value">
+                                    <?php echo !empty($job['application_deadline']) ? date('M d, Y', strtotime($job['application_deadline'])) : 'Ongoing'; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Skills -->
+                    <?php if (!empty($skills)): ?>
+                    <div class="skills-section">
+                        <div class="section-label">Required Skills</div>
+                        <?php foreach ($skills as $skill): ?>
+                            <?php $skill = trim($skill); if (!empty($skill)): ?>
+                                <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
+                            <?php endif; ?>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+
+                    <!-- Description -->
+                    <div class="description-section">
+                        <div class="section-label">Job Description</div>
+                        <div class="description-text"><?php echo nl2br(htmlspecialchars($job['description'] ?? 'No description provided.')); ?></div>
+                    </div>
+
+                    <!-- Stats -->
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-number"><?php echo $job['application_count'] ?? 0; ?></div>
+                            <div class="stat-label">Total Applications</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" style="color:#d97706;"><?php echo $job['pending_count'] ?? 0; ?></div>
+                            <div class="stat-label">Pending</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" style="color:#2563eb;"><?php echo $job['shortlisted_count'] ?? 0; ?></div>
+                            <div class="stat-label">Shortlisted</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" style="color:#4f46e5;"><?php echo $job['interviewed_count'] ?? 0; ?></div>
+                            <div class="stat-label">Interviewed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" style="color:#059669;"><?php echo $job['hired_count'] ?? 0; ?></div>
+                            <div class="stat-label">Hired</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" style="color:#dc2626;"><?php echo $job['rejected_count'] ?? 0; ?></div>
+                            <div class="stat-label">Rejected</div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Applicants -->
+                    <div class="applicants-section">
+                        <div class="section-header">
+                            <h3>Recent Applicants</h3>
+                            <a href="applicants.php?job_id=<?php echo $job['id']; ?>">
+                                View All <span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">arrow_forward</span>
+                            </a>
+                        </div>
+                        <?php if (!empty($recentApplicants)): ?>
+                            <?php foreach ($recentApplicants as $applicant): ?>
+                                <div class="applicant-item">
+                                    <div class="applicant-info">
+                                        <span class="avatar">
+                                            <?php echo strtoupper(substr($applicant['first_name'] ?? 'A', 0, 1)); ?>
+                                        </span>
+                                        <div class="details">
+                                            <div class="name"><?php echo htmlspecialchars($applicant['first_name'] . ' ' . $applicant['last_name']); ?></div>
+                                            <div class="email"><?php echo htmlspecialchars($applicant['email']); ?></div>
+                                        </div>
+                                    </div>
+                                    <div class="applicant-status">
+                                        <span class="badge <?php echo $applicationStatusBadges[$applicant['status']] ?? 'badge-pending'; ?>">
+                                            <?php echo $applicationStatusLabels[$applicant['status']] ?? ucfirst($applicant['status']); ?>
+                                        </span>
+                                        <span class="applied-date"><?php echo date('M d, Y', strtotime($applicant['applied_at'])); ?></span>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <div class="empty-applicants">
+                                <span class="material-symbols-outlined">person_off</span>
+                                <p>No applicants have applied to this job yet.</p>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+</div>
+
+<!-- =============================================
+JAVASCRIPT
+============================================= -->
+<script>
     // =============================================
     // 1. SIDEBAR TOGGLE
     // =============================================
@@ -1780,6 +1731,267 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
         }, 250);
     });
 
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
     // =============================================
     // 5. KEYBOARD ACCESSIBILITY - FIXED
     // =============================================
@@ -1793,6 +2005,6 @@ $skills = !empty($job['skills_required']) ? explode(',', $job['skills_required']
 
     console.log('📄 ISMERS Job View loaded successfully!');
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

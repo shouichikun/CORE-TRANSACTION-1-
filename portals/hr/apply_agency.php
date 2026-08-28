@@ -1,10 +1,18 @@
 <?php
 // portals/hr/apply_agency.php - Apply as Recruitment Agency for a Client
-// IMPROVED UI/UX - Professional Design with Confirmation Modal
+// FIXED: PostgreSQL compatibility + proper error handling + UI improvements
+
 session_start();
 
-require_once '../../app/config.php';
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
+require_once '../../app/config.php';
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -23,8 +31,10 @@ $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 
-// Get all clients for dropdown
-$clients = getRecords("
+// =============================================
+// Get all clients for dropdown - PostgreSQL syntax with DEBUG
+// =============================================
+$clients = @getRecords("
     SELECT c.*, u.email as user_email 
     FROM clients c
     JOIN users u ON c.user_id = u.id
@@ -32,24 +42,42 @@ $clients = getRecords("
     ORDER BY c.company_name ASC
 ");
 
+// If no clients found, try without the is_active filter
+if (empty($clients) || !is_array($clients)) {
+    $clients = @getRecords("
+        SELECT c.*, u.email as user_email 
+        FROM clients c
+        JOIN users u ON c.user_id = u.id
+        ORDER BY c.company_name ASC
+    ");
+}
+
+// Ensure it's an array
+if (!is_array($clients)) $clients = [];
+
 // Get filter parameters
 $clientFilter = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
 
-// Get user's applications
-$applications = getRecords("
+// =============================================
+// Get user's applications - PostgreSQL syntax
+// =============================================
+$applications = @getRecords("
     SELECT a.*, c.company_name, c.id as client_id, 
-           CONCAT(u.first_name, ' ', u.last_name) as reviewer_name
+           COALESCE(u.first_name || ' ' || u.last_name, 'N/A') as reviewer_name
     FROM agency_applications a
     JOIN clients c ON a.client_id = c.id
     LEFT JOIN users u ON a.reviewed_by = u.id
-    WHERE a.user_id = ?
+    WHERE a.user_id = $1
     ORDER BY a.created_at DESC
-", [$userId], "i");
+", [$userId]);
+if (!is_array($applications)) $applications = [];
 
 $message = '';
 $messageType = '';
 
-// Handle application submission
+// =============================================
+// Handle application submission - PostgreSQL syntax
+// =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($_POST['action'] === 'apply_agency') {
         $client_id = intval($_POST['client_id'] ?? 0);
@@ -76,10 +104,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         
         // Check if already applied for this client
         if (empty($errors)) {
-            $existing = getRecord("
+            $existing = @getRecord("
                 SELECT id FROM agency_applications 
-                WHERE user_id = ? AND client_id = ? AND status IN ('pending', 'approved')
-            ", [$userId, $client_id], "ii");
+                WHERE user_id = $1 AND client_id = $2 AND status IN ('pending', 'approved')
+            ", [$userId, $client_id]);
             if ($existing) {
                 $errors[] = 'You have already applied for this client.';
             }
@@ -87,10 +115,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         
         // Check if already an agency for this client
         if (empty($errors)) {
-            $existingAgency = getRecord("
+            $existingAgency = @getRecord("
                 SELECT id FROM recruitment_agencies 
-                WHERE user_id = ? AND client_id = ? AND is_active = 1
-            ", [$userId, $client_id], "ii");
+                WHERE user_id = $1 AND client_id = $2 AND is_active = 1
+            ", [$userId, $client_id]);
             if ($existingAgency) {
                 $errors[] = 'You are already an approved agency for this client.';
             }
@@ -98,25 +126,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         
         // Check if agency code exists for this client
         if (empty($errors)) {
-            $existingCode = getRecord("
+            $existingCode = @getRecord("
                 SELECT id FROM recruitment_agencies 
-                WHERE agency_code = ? AND client_id = ?
-            ", [$agency_code, $client_id], "si");
+                WHERE agency_code = $1 AND client_id = $2
+            ", [$agency_code, $client_id]);
             if ($existingCode) {
                 $errors[] = 'This agency code is already taken for this client.';
             }
         }
         
         if (empty($errors)) {
-            // Insert application
+            // Insert application - PostgreSQL syntax
             $insertSql = "INSERT INTO agency_applications (
                 user_id, client_id, agency_name, agency_code, contact_person, contact_email,
                 contact_phone, address, website, specialization,
                 years_experience, team_size, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())";
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending', NOW())
+            RETURNING id";
             
-            $stmt = mysqli_prepare($conn, $insertSql);
-            mysqli_stmt_bind_param($stmt, 'iissssssssss', 
+            $result = @insertRecord($insertSql, [
                 $userId,
                 $client_id,
                 $agency_name,
@@ -129,12 +157,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $specialization,
                 $years_experience,
                 $team_size
-            );
+            ]);
             
-            if (mysqli_stmt_execute($stmt)) {
+            if ($result) {
                 // Log activity
-                $client = getRecord("SELECT company_name FROM clients WHERE id = ?", [$client_id], "i");
-                logActivity($userId, 'Applied as Agency for Client', 'agency_applications', mysqli_insert_id($conn), 
+                $client = @getRecord("SELECT company_name FROM clients WHERE id = $1", [$client_id]);
+                @logActivity($userId, 'Applied as Agency for Client', 'agency_applications', $result, 
                     'Applied as: ' . $agency_name . ' for client: ' . ($client['company_name'] ?? 'Unknown'));
                 
                 $message = 'Your application has been submitted successfully! The client will review it shortly.';
@@ -143,10 +171,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 header('Location: apply_agency.php?success=1');
                 exit;
             } else {
-                $message = 'Error submitting application: ' . mysqli_error($conn);
+                $message = 'Error submitting application. Please try again.';
                 $messageType = 'error';
             }
-            mysqli_stmt_close($stmt);
         } else {
             $message = implode('<br>', $errors);
             $messageType = 'error';
@@ -163,9 +190,27 @@ if (isset($_GET['success'])) {
 // Get client name for filter
 $filterClientName = '';
 if ($clientFilter > 0) {
-    $filterClient = getRecord("SELECT company_name FROM clients WHERE id = ?", [$clientFilter], "i");
+    $filterClient = @getRecord("SELECT company_name FROM clients WHERE id = $1", [$clientFilter]);
     if ($filterClient) {
         $filterClientName = $filterClient['company_name'];
+    }
+}
+
+// =============================================
+// Get sidebar counts - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = 0;
+$archivedTables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($archivedTables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
     }
 }
 ?>
@@ -179,15 +224,17 @@ if ($clientFilter > 0) {
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-background: #f4f6fa;
+            --bg-background: #f8f7fc;
             --bg-surface: #ffffff;
-            --bg-surface-low: #f8f9fc;
-            --text-on-surface: #0a0e1a;
-            --text-on-surface-variant: #4a5168;
-            --outline-variant: #d0d5dd;
+            --bg-surface-low: #f5f3ff;
+            --bg-surface-container-high: #ede9fe;
+            --text-on-surface: #1b1b24;
+            --text-on-surface-variant: #464555;
+            --outline-variant: #c7c4d8;
             --primary: #4f46e5;
-            --primary-container: #eef0ff;
+            --primary-container: #4f46e5;
             --on-primary: #ffffff;
+            --on-primary-fixed-variant: #4338ca;
             --slate-50: #f8fafc;
             --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
@@ -198,10 +245,10 @@ if ($clientFilter > 0) {
             --slate-700: #334155;
             --slate-800: #1e293b;
             --slate-900: #0f172a;
-            --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
             --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -229,256 +276,174 @@ if ($clientFilter > 0) {
         }
         a { text-decoration: none; color: inherit; }
 
-     /* =============================================
-   SIDEBAR - STANDARDIZED
-   ============================================= */
-.dashboard-sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 50;
-    background: var(--bg-surface);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    width: var(--sidebar-width);
-    border-right: 1px solid var(--slate-200);
-    transition: width 0.3s ease, transform 0.3s ease;
-    overflow: hidden;
-    box-shadow: var(--shadow-xl);
-    flex-shrink: 0;
-}
+        /* =============================================
+           SIDEBAR - STANDARDIZED
+           ============================================= */
+        .dashboard-sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 50;
+            background: var(--bg-surface);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: var(--sidebar-width);
+            border-right: 1px solid var(--slate-200);
+            transition: width 0.3s ease, transform 0.3s ease;
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed {
-    width: var(--sidebar-collapsed);
-}
+        .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
+        .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
 
-.dashboard-sidebar.mobile-hidden {
-    transform: translateX(-100%);
-}
+        .dashboard-sidebar .sidebar-brand-text,
+        .dashboard-sidebar .sidebar-brand-category,
+        .dashboard-sidebar .sidebar-nav .nav-label,
+        .dashboard-sidebar .sidebar-nav .nav-text,
+        .dashboard-sidebar .sidebar-nav .nav-badge,
+        .dashboard-sidebar .sidebar-footer .user-info {
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
+        }
 
-.dashboard-sidebar.mobile-open {
-    transform: translateX(0);
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-text,
+        .dashboard-sidebar.collapsed .sidebar-brand-category,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
 
-/* Hide text when collapsed */
-.dashboard-sidebar .sidebar-brand-text,
-.dashboard-sidebar .sidebar-brand-category,
-.dashboard-sidebar .sidebar-nav .nav-label,
-.dashboard-sidebar .sidebar-nav .nav-text,
-.dashboard-sidebar .sidebar-nav .nav-badge,
-.dashboard-sidebar .sidebar-footer .user-info {
-    opacity: 1;
-    transition: opacity 0.3s ease;
-    overflow: hidden;
-    white-space: nowrap;
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-nav { padding: 0.5rem 0.25rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: center; padding: 0.75rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: center; padding: 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar { width: 2.5rem; height: 2.5rem; font-size: 0.875rem; }
 
-.dashboard-sidebar.collapsed .sidebar-brand-text,
-.dashboard-sidebar.collapsed .sidebar-brand-category,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-.dashboard-sidebar.collapsed .sidebar-footer .user-info {
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-}
+        .sidebar-brand-card {
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 0.5rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-brand-card {
-    padding: 1rem 0.5rem;
-}
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background: var(--slate-100);
+            color: var(--primary);
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-nav {
-    padding: 0.5rem 0.25rem;
-}
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 0.875rem; font-weight: 600; color: var(--slate-900); }
+        .sidebar-brand-category { font-size: 0.75rem; color: var(--slate-500); margin-top: 0.25rem; }
 
-.dashboard-sidebar.collapsed .sidebar-main-link {
-    justify-content: center;
-    padding: 0.75rem 0.5rem;
-}
+        .sidebar-nav { flex: 1; overflow-y: auto; padding: 1.5rem 1.25rem; }
+        .sidebar-nav .nav-label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--slate-500);
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-main-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-label);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card {
-    justify-content: center;
-    padding: 0.5rem;
-}
+        .sidebar-main-link:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .sidebar-main-link.active { background: var(--bg-surface-container-high); color: var(--primary); }
+        .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; flex-shrink: 0; }
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 50px;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    font-size: 0.875rem;
-}
+        .sidebar-footer {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
+        }
 
-/* Sidebar Brand */
-.sidebar-brand-card {
-    border-radius: 2rem;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 0.75rem;
-}
+        .sidebar-footer .user-card {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 1rem;
+            background: var(--bg-surface-low);
+        }
 
-.sidebar-brand-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 1.75rem;
-    background: var(--slate-100);
-    color: var(--primary);
-    font-size: 1.5rem;
-    flex-shrink: 0;
-}
+        .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
 
-.sidebar-brand-icon .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-footer .user-card .user-info .user-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .sidebar-footer .user-card .user-info .user-email { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
-.sidebar-brand-text {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--slate-900);
-}
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
 
-.sidebar-brand-category {
-    font-size: 0.75rem;
-    color: var(--slate-500);
-    margin-top: 0.25rem;
-}
+        .sidebar-backdrop.active { display: block; opacity: 1; }
 
-/* Sidebar Navigation */
-.sidebar-nav {
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem 1.25rem;
-}
-
-.sidebar-nav .nav-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--slate-500);
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.5rem;
-}
-
-.sidebar-main-link {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    color: var(--text-on-surface-variant);
-    transition: all var(--transition-fast);
-    margin-bottom: 0.25rem;
-    font-family: var(--font-label);
-    font-weight: 500;
-    font-size: 0.875rem;
-}
-
-.sidebar-main-link:hover {
-    background: var(--bg-surface-low);
-    color: var(--text-on-surface);
-}
-
-.sidebar-main-link.active {
-    background: var(--bg-surface-container-high);
-    color: var(--primary);
-}
-
-.sidebar-main-link .material-symbols-outlined {
-    font-size: 1.25rem;
-    flex-shrink: 0;
-}
-
-.sidebar-main-link .nav-text {
-    transition: opacity 0.3s ease;
-}
-
-.sidebar-main-link .nav-badge {
-    margin-left: auto;
-    background: var(--primary);
-    color: white;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 0.125rem 0.5rem;
-    border-radius: 50px;
-    transition: opacity 0.3s ease;
-}
-
-/* Sidebar Footer */
-.sidebar-footer {
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--slate-200);
-}
-
-.sidebar-footer .user-card {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 1rem;
-    background: var(--bg-surface-low);
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.875rem;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .user-info .user-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
-
-.sidebar-footer .user-card .user-info .user-email {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Sidebar Backdrop */
-.sidebar-backdrop {
-    display: none;
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: rgba(17, 24, 39, 0.5);
-    backdrop-filter: blur(8px);
-    z-index: 40;
-    transition: opacity 0.3s ease;
-    opacity: 0;
-}
-
-.sidebar-backdrop.active {
-    display: block;
-    opacity: 1;
-}
         .main-wrapper {
             flex: 1;
             display: flex;
@@ -493,7 +458,7 @@ if ($clientFilter > 0) {
         .top-header {
             background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(12px);
-            border-bottom: 1px solid var(--slate-200);
+            border-bottom: 1px solid rgba(199, 196, 216, 0.3);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -501,38 +466,45 @@ if ($clientFilter > 0) {
             padding: 0 1.5rem;
             flex-shrink: 0;
             z-index: 30;
+            width: 100%;
         }
+
         .top-header-left { display: flex; align-items: center; gap: 0.75rem; }
+        .top-header-left .separator { color: var(--outline-variant); font-weight: 300; user-select: none; }
+
         .sidebar-toggle-btn {
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 0.5rem;
-            border-radius: 0.5rem;
-            border: 1px solid var(--slate-200);
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
             background: transparent;
             color: var(--text-on-surface-variant);
             cursor: pointer;
             transition: all var(--transition-fast);
-            min-width: 2.25rem;
-            min-height: 2.25rem;
+            min-width: 2.5rem;
+            min-height: 2.5rem;
         }
+
         .sidebar-toggle-btn:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
         .sidebar-toggle-btn .material-symbols-outlined { font-size: 1.25rem; }
+
         .mobile-menu-btn {
             display: none;
             align-items: center;
             justify-content: center;
             padding: 0.5rem;
-            border-radius: 0.5rem;
-            border: 1px solid var(--slate-200);
+            border-radius: 0.75rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
             background: transparent;
             color: var(--text-on-surface-variant);
             cursor: pointer;
             transition: all var(--transition-fast);
-            min-width: 2.25rem;
-            min-height: 2.25rem;
+            min-width: 2.5rem;
+            min-height: 2.5rem;
         }
+
         .mobile-menu-btn:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
         .mobile-menu-btn .material-symbols-outlined { font-size: 1.25rem; }
 
@@ -540,18 +512,19 @@ if ($clientFilter > 0) {
         .profile-dropdown-toggle {
             display: flex;
             align-items: center;
-            gap: 0.625rem;
-            padding: 0.25rem 0.75rem 0.25rem 0.25rem;
+            gap: 0.75rem;
+            padding: 0.375rem 0.75rem 0.375rem 0.375rem;
             border-radius: var(--radius-full);
             border: 1px solid transparent;
             background: transparent;
             cursor: pointer;
             transition: all var(--transition-fast);
         }
-        .profile-dropdown-toggle:hover { background: var(--bg-surface-low); border-color: var(--slate-200); }
+
+        .profile-dropdown-toggle:hover { background: var(--bg-surface-low); border-color: rgba(199, 196, 216, 0.3); }
         .profile-dropdown-toggle .avatar-small {
-            width: 2rem;
-            height: 2rem;
+            width: 2.25rem;
+            height: 2.25rem;
             border-radius: 50%;
             background: var(--primary);
             display: flex;
@@ -562,43 +535,39 @@ if ($clientFilter > 0) {
             font-size: 0.75rem;
             flex-shrink: 0;
         }
-        .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
-        .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
+
+        .profile-dropdown-toggle .profile-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .profile-dropdown-toggle .profile-role { font-size: 0.75rem; color: var(--text-on-surface-variant); font-weight: 400; }
         .profile-dropdown-toggle .material-symbols-outlined { font-size: 1rem; color: var(--text-on-surface-variant); transition: transform var(--transition-fast); }
         .profile-dropdown-toggle.open .material-symbols-outlined:last-child { transform: rotate(180deg); }
+
         .profile-dropdown-menu {
             position: absolute;
             right: 0;
             top: calc(100% + 0.5rem);
-            width: 13rem;
+            width: 14rem;
             background: var(--bg-surface);
-            border-radius: var(--radius-xl);
-            box-shadow: var(--shadow-lg);
+            border-radius: var(--radius-2xl);
+            box-shadow: var(--shadow-xl);
             border: 1px solid var(--slate-200);
             padding: 0.5rem;
             z-index: 50;
             opacity: 0;
             visibility: hidden;
-            transform: translateY(-0.25rem) scale(0.97);
+            transform: translateY(-0.5rem) scale(0.95);
             transition: all var(--transition-smooth);
             transform-origin: top right;
         }
+
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
-        .profile-dropdown-menu .dropdown-header {
-            padding: 0.25rem 0.75rem 0.25rem;
-            font-size: 0.6rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-on-surface-variant);
-        }
+        .profile-dropdown-menu .dropdown-header { padding: 0.5rem 0.875rem 0.25rem; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-on-surface-variant); }
         .profile-dropdown-menu .dropdown-item {
             display: flex;
             align-items: center;
-            gap: 0.625rem;
-            padding: 0.5rem 0.75rem;
-            border-radius: 0.5rem;
-            font-size: 0.8125rem;
+            gap: 0.75rem;
+            padding: 0.625rem 0.875rem;
+            border-radius: 0.75rem;
+            font-size: 0.875rem;
             font-weight: 500;
             color: var(--text-on-surface);
             transition: all var(--transition-fast);
@@ -609,6 +578,7 @@ if ($clientFilter > 0) {
             text-align: left;
             font-family: var(--font-sans);
         }
+
         .profile-dropdown-menu .dropdown-item:hover { background: var(--bg-surface-low); color: var(--primary); }
         .profile-dropdown-menu .dropdown-item .material-symbols-outlined { font-size: 1.125rem; color: var(--text-on-surface-variant); }
         .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined { color: var(--primary); }
@@ -618,114 +588,133 @@ if ($clientFilter > 0) {
         .profile-dropdown-menu .dropdown-divider { height: 1px; background: var(--slate-200); margin: 0.25rem 0.5rem; }
 
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
-        .main-scroll .container { max-width: 96rem; margin: 0 auto; }
+        .main-scroll .container { max-width: 80rem; margin: 0 auto; }
 
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            padding: 0.75rem 1.25rem;
+            border: 1px solid rgba(199, 196, 216, 0.3);
+            padding: 1rem 1.5rem;
             display: flex;
             flex-direction: column;
-            gap: 0.5rem;
-            margin-bottom: 1.25rem;
-            box-shadow: var(--shadow-xs);
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
         }
+
         @media (min-width: 640px) {
-            .breadcrumb-bar { flex-direction: row; align-items: center; justify-content: space-between; }
+            .breadcrumb-bar { border-radius: var(--radius-2xl); flex-direction: row; align-items: center; justify-content: space-between; }
         }
+
         .breadcrumb-view {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.375rem 0.75rem;
-            border-radius: 0.5rem;
-            background: var(--primary-container);
+            padding: 0.5rem 0.875rem;
+            border-radius: 0.75rem;
+            background: rgba(79, 70, 229, 0.1);
             color: var(--primary);
             font-size: 0.75rem;
-            font-weight: 600;
+            font-weight: 700;
+            border: 1px solid rgba(79, 70, 229, 0.2);
         }
-        .breadcrumb-view .material-symbols-outlined { font-size: 1rem; }
+
+        .breadcrumb-view .material-symbols-outlined { font-size: 1.25rem; }
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
         .page-header {
             display: flex;
             flex-direction: column;
-            gap: 0.75rem;
-            margin-bottom: 1.25rem;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
         }
+
         @media (min-width: 640px) {
             .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
         }
+
         .page-header h1 {
-            font-size: 1.75rem;
-            font-weight: 800;
+            font-size: 1.875rem;
+            font-weight: 700;
             color: var(--text-on-surface);
             letter-spacing: -0.025em;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.75rem;
         }
+
         .page-header h1 .material-symbols-outlined {
             font-size: 2rem;
             color: var(--primary);
         }
-        .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
+
+        .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.25rem; }
 
         .btn {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.5rem 1.25rem;
-            border-radius: 0.5rem;
+            padding: 0.625rem 1.25rem;
+            border-radius: 0.75rem;
             font-weight: 600;
-            font-size: 0.8125rem;
+            font-size: 0.875rem;
             border: none;
             cursor: pointer;
             transition: all var(--transition-fast);
             font-family: var(--font-sans);
             text-decoration: none;
         }
-        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79, 70, 229, 0.15); }
+
+        .btn-primary { background: var(--primary); color: white; }
         .btn-primary:hover { background: var(--on-primary-fixed-variant); transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
-        .btn-outline:hover { background: var(--primary-container); }
+        .btn-outline:hover { background: var(--bg-surface-low); }
         .btn-ghost { background: transparent; color: var(--text-on-surface-variant); }
         .btn-ghost:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
-        .btn-success { background: #059669; color: white; }
-        .btn-success:hover { background: #047857; transform: translateY(-1px); box-shadow: var(--shadow-md); }
+        .btn-success { background: #22c55e; color: white; }
+        .btn-success:hover { background: #16a34a; transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-danger { background: #dc2626; color: white; }
         .btn-danger:hover { background: #b91c1c; transform: translateY(-1px); box-shadow: var(--shadow-md); }
-        .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.6875rem; border-radius: 0.375rem; }
+        .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.75rem; border-radius: 0.5rem; }
         .btn .material-symbols-outlined { font-size: 1.125rem; }
-        .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
+        .btn-sm .material-symbols-outlined { font-size: 1rem; }
 
-        .toast {
+        /* Toast Container */
+        .toast-container {
             position: fixed;
-            top: 1rem;
-            right: 1rem;
+            top: 1.5rem;
+            right: 1.5rem;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-width: 400px;
+            width: 100%;
+        }
+
+        .toast-item {
             padding: 0.75rem 1.25rem;
-            border-radius: 0.5rem;
+            border-radius: 0.75rem;
             color: white;
             font-weight: 600;
             font-size: 0.8125rem;
             box-shadow: var(--shadow-lg);
-            z-index: 10000;
             animation: slideDown 0.35s ease-out;
-            max-width: 380px;
             display: flex;
             align-items: center;
             gap: 0.75rem;
         }
-        .toast .material-symbols-outlined { font-size: 1.25rem; }
-        .toast.success { background: #059669; }
-        .toast.error { background: #dc2626; }
-        .toast.info { background: var(--primary); }
+
+        .toast-item .material-symbols-outlined { font-size: 1.25rem; }
+        .toast-item.success { background: #22c55e; }
+        .toast-item.error { background: #dc2626; }
+        .toast-item.info { background: var(--primary); }
+
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
+        /* Form Styles */
         .form-group { margin-bottom: 1.25rem; }
         .form-group label {
             display: block;
@@ -734,42 +723,58 @@ if ($clientFilter > 0) {
             color: var(--text-on-surface);
             margin-bottom: 0.375rem;
         }
+
         .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
+
         .form-control {
             width: 100%;
             padding: 0.625rem 0.875rem;
-            border: 1.5px solid var(--slate-200);
-            border-radius: 0.5rem;
+            border: 2px solid var(--slate-200);
+            border-radius: 0.75rem;
             font-size: 0.875rem;
             font-family: var(--font-sans);
             transition: all var(--transition-fast);
             background: var(--bg-surface);
             color: var(--text-on-surface);
         }
+
         .form-control:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
         }
+
         .form-control::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
         textarea.form-control { resize: vertical; min-height: 80px; }
-        select.form-control { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%234a5168' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.75rem center; padding-right: 2.5rem; }
+
+        select.form-control {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 1rem center;
+            padding-right: 2.5rem;
+        }
+
         .form-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 1rem;
         }
+
         @media (max-width: 480px) { .form-row { grid-template-columns: 1fr; } }
+
         .helper-text {
             font-size: 0.6875rem;
             color: var(--text-on-surface-variant);
-            margin-top: 0.1875rem;
+            margin-top: 0.25rem;
             display: flex;
             align-items: center;
             gap: 0.25rem;
         }
+
         .helper-text .material-symbols-outlined { font-size: 0.875rem; }
 
+        /* Status Badges */
         .status-badge {
             display: inline-flex;
             align-items: center;
@@ -779,11 +784,13 @@ if ($clientFilter > 0) {
             font-size: 0.75rem;
             font-weight: 600;
         }
+
         .status-badge.pending { background: #fef3c7; color: #d97706; }
         .status-badge.approved { background: #d1fae5; color: #059669; }
         .status-badge.rejected { background: #fecaca; color: #dc2626; }
         .status-badge .material-symbols-outlined { font-size: 0.875rem; }
 
+        /* Application Cards */
         .application-card {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -798,16 +805,19 @@ if ($clientFilter > 0) {
             gap: 0.75rem;
             transition: all var(--transition-fast);
         }
+
         .application-card:hover {
             box-shadow: var(--shadow-md);
             border-color: var(--slate-300);
         }
-        .application-card .app-info { flex: 1; }
+
+        .application-card .app-info { flex: 1; min-width: 200px; }
         .application-card .app-info .agency-name {
             font-weight: 700;
             font-size: 1rem;
             color: var(--text-on-surface);
         }
+
         .application-card .app-info .agency-code {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
@@ -815,31 +825,37 @@ if ($clientFilter > 0) {
             padding: 0.0625rem 0.5rem;
             border-radius: var(--radius-full);
             border: 1px solid var(--slate-200);
+            margin-left: 0.375rem;
         }
+
         .application-card .app-info .client-name {
             font-size: 0.8125rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.125rem;
         }
+
         .application-card .app-info .client-name .material-symbols-outlined {
             font-size: 0.875rem;
             vertical-align: middle;
             color: var(--primary);
         }
+
         .application-card .app-info .meta {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.125rem;
         }
 
+        /* Cards */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
             border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-xs);
+            box-shadow: var(--shadow-sm);
             overflow: hidden;
-            margin-bottom: 1.25rem;
+            margin-bottom: 1.5rem;
         }
+
         .card-header {
             padding: 1rem 1.25rem;
             border-bottom: 1px solid var(--slate-200);
@@ -850,6 +866,7 @@ if ($clientFilter > 0) {
             gap: 0.5rem;
             background: var(--bg-surface-low);
         }
+
         .card-header h3 {
             font-size: 0.9375rem;
             font-weight: 700;
@@ -857,10 +874,12 @@ if ($clientFilter > 0) {
             align-items: center;
             gap: 0.5rem;
         }
+
         .card-header h3 .material-symbols-outlined {
             font-size: 1.125rem;
             color: var(--primary);
         }
+
         .card-header .count-badge {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
@@ -869,25 +888,119 @@ if ($clientFilter > 0) {
             border-radius: var(--radius-full);
             border: 1px solid var(--slate-200);
         }
+
         .card-body { padding: 1.25rem; }
 
+        /* Empty State */
         .empty-state {
             text-align: center;
-            padding: 2rem 1.5rem;
+            padding: 2.5rem 1.5rem;
             color: var(--text-on-surface-variant);
         }
+
         .empty-state .material-symbols-outlined {
-            font-size: 3rem;
+            font-size: 3.5rem;
             color: var(--slate-300);
             display: block;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.75rem;
         }
-        .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); }
+
+        .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.875rem; }
 
-        /* =============================================
-           CONFIRMATION MODAL
-        ============================================= */
+        /* Form Section Titles */
+        .form-section-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-on-surface-variant);
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-sm);
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .form-section-title .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--primary);
+        }
+
+        /* Form Card */
+        .form-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            border: 1px solid var(--slate-200);
+            padding: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            max-width: 720px;
+            margin: 0 auto;
+        }
+
+        .form-card .form-header {
+            text-align: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--slate-200);
+        }
+
+        .form-card .form-header .icon-wrapper {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 50%;
+            background: var(--bg-surface-low);
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .form-card .form-header .icon-wrapper .material-symbols-outlined { font-size: 2rem; }
+        .form-card .form-header h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-on-surface); }
+        .form-card .form-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); }
+
+        .form-divider {
+            border: none;
+            border-top: 1px solid var(--slate-200);
+            margin: 1.25rem 0;
+        }
+
+        .form-footer-note {
+            background: var(--bg-surface-low);
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius-md);
+            margin-top: 1rem;
+            border: 1px solid var(--slate-200);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .form-footer-note .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--primary);
+            flex-shrink: 0;
+            margin-top: 0.125rem;
+        }
+
+        .form-footer-note p {
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+            margin: 0;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            justify-content: flex-end;
+        }
+
+        /* Modal */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -899,7 +1012,9 @@ if ($clientFilter > 0) {
             align-items: center;
             padding: 1rem;
         }
+
         .modal-overlay.active { display: flex; }
+
         .modal {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -912,10 +1027,12 @@ if ($clientFilter > 0) {
             display: flex;
             flex-direction: column;
         }
+
         @keyframes modalSlideUp {
             from { opacity: 0; transform: translateY(20px) scale(0.96); }
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
+
         .modal-header {
             padding: 1rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
@@ -924,6 +1041,7 @@ if ($clientFilter > 0) {
             align-items: center;
             flex-shrink: 0;
         }
+
         .modal-header h2 {
             font-size: 1.125rem;
             font-weight: 700;
@@ -931,7 +1049,9 @@ if ($clientFilter > 0) {
             align-items: center;
             gap: 0.5rem;
         }
+
         .modal-header h2 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
+
         .modal-close {
             background: none;
             border: none;
@@ -941,9 +1061,12 @@ if ($clientFilter > 0) {
             color: var(--text-on-surface-variant);
             transition: all var(--transition-fast);
         }
+
         .modal-close:hover { background: var(--bg-surface-low); }
         .modal-close .material-symbols-outlined { font-size: 1.25rem; }
+
         .modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; }
+
         .modal-footer {
             padding: 0.875rem 1.5rem;
             border-top: 1px solid var(--slate-200);
@@ -964,159 +1087,176 @@ if ($clientFilter > 0) {
             margin: 0 auto 0.75rem;
             font-size: 2rem;
         }
-        .modal-confirm-icon.info { background: #eef0ff; color: #4f46e5; }
+
+        .modal-confirm-icon.info { background: var(--bg-surface-low); color: var(--primary); }
         .modal-confirm-icon.success { background: #d1fae5; color: #059669; }
         .modal-confirm-icon.warning { background: #fef3c7; color: #d97706; }
         .modal-confirm-icon.danger { background: #fecaca; color: #dc2626; }
 
-        .form-group { margin-bottom: 1rem; }
-        .form-group:last-child { margin-bottom: 0; }
-        .form-group label {
-            display: block;
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
-        }
-        .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
-
+        /* Responsive */
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
-            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-sm); height: 100vh; }
+            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-xl); height: 100vh; }
             .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
             .main-wrapper { margin-left: var(--sidebar-width); }
             .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: inline; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: inline; }
         }
+
         @media (max-width: 767px) {
-            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
+            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-xl); }
             .dashboard-sidebar.mobile-open { transform: translateX(0); }
             .sidebar-toggle-btn { display: none !important; }
             .mobile-menu-btn { display: flex; }
             .main-wrapper { margin-left: 0 !important; }
             .main-scroll { padding: 1rem; }
             .top-header-left .separator { display: none; }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: none; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
+            .form-card { padding: 1rem; }
         }
+
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
-            .breadcrumb-bar { padding: 0.625rem 0.875rem; }
-            .page-header h1 { font-size: 1.25rem; }
+            .breadcrumb-bar { padding: 0.75rem 1rem; }
+            .page-header h1 { font-size: 1.5rem; }
             .application-card { flex-direction: column; align-items: stretch; text-align: center; }
             .form-row { grid-template-columns: 1fr; }
+            .form-actions { flex-direction: column; }
+            .form-actions .btn { width: 100%; justify-content: center; }
             .modal { max-height: 95vh; margin: 0.5rem; }
             .modal-footer { flex-direction: column; }
             .modal-footer .btn { width: 100%; justify-content: center; }
         }
-        .main-scroll::-webkit-scrollbar { width: 5px; }
+
+        .main-scroll::-webkit-scrollbar { width: 6px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
-        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
-        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
+        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 3px; }
+        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-500); }
+
+.header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
 
-    <!-- Sidebar Backdrop -->
-    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">apartment</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-label">Main</div>
-        <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">dashboard</span>
-            <span class="nav-text">Dashboard</span>
-        </a>
-        <a href="clients.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'clients.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">business</span>
-            <span class="nav-text">Clients</span>
-        </a>
-        <a href="jobs.php" class="sidebar-main-link <?php echo in_array(basename($_SERVER['PHP_SELF']), ['jobs.php', 'job_view.php', 'post_job.php']) ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">work</span>
-            <span class="nav-text">My Jobs</span>
-        </a>
-        <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">people</span>
-            <span class="nav-text">Applicants</span>
-            <span class="nav-badge"><?php 
-                // Get pending applications count
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
-                echo $pendingApps; 
-            ?></span>
-        </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
-        </a>
-        <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">calendar_month</span>
-            <span class="nav-text">Interviews</span>
-        </a>
-        <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">description</span>
-            <span class="nav-text">Offers</span>
-        </a>
-        <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">archive</span>
-            <span class="nav-text">Archive</span>
-            <span class="nav-badge"><?php 
-                // Get total archive count
-                $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                echo $totalArchived;
-            ?></span>
-        </a>
-        <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">apartment</span>
-            <span class="nav-text">Apply as Agency</span>
-        </a>
-        <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">assignment</span>
-            <span class="nav-text">Deployments</span>
-        </a>
-    </nav>
-    <div class="sidebar-footer">
-        <div class="user-card">
-            <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
-            <div class="user-info">
-                <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
-                <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
+        <nav class="sidebar-nav">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="clients.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'clients.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">business</span>
+                <span class="nav-text">Clients</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo in_array(basename($_SERVER['PHP_SELF']), ['jobs.php', 'job_view.php', 'post_job.php']) ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Applicants</span>
+                <span class="nav-badge"><?php echo $pendingAppsCount; ?></span>
+            </a>
+            <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="nav-text">Interviews</span>
+            </a>
+            <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">description</span>
+                <span class="nav-text">Offers</span>
+            </a>
+            <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">archive</span>
+                <span class="nav-text">Archive</span>
+                <span class="nav-badge"><?php echo $totalArchived; ?></span>
+            </a>
+            <a href="apply_agency.php" class="sidebar-main-link active">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Apply as Agency</span>
+            </a>
+            <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">assignment</span>
+                <span class="nav-text">Deployments</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <span class="avatar"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
+                <div class="user-info">
+                    <div class="user-name"><?php echo htmlspecialchars($fullName); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($email); ?></div>
+                </div>
             </div>
         </div>
-    </div>
-</aside>
+    </aside>
+
     <!-- ===== MAIN CONTENT ===== -->
     <div class="main-wrapper" id="mainWrapper">
-        <header class="top-header">
-            <div class="top-header-left">
-                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                    <span class="material-symbols-outlined">menu</span>
-                </button>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
-                </button>
-                <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                    Apply as Agency
-                </span>
-            </div>
+        <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
+
+
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -1139,21 +1279,23 @@ if ($clientFilter > 0) {
 
         <main class="main-scroll">
             <div class="container">
-                <!-- Toast Messages -->
-                <?php if ($message): ?>
-                    <div class="toast <?php echo $messageType; ?>" id="toastMessage">
-                        <span class="material-symbols-outlined">
-                            <?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?>
-                        </span>
-                        <?php echo htmlspecialchars($message); ?>
-                    </div>
-                    <script>
-                        setTimeout(() => {
-                            const toast = document.getElementById('toastMessage');
-                            if (toast) toast.remove();
-                        }, 5000);
-                    </script>
-                <?php endif; ?>
+                <!-- Toast Container -->
+                <div class="toast-container" id="toastContainer">
+                    <?php if ($message): ?>
+                        <div class="toast-item <?php echo $messageType; ?>" id="toastMessage">
+                            <span class="material-symbols-outlined">
+                                <?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?>
+                            </span>
+                            <?php echo htmlspecialchars($message); ?>
+                        </div>
+                        <script>
+                            setTimeout(() => {
+                                const toast = document.getElementById('toastMessage');
+                                if (toast) toast.remove();
+                            }, 5000);
+                        </script>
+                    <?php endif; ?>
+                </div>
 
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
@@ -1206,7 +1348,7 @@ if ($clientFilter > 0) {
                                         <div class="meta">
                                             <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">schedule</span>
                                             Submitted: <?php echo date('M d, Y', strtotime($app['created_at'])); ?>
-                                            <?php if ($app['reviewer_name'] && $app['status'] !== 'pending'): ?>
+                                            <?php if (!empty($app['reviewer_name']) && $app['status'] !== 'pending'): ?>
                                                 · <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">person</span>
                                                 Reviewed by: <?php echo htmlspecialchars($app['reviewer_name']); ?>
                                             <?php endif; ?>
@@ -1229,24 +1371,32 @@ if ($clientFilter > 0) {
                     </div>
                 </div>
 
-                <!-- Application Form -->
-                <div style="max-width: 700px; margin: 0 auto;">
-                    <div style="background: var(--bg-surface); border-radius: var(--radius-2xl); border: 1px solid var(--slate-200); padding: 1.5rem; box-shadow: var(--shadow-sm);">
-                        <div style="text-align: center; margin-bottom: 1.5rem;">
-                            <span style="font-size: 2.5rem; color: var(--primary);">
-                                <span class="material-symbols-outlined" style="font-size: 2.5rem;">apartment</span>
-                            </span>
-                            <h2 style="font-size: 1.25rem; font-weight: 700; margin-top: 0.25rem;">New Application</h2>
-                            <p style="color: var(--text-on-surface-variant); font-size: 0.875rem;">Apply to become a recruitment agency for a client</p>
+                <!-- Application Form - ENHANCED UI -->
+                <div class="form-card">
+                    <div class="form-header">
+                        <div class="icon-wrapper">
+                            <span class="material-symbols-outlined">apartment</span>
+                        </div>
+                        <h2>New Application</h2>
+                        <p>Apply to become a recruitment agency for a client</p>
+                    </div>
+
+                    <form method="POST" action="" id="agencyForm">
+                        <input type="hidden" name="action" value="apply_agency">
+
+                        <!-- Client Selection -->
+                        <div class="form-section-title">
+                            <span class="material-symbols-outlined">business</span>
+                            Client Information
                         </div>
 
-                        <form method="POST" action="" id="agencyForm">
-                            <input type="hidden" name="action" value="apply_agency">
-
-                            <div class="form-group">
-                                <label>Select Client <span class="required">*</span></label>
-                                <select name="client_id" class="form-control" required>
-                                    <option value="">Select a client...</option>
+                        <div class="form-group">
+                            <label>Select Client <span class="required">*</span></label>
+                            <select name="client_id" class="form-control" required>
+                                <option value="">— Select a client —</option>
+                                <?php if (empty($clients)): ?>
+                                    <option value="" disabled>No clients available. Please create a client first.</option>
+                                <?php else: ?>
                                     <?php foreach ($clients as $client): ?>
                                         <?php 
                                         $hasApp = false;
@@ -1264,98 +1414,122 @@ if ($clientFilter > 0) {
                                             <?php if ($hasApp): ?> (Already Applied)<?php endif; ?>
                                         </option>
                                     <?php endforeach; ?>
+                                <?php endif; ?>
+                            </select>
+                            <div class="helper-text">
+                                <span class="material-symbols-outlined">info</span>
+                                Select the client you want to provide recruitment services for
+                            </div>
+                        </div>
+
+                        <hr class="form-divider">
+
+                        <!-- Agency Information -->
+                        <div class="form-section-title">
+                            <span class="material-symbols-outlined">apartment</span>
+                            Agency Information
+                        </div>
+
+                        <div class="form-group">
+                            <label>Agency Name <span class="required">*</span></label>
+                            <input type="text" name="agency_name" class="form-control" placeholder="e.g., TechHire Solutions" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Agency Code <span class="required">*</span></label>
+                            <input type="text" name="agency_code" class="form-control" placeholder="e.g., TECH" maxlength="10" required>
+                            <div class="helper-text">
+                                <span class="material-symbols-outlined">info</span>
+                                Short unique identifier for this client (2-10 characters)
+                            </div>
+                        </div>
+
+                        <hr class="form-divider">
+
+                        <!-- Contact Information -->
+                        <div class="form-section-title">
+                            <span class="material-symbols-outlined">person</span>
+                            Contact Information
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Contact Person <span class="required">*</span></label>
+                                <input type="text" name="contact_person" class="form-control" placeholder="Full name" value="<?php echo htmlspecialchars($fullName); ?>" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Contact Email <span class="required">*</span></label>
+                                <input type="email" name="contact_email" class="form-control" placeholder="email@agency.com" value="<?php echo htmlspecialchars($email); ?>" required>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Contact Phone</label>
+                            <input type="text" name="contact_phone" class="form-control" placeholder="+63 912 345 6789">
+                        </div>
+
+                        <hr class="form-divider">
+
+                        <!-- Additional Information -->
+                        <div class="form-section-title">
+                            <span class="material-symbols-outlined">more_horiz</span>
+                            Additional Information
+                        </div>
+
+                        <div class="form-group">
+                            <label>Address</label>
+                            <input type="text" name="address" class="form-control" placeholder="Office address">
+                        </div>
+
+                        <div class="form-group">
+                            <label>Website</label>
+                            <input type="url" name="website" class="form-control" placeholder="https://www.agency.com">
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Years of Experience</label>
+                                <select name="years_experience" class="form-control">
+                                    <option value="">Select...</option>
+                                    <option value="Less than 1 year">Less than 1 year</option>
+                                    <option value="1-3 years">1-3 years</option>
+                                    <option value="3-5 years">3-5 years</option>
+                                    <option value="5-10 years">5-10 years</option>
+                                    <option value="10+ years">10+ years</option>
                                 </select>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Select the client you want to provide recruitment services for
-                                </div>
                             </div>
-
                             <div class="form-group">
-                                <label>Agency Name <span class="required">*</span></label>
-                                <input type="text" name="agency_name" class="form-control" placeholder="e.g., TechHire Solutions" required>
+                                <label>Team Size</label>
+                                <select name="team_size" class="form-control">
+                                    <option value="">Select...</option>
+                                    <option value="1-5">1-5</option>
+                                    <option value="6-10">6-10</option>
+                                    <option value="11-20">11-20</option>
+                                    <option value="21-50">21-50</option>
+                                    <option value="50+">50+</option>
+                                </select>
                             </div>
+                        </div>
 
-                            <div class="form-group">
-                                <label>Agency Code <span class="required">*</span></label>
-                                <input type="text" name="agency_code" class="form-control" placeholder="e.g., TECH" maxlength="10" required>
-                                <div class="helper-text">
-                                    <span class="material-symbols-outlined">info</span>
-                                    Short unique identifier for this client (2-10 characters)
-                                </div>
-                            </div>
+                        <div class="form-group">
+                            <label>Specialization</label>
+                            <textarea name="specialization" class="form-control" placeholder="What industries or roles do you specialize in?" rows="3"></textarea>
+                        </div>
 
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Contact Person <span class="required">*</span></label>
-                                    <input type="text" name="contact_person" class="form-control" placeholder="Full name" value="<?php echo htmlspecialchars($fullName); ?>" required>
-                                </div>
-                                <div class="form-group">
-                                    <label>Contact Email <span class="required">*</span></label>
-                                    <input type="email" name="contact_email" class="form-control" placeholder="email@agency.com" value="<?php echo htmlspecialchars($email); ?>" required>
-                                </div>
-                            </div>
+                        <!-- Footer Note -->
+                        <div class="form-footer-note">
+                            <span class="material-symbols-outlined">info</span>
+                            <p>By submitting this application, you agree that the information provided is accurate. The client will review your application and approve or reject it.</p>
+                        </div>
 
-                            <div class="form-group">
-                                <label>Contact Phone</label>
-                                <input type="text" name="contact_phone" class="form-control" placeholder="+63 912 345 6789">
-                            </div>
-
-                            <div class="form-group">
-                                <label>Address</label>
-                                <input type="text" name="address" class="form-control" placeholder="Office address">
-                            </div>
-
-                            <div class="form-group">
-                                <label>Website</label>
-                                <input type="url" name="website" class="form-control" placeholder="https://www.agency.com">
-                            </div>
-
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Years of Experience</label>
-                                    <select name="years_experience" class="form-control">
-                                        <option value="">Select...</option>
-                                        <option value="Less than 1 year">Less than 1 year</option>
-                                        <option value="1-3 years">1-3 years</option>
-                                        <option value="3-5 years">3-5 years</option>
-                                        <option value="5-10 years">5-10 years</option>
-                                        <option value="10+ years">10+ years</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Team Size</label>
-                                    <select name="team_size" class="form-control">
-                                        <option value="">Select...</option>
-                                        <option value="1-5">1-5</option>
-                                        <option value="6-10">6-10</option>
-                                        <option value="11-20">11-20</option>
-                                        <option value="21-50">21-50</option>
-                                        <option value="50+">50+</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label>Specialization</label>
-                                <textarea name="specialization" class="form-control" placeholder="What industries or roles do you specialize in?" rows="3"></textarea>
-                            </div>
-
-                            <div style="background: var(--bg-surface-low); padding: 0.75rem 1rem; border-radius: var(--radius-md); margin-top: 1rem;">
-                                <p style="font-size: 0.8125rem; color: var(--text-on-surface-variant); display: flex; align-items: flex-start; gap: 0.5rem;">
-                                    <span class="material-symbols-outlined" style="font-size: 1rem;">info</span>
-                                    By submitting this application, you agree that the information provided is accurate. The client will review your application and approve or reject it.
-                                </p>
-                            </div>
-
-                            <div style="display: flex; gap: 0.75rem; margin-top: 1.5rem; justify-content: flex-end;">
-                                <button type="button" class="btn btn-primary" onclick="showConfirmModal()">
-                                    <span class="material-symbols-outlined">send</span>
-                                    Submit Application
-                                </button>
-                            </div>
-                        </form>
-                    </div>
+                        <!-- Actions -->
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-primary" onclick="showConfirmModal()">
+                                <span class="material-symbols-outlined">send</span>
+                                Submit Application
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
         </main>
@@ -1539,7 +1713,7 @@ if ($clientFilter > 0) {
         // 6. FORM VALIDATION
         // =============================================
         document.getElementById('agencyForm').addEventListener('submit', function(e) {
-            e.preventDefault(); // Prevent default, we handle via modal
+            e.preventDefault();
             
             const clientId = this.querySelector('select[name="client_id"]');
             const agencyName = this.querySelector('input[name="agency_name"]');
@@ -1549,7 +1723,6 @@ if ($clientFilter > 0) {
             
             let errors = [];
 
-            // Reset styles
             [clientId, agencyName, agencyCode, contactPerson, contactEmail].forEach(el => {
                 if (el) el.style.borderColor = '';
             });
@@ -1601,6 +1774,268 @@ if ($clientFilter > 0) {
             }
         });
 
+
+        // =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
         // =============================================
         // 7. RESPONSIVE HANDLING
         // =============================================
@@ -1626,7 +2061,8 @@ if ($clientFilter > 0) {
         });
 
         console.log('🏢 ISMERS Agency Application loaded successfully!');
+        console.log('📋 Total clients available: <?php echo count($clients); ?>');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

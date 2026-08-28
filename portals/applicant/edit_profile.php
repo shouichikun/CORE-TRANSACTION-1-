@@ -1,15 +1,33 @@
 <?php
 // portals/applicant/edit_profile.php - Edit Profile with AI Resume Analysis
+// ✅ FULLY SECURE with PostgreSQL compatibility
+
 session_start();
 
 // Include configuration file
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Include PDF Parser
 require_once '../../vendor/autoload.php';
 
 use Smalot\PdfParser\Parser;
+
+// =============================================
+// SECURITY CONSTANTS
+// =============================================
+define('MAX_FILE_SIZE', 5 * 1024 * 1024); // 5MB
+define('MAX_USER_STORAGE', 20 * 1024 * 1024); // 20MB per user
+define('ALLOWED_EXTENSIONS', ['pdf', 'doc', 'docx', 'txt']);
+define('ALLOWED_MIME_TYPES', [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain'
+]);
+define('MAX_UPLOADS_PER_MINUTE', 3);
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -34,6 +52,274 @@ $applicant = getApplicantByUserId($userId);
 $applicantId = $applicant['id'] ?? 0;
 
 // =============================================
+// SECURE FILE VALIDATION FUNCTIONS
+// =============================================
+
+/**
+ * Validate file extension against allowed list
+ */
+function isValidExtension($filename) {
+    $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    return in_array($extension, ALLOWED_EXTENSIONS);
+}
+
+/**
+ * Validate MIME type using finfo
+ */
+function isValidMimeType($filepath) {
+    if (!function_exists('finfo_open')) {
+        // Fallback to mime_content_type if finfo not available
+        $mime = mime_content_type($filepath);
+        return in_array($mime, ALLOWED_MIME_TYPES);
+    }
+    
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $filepath);
+    finfo_close($finfo);
+    
+    return in_array($mime, ALLOWED_MIME_TYPES);
+}
+
+/**
+ * Validate file signature (magic bytes)
+ */
+function isValidFileSignature($filepath, $extension) {
+    $handle = fopen($filepath, 'rb');
+    if (!$handle) return false;
+    
+    $bytes = fread($handle, 8);
+    fclose($handle);
+    
+    if (empty($bytes)) return false;
+    
+    $hex = bin2hex($bytes);
+    
+    $signatures = [
+        'pdf' => ['25504446'], // %PDF
+        'doc' => ['d0cf11e0a1b11ae1'], // DOC/PPT/XLS
+        'docx' => ['504b0304'], // ZIP (DOCX)
+        'txt' => []
+    ];
+    
+    if (!isset($signatures[$extension])) {
+        return false;
+    }
+    
+    // TXT files don't have a specific signature
+    if ($extension === 'txt') {
+        return true;
+    }
+    
+    foreach ($signatures[$extension] as $sig) {
+        if (strpos($hex, $sig) === 0) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Scan file content for malicious patterns
+ */
+function scanFileContent($filepath) {
+    $content = file_get_contents($filepath);
+    if (empty($content)) return true;
+    
+    $patterns = [
+        '/(<\?php|<\?=)/i',
+        '/eval\s*\(/i',
+        '/base64_decode\s*\(/i',
+        '/system\s*\(/i',
+        '/exec\s*\(/i',
+        '/shell_exec\s*\(/i',
+        '/passthru\s*\(/i',
+        '/popen\s*\(/i',
+        '/proc_open\s*\(/i',
+        '/assert\s*\(/i',
+        '/include\s*\(/i',
+        '/require\s*\(/i',
+        '/file_get_contents\s*\(/i',
+        '/fopen\s*\(/i',
+        '/curl_exec\s*\(/i',
+        '/(\bwget\b|\bcurl\b|\bftp\b)/i'
+    ];
+    
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $content)) {
+            error_log("Suspicious content detected in file: " . basename($filepath));
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Check rate limit for uploads
+ */
+function checkUploadRateLimit($userId) {
+    $result = getRecord(
+        "SELECT COUNT(*) as count FROM upload_logs 
+         WHERE user_id = $1 AND created_at > NOW() - INTERVAL '1 minute'",
+        [$userId]
+    );
+    $count = $result ? (int)$result['count'] : 0;
+    return $count < MAX_UPLOADS_PER_MINUTE;
+}
+
+/**
+ * Log upload attempt
+ */
+function logUploadAttempt($userId, $filename, $status, $error = null) {
+    $sql = "INSERT INTO upload_logs (user_id, filename, status, error_message, created_at) 
+            VALUES ($1, $2, $3, $4, NOW())";
+    return insertRecord($sql, [$userId, $filename, $status, $error]);
+}
+
+/**
+ * Securely handle file upload
+ */
+function secureUploadResume($file, $userId, $applicantId) {
+    global $conn;
+    
+    // 1. Check upload error
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        $errors = [
+            UPLOAD_ERR_INI_SIZE => 'File exceeds server upload limit.',
+            UPLOAD_ERR_FORM_SIZE => 'File exceeds form upload limit.',
+            UPLOAD_ERR_PARTIAL => 'File was only partially uploaded.',
+            UPLOAD_ERR_NO_FILE => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder.',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+            UPLOAD_ERR_EXTENSION => 'File upload stopped by extension.'
+        ];
+        return ['success' => false, 'error' => $errors[$file['error']] ?? 'Unknown upload error.'];
+    }
+    
+    // 2. Check rate limit
+    if (!checkUploadRateLimit($userId)) {
+        return ['success' => false, 'error' => 'Too many uploads. Please wait a moment.'];
+    }
+    
+    // 3. Validate file size
+    if ($file['size'] > MAX_FILE_SIZE) {
+        logUploadAttempt($userId, $file['name'], 'failed', 'File size exceeds limit');
+        return ['success' => false, 'error' => 'File size exceeds ' . (MAX_FILE_SIZE / 1024 / 1024) . 'MB limit.'];
+    }
+    
+    if ($file['size'] === 0) {
+        logUploadAttempt($userId, $file['name'], 'failed', 'Empty file');
+        return ['success' => false, 'error' => 'Empty file uploaded.'];
+    }
+    
+    // 4. Validate extension
+    $filename = $file['name'];
+    $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    
+    if (!isValidExtension($filename)) {
+        logUploadAttempt($userId, $filename, 'failed', 'Invalid extension');
+        return ['success' => false, 'error' => 'Invalid file type. Allowed: ' . implode(', ', ALLOWED_EXTENSIONS)];
+    }
+    
+    // 5. Create secure upload directory
+    $uploadDir = __DIR__ . '/../../uploads/resumes/';
+    if (!is_dir($uploadDir)) {
+        if (!mkdir($uploadDir, 0755, true)) {
+            return ['success' => false, 'error' => 'Failed to create upload directory.'];
+        }
+    }
+    
+    // 6. Check if directory is writable
+    if (!is_writable($uploadDir)) {
+        return ['success' => false, 'error' => 'Upload directory is not writable.'];
+    }
+    
+    // 7. Generate unique filename (prevent overwrites)
+    $newFilename = 'resume_' . $userId . '_' . time() . '_' . bin2hex(random_bytes(8)) . '.' . $extension;
+    $filepath = $uploadDir . $newFilename;
+    
+    // 8. Move file to destination
+    if (!move_uploaded_file($file['tmp_name'], $filepath)) {
+        logUploadAttempt($userId, $filename, 'failed', 'Move failed');
+        return ['success' => false, 'error' => 'Failed to move uploaded file.'];
+    }
+    
+    // 9. Validate MIME type (using finfo)
+    if (!isValidMimeType($filepath)) {
+        unlink($filepath);
+        logUploadAttempt($userId, $filename, 'failed', 'Invalid MIME type');
+        return ['success' => false, 'error' => 'Invalid file content type. Only PDF, DOC, DOCX, and TXT files are allowed.'];
+    }
+    
+    // 10. Validate file signature (magic bytes)
+    if (!isValidFileSignature($filepath, $extension)) {
+        unlink($filepath);
+        logUploadAttempt($userId, $filename, 'failed', 'Invalid file signature');
+        return ['success' => false, 'error' => 'File appears to be corrupted or not a valid document.'];
+    }
+    
+    // 11. Scan for malicious content
+    if (!scanFileContent($filepath)) {
+        unlink($filepath);
+        logUploadAttempt($userId, $filename, 'failed', 'Malicious content detected');
+        return ['success' => false, 'error' => 'File contains suspicious content and has been rejected.'];
+    }
+    
+    // 12. Check if file is readable
+    if (!is_readable($filepath)) {
+        unlink($filepath);
+        return ['success' => false, 'error' => 'Uploaded file cannot be read.'];
+    }
+    
+    // 13. Calculate total user storage
+    $userUploads = getRecords(
+        "SELECT resume_path FROM applicants WHERE id = $1 AND resume_path IS NOT NULL",
+        [$applicantId]
+    );
+    
+    $totalUserStorage = $file['size'];
+    foreach ($userUploads as $upload) {
+        $oldPath = __DIR__ . '/../../' . $upload['resume_path'];
+        if (file_exists($oldPath) && $oldPath !== $filepath) {
+            $totalUserStorage += filesize($oldPath);
+        }
+    }
+    
+    // Max storage per user
+    if ($totalUserStorage > MAX_USER_STORAGE) {
+        unlink($filepath);
+        logUploadAttempt($userId, $filename, 'failed', 'Storage limit exceeded');
+        return ['success' => false, 'error' => 'Total storage limit exceeded (' . (MAX_USER_STORAGE / 1024 / 1024) . 'MB max per user). Please delete old files.'];
+    }
+    
+    // 14. Delete old resume file if exists
+    if ($applicantId) {
+        $oldResume = getRecord("SELECT resume_path FROM applicants WHERE id = $1", [$applicantId]);
+        if ($oldResume && !empty($oldResume['resume_path'])) {
+            $oldPath = __DIR__ . '/../../' . $oldResume['resume_path'];
+            if (file_exists($oldPath) && is_file($oldPath) && $oldPath !== $filepath) {
+                unlink($oldPath);
+            }
+        }
+    }
+    
+    // 15. Log successful upload
+    logUploadAttempt($userId, $filename, 'success');
+    
+    // 16. Return success with file path
+    return [
+        'success' => true,
+        'filepath' => $filepath,
+        'filename' => $newFilename,
+        'relative_path' => 'uploads/resumes/' . $newFilename,
+        'size' => $file['size'],
+        'extension' => $extension,
+        'original_name' => $filename
+    ];
+}
+
+// =============================================
 // GET PENDING OFFERS COUNT FOR SIDEBAR BADGE
 // =============================================
 $pendingOffers = 0;
@@ -41,9 +327,9 @@ if ($applicantId) {
     $offersResult = getRecord("
         SELECT COUNT(*) as count FROM offers o
         JOIN applications a ON o.application_id = a.id
-        WHERE a.applicant_id = ? AND o.status = 'sent'
-    ", [$applicantId], "i");
-    $pendingOffers = $offersResult['count'] ?? 0;
+        WHERE a.applicant_id = $1 AND o.status = 'sent'
+    ", [$applicantId]);
+    $pendingOffers = (int)($offersResult['count'] ?? 0);
 }
 
 // Get applications count for the badge
@@ -129,7 +415,7 @@ function analyzeProfileWithAI($applicantData) {
 }
 
 /**
- * Extract text from uploaded resume file using smalot/pdfparser
+ * Extract text from uploaded resume file
  */
 function extractResumeText($filePath) {
     $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
@@ -238,31 +524,25 @@ function parseResumeWithAI($resumeText) {
 }
 
 // =============================================
-// HANDLE RESUME UPLOAD
+// HANDLE RESUME UPLOAD - SECURE VERSION
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'upload_resume') {
     if (isset($_FILES['resume_file']) && $_FILES['resume_file']['error'] === UPLOAD_ERR_OK) {
-        $file = $_FILES['resume_file'];
-        $allowedExtensions = ['pdf', 'doc', 'docx', 'txt'];
-        $maxSize = 5 * 1024 * 1024;
         
-        $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $uploadResult = secureUploadResume($_FILES['resume_file'], $userId, $applicantId);
         
-        if (!in_array($extension, $allowedExtensions)) {
-            $resumeUploadError = 'Invalid file type. Please upload PDF, DOC, DOCX, or TXT files.';
-        } elseif ($file['size'] > $maxSize) {
-            $resumeUploadError = 'File size must be less than 5MB.';
+        if (!$uploadResult['success']) {
+            $resumeUploadError = $uploadResult['error'];
         } else {
-            $uploadDir = '../../uploads/resumes/';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0777, true);
-            }
+            // Update applicant with resume path
+            $updateResult = updateApplicant($applicantId, ['resume_path' => $uploadResult['relative_path']]);
             
-            $filename = 'resume_' . $userId . '_' . time() . '.' . $extension;
-            $filepath = $uploadDir . $filename;
-            
-            if (move_uploaded_file($file['tmp_name'], $filepath)) {
-                $resumeText = extractResumeText($filepath);
+            if (!$updateResult) {
+                unlink($uploadResult['filepath']);
+                $resumeUploadError = 'Failed to update database. File was deleted.';
+            } else {
+                // Extract text from resume
+                $resumeText = extractResumeText($uploadResult['filepath']);
                 
                 if ($resumeText && strlen(trim($resumeText)) > 50) {
                     $parseResult = parseResumeWithAI($resumeText);
@@ -271,32 +551,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         $resumeAnalysisResult = $parseResult;
                         $showAIFilledData = true;
                         $aiFilledData = $parseResult['data'];
-                        
-                        $relativePath = 'uploads/resumes/' . $filename;
-                        updateApplicant($applicantId, ['resume_path' => $relativePath]);
-                        
                         $successMessage = '✅ Resume uploaded and analyzed! Review the extracted data below.';
                     } else {
                         $resumeUploadError = $parseResult['error'];
-                        $relativePath = 'uploads/resumes/' . $filename;
-                        updateApplicant($applicantId, ['resume_path' => $relativePath]);
+                        $successMessage = '✅ Resume uploaded but AI analysis failed.';
                     }
                 } else {
-                    $resumeUploadError = 'Could not extract text from the resume. Please ensure the file contains readable text.';
-                    $relativePath = 'uploads/resumes/' . $filename;
-                    updateApplicant($applicantId, ['resume_path' => $relativePath]);
+                    $successMessage = '✅ Resume uploaded successfully! (Could not extract text for analysis)';
                 }
-            } else {
-                $resumeUploadError = 'Failed to upload file. Please try again.';
             }
         }
     } else {
-        $resumeUploadError = 'Please select a file to upload.';
+        $uploadErrors = [
+            UPLOAD_ERR_INI_SIZE => 'File exceeds server upload limit.',
+            UPLOAD_ERR_FORM_SIZE => 'File exceeds form upload limit.',
+            UPLOAD_ERR_PARTIAL => 'File was only partially uploaded.',
+            UPLOAD_ERR_NO_FILE => 'Please select a file to upload.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder.',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+            UPLOAD_ERR_EXTENSION => 'File upload stopped by extension.'
+        ];
+        $errorCode = isset($_FILES['resume_file']['error']) ? $_FILES['resume_file']['error'] : UPLOAD_ERR_NO_FILE;
+        $resumeUploadError = $uploadErrors[$errorCode] ?? 'Unknown upload error.';
     }
 }
 
 // =============================================
-// HANDLE SAVE PROFILE FROM AI DATA - UPDATED UX
+// HANDLE SAVE PROFILE FROM AI DATA
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_from_ai') {
     $careerObjective = trim($_POST['career_objective'] ?? '');
@@ -316,7 +597,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 }
 
 // =============================================
-// HANDLE SAVE & ANALYZE (Final Save)
+// HANDLE SAVE & ANALYZE (Final Save) - PostgreSQL
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_and_analyze') {
     $careerObjective = trim($_POST['career_objective'] ?? '');
@@ -334,81 +615,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (empty($careerObjective) && empty($skills) && empty($experience) && empty($education)) {
         $errorMessage = 'No data to save. Please fill in at least one field.';
     } else {
-        global $conn;
+        $updateResult = updateApplicant($applicantId, $applicantData);
         
-        $sql = "UPDATE applicants SET ";
-        $setParts = [];
-        $params = [];
-        $types = "";
-        
-        foreach ($applicantData as $key => $value) {
-            if (!empty($value)) {
-                $setParts[] = "$key = ?";
-                $params[] = $value;
-                $types .= "s";
-            }
-        }
-        
-        if (empty($setParts)) {
-            $errorMessage = 'No data to save.';
-        } else {
-            $sql .= implode(", ", $setParts);
-            $sql .= " WHERE id = ?";
-            $params[] = $applicantId;
-            $types .= "i";
+        if ($updateResult) {
+            // Run AI analysis
+            $aiResult = analyzeProfileWithAI($applicantData);
             
-            $stmt = mysqli_prepare($conn, $sql);
-            
-            if (!$stmt) {
-                $errorMessage = 'Database error: ' . mysqli_error($conn);
-            } else {
-                mysqli_stmt_bind_param($stmt, $types, ...$params);
-                $executed = mysqli_stmt_execute($stmt);
+            if ($aiResult['success']) {
+                $analysis = $aiResult['data'];
                 
-                if ($executed) {
-                    $aiResult = analyzeProfileWithAI($applicantData);
-                    
-                    if ($aiResult['success']) {
-                        $analysis = $aiResult['data'];
-                        
-                        $aiSql = "UPDATE applicants SET 
-                            ai_skills = ?,
-                            ai_years_experience = ?,
-                            ai_education = ?,
-                            ai_profile_strength = ?,
-                            ai_last_analysis = ?
-                        WHERE id = ?";
-                        
-                        $aiStmt = mysqli_prepare($conn, $aiSql);
-                        $aiSkills = json_encode($analysis['skills'] ?? []);
-                        $aiExperience = $analysis['years_experience'] ?? 0;
-                        $aiEducation = $analysis['education'] ?? '';
-                        $aiStrength = calculateProfileStrength($applicantData);
-                        $aiLastAnalysis = date('Y-m-d H:i:s');
-                        
-                        mysqli_stmt_bind_param($aiStmt, "sisisi", 
-                            $aiSkills,
-                            $aiExperience,
-                            $aiEducation,
-                            $aiStrength,
-                            $aiLastAnalysis,
-                            $applicantId
-                        );
-                        mysqli_stmt_execute($aiStmt);
-                        mysqli_stmt_close($aiStmt);
-                    }
-                    
-                    mysqli_stmt_close($stmt);
-                    
-                    $_SESSION['profile_update_success'] = true;
-                    header('Location: profile.php?updated=1');
-                    exit;
-                    
-                } else {
-                    $errorMessage = 'Failed to update profile: ' . mysqli_stmt_error($stmt);
-                    mysqli_stmt_close($stmt);
+                $aiSql = "UPDATE applicants SET 
+                    ai_skills = $1,
+                    ai_years_experience = $2,
+                    ai_education = $3,
+                    ai_profile_strength = $4,
+                    ai_last_analysis = NOW()
+                WHERE id = $5";
+                
+                $aiSkills = json_encode($analysis['skills'] ?? []);
+                $aiExperience = (int)($analysis['years_experience'] ?? 0);
+                $aiEducation = $analysis['education'] ?? '';
+                $aiStrength = calculateProfileStrength($applicantData);
+                
+                $aiUpdateResult = updateRecord($aiSql, [
+                    $aiSkills,
+                    $aiExperience,
+                    $aiEducation,
+                    $aiStrength,
+                    $applicantId
+                ]);
+                
+                if (!$aiUpdateResult) {
+                    error_log("AI data update failed (non-critical)");
                 }
             }
+            
+            $_SESSION['profile_update_success'] = true;
+            header('Location: profile.php?updated=1');
+            exit;
+            
+        } else {
+            $errorMessage = 'Failed to update profile. Please try again.';
         }
     }
 }
@@ -443,28 +690,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $aiAnalysisResult = $aiResult['data'];
             
             try {
-                $columns = getTableColumns('applicants');
-                $aiData = [];
+                $aiSql = "UPDATE applicants SET 
+                    ai_skills = $1,
+                    ai_years_experience = $2,
+                    ai_education = $3,
+                    ai_profile_strength = $4,
+                    ai_last_analysis = NOW()
+                WHERE id = $5";
                 
-                if (in_array('ai_skills', $columns)) {
-                    $aiData['ai_skills'] = json_encode($aiAnalysisResult['skills'] ?? []);
-                }
-                if (in_array('ai_years_experience', $columns)) {
-                    $aiData['ai_years_experience'] = $aiAnalysisResult['years_experience'] ?? 0;
-                }
-                if (in_array('ai_education', $columns)) {
-                    $aiData['ai_education'] = $aiAnalysisResult['education'] ?? '';
-                }
-                if (in_array('ai_profile_strength', $columns)) {
-                    $aiData['ai_profile_strength'] = calculateProfileStrength($applicantData);
-                }
-                if (in_array('ai_last_analysis', $columns)) {
-                    $aiData['ai_last_analysis'] = date('Y-m-d H:i:s');
-                }
+                $aiSkills = json_encode($aiAnalysisResult['skills'] ?? []);
+                $aiExperience = (int)($aiAnalysisResult['years_experience'] ?? 0);
+                $aiEducation = $aiAnalysisResult['education'] ?? '';
+                $aiStrength = calculateProfileStrength($applicantData);
                 
-                if (!empty($aiData)) {
-                    updateApplicant($applicantId, $aiData);
-                }
+                updateRecord($aiSql, [
+                    $aiSkills,
+                    $aiExperience,
+                    $aiEducation,
+                    $aiStrength,
+                    $applicantId
+                ]);
             } catch (Exception $e) {
                 error_log("AI data update failed (non-critical): " . $e->getMessage());
             }
@@ -524,20 +769,6 @@ function calculateProfileStrength($applicant) {
     return $total > 0 ? round(($score / $total) * 100) : 0;
 }
 
-/**
- * Get table columns
- */
-function getTableColumns($table) {
-    global $conn;
-    $sql = "SHOW COLUMNS FROM $table";
-    $result = mysqli_query($conn, $sql);
-    $columns = [];
-    while ($row = mysqli_fetch_assoc($result)) {
-        $columns[] = $row['Field'];
-    }
-    return $columns;
-}
-
 // Get stored AI analysis data from applicant record
 $storedAiSkills = [];
 $storedAiExperience = 0;
@@ -547,18 +778,18 @@ $hasResume = !empty($applicant['resume_path']);
 
 if ($applicant) {
     $storedAiSkills = !empty($applicant['ai_skills']) ? json_decode($applicant['ai_skills'], true) : [];
-    $storedAiExperience = $applicant['ai_years_experience'] ?? 0;
+    $storedAiExperience = (int)($applicant['ai_years_experience'] ?? 0);
     $storedAiEducation = $applicant['ai_education'] ?? '';
-    $profileStrength = $applicant['ai_profile_strength'] ?? calculateProfileStrength($applicant);
+    $profileStrength = (int)($applicant['ai_profile_strength'] ?? calculateProfileStrength($applicant));
 }
 
 $interviewCount = 0;
 if ($applicantId) {
     $interviewResult = getRecord("
         SELECT COUNT(*) as count FROM applications 
-        WHERE applicant_id = ? AND interview_date IS NOT NULL
-    ", [$applicantId], "i");
-    $interviewCount = $interviewResult['count'] ?? 0;
+        WHERE applicant_id = $1 AND interview_date IS NOT NULL
+    ", [$applicantId]);
+    $interviewCount = (int)($interviewResult['count'] ?? 0);
 }
 
 // Check if PDF parser is available
@@ -568,6 +799,19 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
     unset($_SESSION['ai_filled_data']);
 }
 
+// Create upload_logs table if it doesn't exist (run once)
+function ensureUploadLogsTable() {
+    $sql = "CREATE TABLE IF NOT EXISTS upload_logs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        filename VARCHAR(255),
+        status VARCHAR(50),
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )";
+    executeQuery($sql);
+}
+ensureUploadLogsTable();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -578,9 +822,9 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - EDIT PROFILE
-           ========================================================================== */
+        /* ========================================================================== */
+        /* MATERIAL 3 DESIGN SYSTEM - EDIT PROFILE */
+        /* ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
             --bg-surface: #ffffff;
@@ -2174,6 +2418,51 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
         .main-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--slate-500);
         }
+         
+        .sidebar-logo {
+            width: 3.5rem;
+            height: 3.5rem;
+            object-fit: contain;
+            border-radius: 0.75rem;
+            display: block;
+            margin: 0 auto;
+        }
+
+        .dashboard-sidebar.collapsed .sidebar-logo {
+            width: 2.5rem;
+            height: 2.5rem;
+        }
+
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background-size: contain !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            background-color: transparent !important;
+            flex-shrink: 0;
+        }
+
+        /* Security badges */
+        .security-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6rem;
+            font-weight: 600;
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #86efac;
+        }
+        .security-badge .material-symbols-outlined {
+            font-size: 0.75rem;
+        }
     </style>
 </head>
 <body>
@@ -2182,14 +2471,11 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <!-- =============================================
-    SIDEBAR - FIXED
+    SIDEBAR - FIXED POSITION
     ============================================= -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">account_balance</span>
-            </span>
-            <p class="sidebar-brand-text">ISMERS</p>
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
             <p class="sidebar-brand-category">Applicant Portal</p>
         </div>
 
@@ -2250,7 +2536,7 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
         <!-- Top Header -->
         <header class="top-header">
             <div class="top-header-left">
-                <div class="logo">I</div>
+                <img src="logo.png" alt="ISMERS" class="logo" style="height: 2rem; width: auto;">
                 <span class="separator">|</span>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
                     <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
@@ -2309,6 +2595,15 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
                         <h1>Edit Profile</h1>
                         <p>Update your professional resume information</p>
                     </div>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <span class="security-badge">
+                            <span class="material-symbols-outlined">verified</span>
+                            Secure Upload
+                        </span>
+                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                            Max: <?php echo MAX_FILE_SIZE / 1024 / 1024; ?>MB
+                        </span>
+                    </div>
                 </div>
 
                 <!-- Profile Strength Indicator -->
@@ -2336,6 +2631,9 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
                             <?php else: ?>
                                 ⚠️ PDF Parser Not Available - PDF files may not work
                             <?php endif; ?>
+                        </span>
+                        <span style="display:inline-block; margin-left:0.5rem; font-size:0.65rem; color:var(--text-on-surface-variant);">
+                            🔒 File validated: extension, MIME type, size, and content
                         </span>
                     </div>
                     
@@ -2795,6 +3093,24 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
             resumeFile.addEventListener('change', function() {
                 if (this.files && this.files.length > 0) {
                     const file = this.files[0];
+                    
+                    // Validate file size client-side
+                    const maxSize = <?php echo MAX_FILE_SIZE; ?>;
+                    if (file.size > maxSize) {
+                        alert('File size exceeds ' + (maxSize / 1024 / 1024) + 'MB limit.');
+                        this.value = '';
+                        return;
+                    }
+                    
+                    // Validate extension
+                    const allowedExtensions = ['pdf', 'doc', 'docx', 'txt'];
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    if (!allowedExtensions.includes(ext)) {
+                        alert('Invalid file type. Allowed: ' + allowedExtensions.join(', '));
+                        this.value = '';
+                        return;
+                    }
+                    
                     fileName.textContent = '📎 Selected: ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
                     fileName.classList.add('show');
                     uploadBtn.style.display = 'inline-flex';
@@ -2940,8 +3256,9 @@ if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
         console.log('🤖 AI Resume Analysis enabled');
         console.log('📄 Resume Upload & Auto-Fill enabled');
         console.log('📦 PDF Parser: ' + ('<?php echo $pdfParserAvailable ? 'Available' : 'Not Available'; ?>'));
+        console.log('🔒 Secure upload: MIME validation, signature check, content scanning');
         console.log('🎯 3-Step Progress Modal enabled');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

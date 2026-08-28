@@ -2,8 +2,9 @@
 // portals/client/view_applicant.php - View Applicant Details (Single Container)
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -16,12 +17,11 @@ if ($_SESSION['role'] !== 'client') {
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $lastName = $_SESSION['last_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
-$role = $_SESSION['role'] ?? 'client'; // ADD THIS LINE
-
+$role = $_SESSION['role'] ?? 'client';
 
 // Get application ID from URL
 $applicationId = isset($_GET['id']) ? intval($_GET['id']) : 0;
@@ -31,22 +31,32 @@ if ($applicationId <= 0) {
     exit;
 }
 
-// Get client profile
+// Get client profile - PostgreSQL
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = ['company_name' => 'Your Company', 'id' => 0];
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = $client['id'] ?? 0;
+$clientId = (int)($client['id'] ?? 0);
 
-// Get applicant details with verification that it belongs to this client
+// Get pending agency count for sidebar badge
+$pendingAgencyCount = 0;
+if ($clientId > 0) {
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
+}
+
+// Get applicant details with verification that it belongs to this client - PostgreSQL
 $applicantSql = "SELECT a.*, 
                  a.cover_letter, a.resume_path as application_resume_path,
                  ap.id as applicant_profile_id, ap.phone, ap.address, 
@@ -66,14 +76,9 @@ $applicantSql = "SELECT a.*,
                  JOIN users u ON ap.user_id = u.id
                  JOIN job_orders jo ON a.job_order_id = jo.id
                  JOIN clients c ON jo.client_id = c.id
-                 WHERE a.id = ? AND jo.client_id = ?";
+                 WHERE a.id = $1 AND jo.client_id = $2";
 
-$stmt = mysqli_prepare($conn, $applicantSql);
-mysqli_stmt_bind_param($stmt, 'ii', $applicationId, $clientId);
-mysqli_stmt_execute($stmt);
-$applicantResult = mysqli_stmt_get_result($stmt);
-$applicant = mysqli_fetch_assoc($applicantResult);
-mysqli_stmt_close($stmt);
+$applicant = getRecord($applicantSql, [$applicationId, $clientId]);
 
 // If applicant doesn't exist or doesn't belong to this client
 if (!$applicant) {
@@ -229,23 +234,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $validStatuses = ['pending', 'reviewed', 'shortlisted', 'hired', 'rejected'];
         
         if (in_array($newStatus, $validStatuses)) {
-            $updateSql = "UPDATE applications SET status = ?, updated_at = NOW() WHERE id = ?";
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'si', $newStatus, $applicationId);
+            // PostgreSQL update
+            $updateSql = "UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2";
+            $updateResult = updateRecord($updateSql, [$newStatus, $applicationId]);
             
-            if (mysqli_stmt_execute($stmt)) {
+            if ($updateResult) {
                 $message = 'Application status updated successfully!';
                 $messageType = 'success';
                 $applicant['status'] = $newStatus;
                 
                 // Log activity
-                logActivity($userId, 'Application Status Updated', 'applications', $applicationId, 
-                           'Status changed to: ' . $newStatus . ($notes ? ' | Notes: ' . $notes : ''));
+                if (function_exists('logActivity')) {
+                    logActivity($userId, 'Application Status Updated', 'applications', $applicationId, 
+                               'Status changed to: ' . $newStatus . ($notes ? ' | Notes: ' . $notes : ''));
+                }
             } else {
                 $message = 'Failed to update status.';
                 $messageType = 'error';
             }
-            mysqli_stmt_close($stmt);
         }
     }
 }
@@ -266,6 +272,9 @@ $statusLabels = [
     'hired' => 'Hired',
     'rejected' => 'Rejected'
 ];
+
+// Get user profile for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -465,28 +474,16 @@ $statusLabels = [
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .sidebar-footer .user-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.8125rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-        .sidebar-footer .logout-btn:hover { background: #fef2f2; }
-        .sidebar-footer .logout-btn .material-symbols-outlined { font-size: 1.125rem; }
 
         .sidebar-backdrop {
             display: none;
@@ -584,6 +581,13 @@ $statusLabels = [
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .profile-dropdown-toggle .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
@@ -758,7 +762,7 @@ $statusLabels = [
         /* Divider Lines */
         .section-divider {
             height: 2px;
-            background: linear-gradient(to right, var(--primary), var(--primary-light), transparent);
+            background: linear-gradient(to right, var(--primary), #818cf8, transparent);
             margin: 0;
             border: none;
             opacity: 0.6;
@@ -973,6 +977,24 @@ $statusLabels = [
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
+        /* Form control */
+        .form-control {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            font-size: 0.8125rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -1006,73 +1028,68 @@ $statusLabels = [
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
- /* Profile Picture Styles */
-.avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-    background: var(--primary-container);
-}
-
-.avatar-small {
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
-    background: var(--primary);
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-    object-fit: cover;
-}
-
-.avatar-small img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    object-fit: cover;
-}
-
-.avatar-img-large {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-/* Sidebar user card with profile picture */
-.sidebar-footer .user-card .avatar-img {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.25rem;
-    height: 2.25rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-}
+        
+        /* Profile Picture Styles */
+        .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            background: var(--primary-container);
+        }
+        .avatar-small {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+            object-fit: cover;
+        }
+        .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        .avatar-img-large {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+        .sidebar-footer .user-card .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+        .sidebar-footer .user-card .avatar {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
 
- <!-- Sidebar Backdrop -->
+    <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <!-- ===== SIDEBAR ===== -->
@@ -1085,59 +1102,56 @@ $statusLabels = [
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
         <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
 
         <!-- =============================================
-        SIDEBAR FOOTER - FIXED
+        SIDEBAR FOOTER
         ============================================= -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1166,35 +1180,29 @@ $statusLabels = [
                     <span class="material-symbols-outlined">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Dashboard</span>
+                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Applicant Details</span>
             </div>
-         <?php
-// Get user profile data for dropdown
-$userProfile = getUserProfileData($userId);
-?>
-<div class="profile-dropdown-wrapper">
-    <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-        <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-            <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                 alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                 class="avatar-small" 
-                 style="width:2rem; height:2rem; border-radius:50%; object-fit:cover; flex-shrink:0; background:var(--primary);">
-        <?php else: ?>
-            <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
-        <?php endif; ?>
-        <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
-        <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-        <span class="material-symbols-outlined">expand_more</span>
-    </button>
-    <div class="profile-dropdown-menu" id="profileMenu">
-        <div class="dropdown-header">Account</div>
-
-        <div class="dropdown-divider"></div>
-        <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-            <span class="material-symbols-outlined">logout</span> Logout
-        </button>
-    </div>
-</div>
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                    <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                        <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                             alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                             class="avatar-small">
+                    <?php else: ?>
+                        <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
+                    <?php endif; ?>
+                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
+                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
+                <div class="profile-dropdown-menu" id="profileMenu">
+                    <div class="dropdown-header">Account</div>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                        <span class="material-symbols-outlined">logout</span> Logout
+                    </button>
+                </div>
+            </div>
         </header>
 
         <main class="main-scroll">
@@ -1287,7 +1295,7 @@ $userProfile = getUserProfileData($userId);
                             </div>
                             <div style="flex:1; min-width:200px;">
                                 <label style="font-size:0.75rem; font-weight:600; color:var(--text-on-surface-variant); display:block; margin-bottom:0.25rem;">Notes (Optional)</label>
-                                <input type="text" name="notes" class="form-control" style="width:100%; padding:0.5rem 0.75rem; border:1.5px solid var(--slate-200); border-radius:0.5rem; font-size:0.8125rem;" placeholder="Add a note...">
+                                <input type="text" name="notes" class="form-control" placeholder="Add a note...">
                             </div>
                             <button type="submit" class="btn btn-primary" style="white-space:nowrap;">
                                 <span class="material-symbols-outlined">update</span>
@@ -1543,6 +1551,268 @@ $userProfile = getUserProfileData($userId);
             }
         });
 
+
+        // =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
         // =============================================
         // RESPONSIVE HANDLING
         // =============================================
@@ -1569,6 +1839,6 @@ $userProfile = getUserProfileData($userId);
 
         console.log('👤 ISMERS View Applicant (Single Container) loaded successfully!');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

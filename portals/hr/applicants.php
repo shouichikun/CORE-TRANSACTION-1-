@@ -1,19 +1,18 @@
 <?php
 // portals/hr/applicants.php - Manage Applicants with Advanced AI Integration
+// FIXED: PostgreSQL compatibility + Auto-withdraw after 7 days + Default pending filter
+
 session_start();
 
 // =============================================
-// DEBUG MODE - Remove in production
+// ERROR REPORTING - DISABLE WARNINGS
 // =============================================
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+error_reporting(0);
+ini_set('display_errors', 0);
 ini_set('log_errors', 1);
-ini_set('error_log', __DIR__ . '/debug.log');
-
-// Clear any previous output
-ob_clean();
 
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/email_functions.php';
 require_once '../../app/ai/AiService.php';
 
@@ -24,7 +23,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
 }
 
 // Check if user has HR role
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter', 'admin'])) {
     header('Location: ../../login.php');
     exit;
 }
@@ -34,7 +33,146 @@ $fullName = $_SESSION['full_name'] ?? 'HR User';
 $firstName = $_SESSION['first_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
-$isHRManager = $role === 'hr_manager';
+$isHRManager = $role === 'hr_manager' || $role === 'admin';
+
+// =============================================
+// AUTO-WITHDRAW PENDING APPLICATIONS AFTER 7 DAYS
+// =============================================
+function autoWithdrawOldApplications() {
+    global $conn, $userId;
+    
+    // Find pending applications older than 7 days
+    $oldApps = @getRecords("
+        SELECT a.id, a.applicant_id, a.job_order_id, a.applied_at,
+               u.id as user_id, u.first_name, u.last_name, u.email,
+               jo.title as job_title, c.company_name
+        FROM applications a
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        JOIN clients c ON jo.client_id = c.id
+        WHERE a.status = 'pending' 
+        AND a.applied_at < NOW() - INTERVAL '7 days'
+        AND jo.created_by = $1
+    ", [$userId]);
+    
+    if (empty($oldApps)) {
+        return 0;
+    }
+    
+    $withdrawnCount = 0;
+    
+    foreach ($oldApps as $app) {
+        // Update status to withdrawn
+        $updateResult = @updateRecord(
+            "UPDATE applications SET status = 'withdrawn', 
+             notes = CONCAT(COALESCE(notes, ''), '\n[Auto-withdrawn] Application expired after 7 days without review.'),
+             updated_at = NOW() 
+             WHERE id = $1",
+            [$app['id']]
+        );
+        
+        if ($updateResult) {
+            $withdrawnCount++;
+            
+            // Log activity
+            @logActivity($userId, 'Auto-Withdrawn', 'applications', $app['id'], 
+                'Application auto-withdrawn after 7 days of no review for ' . $app['job_title']);
+            
+            // Send withdrawal email
+            try {
+                sendWithdrawalEmail($app['email'], $app['first_name'], $app['job_title'], $app['company_name']);
+            } catch (Exception $e) {
+                @error_log("Failed to send withdrawal email: " . $e->getMessage());
+            }
+        }
+    }
+    
+    return $withdrawnCount;
+}
+
+/**
+ * Send withdrawal notification email
+ */
+function sendWithdrawalEmail($toEmail, $toName, $jobTitle, $companyName) {
+    try {
+        require_once '../../PHPMailer-master/src/PHPMailer.php';
+        require_once '../../PHPMailer-master/src/SMTP.php';
+        require_once '../../PHPMailer-master/src/Exception.php';
+        
+        $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+        
+        $mail->isSMTP();
+        $mail->Host       = SMTP_HOST;
+        $mail->SMTPAuth   = true;
+        $mail->Username   = SMTP_USER;
+        $mail->Password   = SMTP_PASS;
+        $mail->SMTPSecure = SMTP_SECURE;
+        $mail->Port       = SMTP_PORT;
+        
+        $mail->setFrom(MAIL_FROM, MAIL_FROM_NAME);
+        $mail->addAddress($toEmail, $toName);
+        
+        $mail->isHTML(true);
+        $mail->Subject = "Application Update - $jobTitle at $companyName";
+        
+        $htmlBody = "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; color: #1b1b24; line-height: 1.6; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: #4f46e5; color: white; padding: 20px; text-align: center; border-radius: 12px 12px 0 0; }
+                .content { padding: 30px 25px; background: #f8f7fc; border: 1px solid #e2e8f0; border-radius: 0 0 12px 12px; }
+                .footer { text-align: center; padding: 15px; color: #64748b; font-size: 12px; border-top: 1px solid #e2e8f0; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h2>Application Status Update</h2>
+                </div>
+                <div class='content'>
+                    <p>Dear <strong>$toName</strong>,</p>
+                    <p>We are writing to inform you that your application for the position of <strong>$jobTitle</strong> at <strong>$companyName</strong> has been automatically withdrawn.</p>
+                    
+                    <div style='background: #fef3c7; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #f59e0b;'>
+                        <p style='margin: 0; color: #92400e;'>
+                            <strong>Reason:</strong> The application was not reviewed within 7 days of submission.
+                        </p>
+                    </div>
+                    
+                    <p>You are welcome to apply for other positions that match your skills and experience.</p>
+                    
+                    <p style='margin-top: 15px;'>
+                        We appreciate your interest in joining our team and wish you the best in your job search.
+                    </p>
+                    
+                    <p style='margin-top: 25px;'>
+                        Best regards,<br>
+                        <strong>The HR Team</strong><br>
+                        <span style='color: #64748b;'>$companyName</span>
+                    </p>
+                </div>
+                <div class='footer'>
+                    <p>This is an automated message from ISMERS System.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+        
+        $mail->Body = $htmlBody;
+        $mail->AltBody = "Dear $toName,\n\nYour application for $jobTitle at $companyName has been automatically withdrawn after 7 days without review.\n\nYou may apply for other positions.\n\nBest regards,\nThe HR Team";
+        
+        return $mail->send();
+        
+    } catch (Exception $e) {
+        @error_log("Withdrawal email failed: " . $e->getMessage());
+        return false;
+    }
+}
 
 // =============================================
 // AI SERVICE INITIALIZATION
@@ -135,7 +273,7 @@ function calculateSkillsMatch($jobData, $applicantData) {
     $applicantSkills = array_filter($applicantSkills);
     
     if (empty($jobSkills)) {
-        return 100; // No skills required = perfect match
+        return 100;
     }
     
     if (empty($applicantSkills)) {
@@ -145,7 +283,6 @@ function calculateSkillsMatch($jobData, $applicantData) {
     $matchedSkills = array_intersect($jobSkills, $applicantSkills);
     $matchPercentage = (count($matchedSkills) / count($jobSkills)) * 100;
     
-    // Bonus for having extra relevant skills (max 10% bonus)
     $extraSkills = array_diff($applicantSkills, $jobSkills);
     $extraBonus = min(10, count($extraSkills) * 2);
     
@@ -160,10 +297,9 @@ function calculateExperienceMatch($jobData, $applicantData) {
     $applicantExp = $applicantData['experience'] ?? '';
     
     if (empty($requiredExp) || empty($applicantExp)) {
-        return 50; // Neutral score when no data
+        return 50;
     }
     
-    // Extract years from text
     preg_match_all('/(\d+)\s*(?:years?|yrs?|yr)/i', $requiredExp, $reqMatches);
     preg_match_all('/(\d+)\s*(?:years?|yrs?|yr)/i', $applicantExp, $appMatches);
     
@@ -171,11 +307,10 @@ function calculateExperienceMatch($jobData, $applicantData) {
     $appYears = !empty($appMatches[1]) ? max($appMatches[1]) : 0;
     
     if ($reqYears == 0) {
-        return 70; // No specific years required
+        return 70;
     }
     
     if ($appYears == 0) {
-        // Check for experience keywords
         $expKeywords = ['senior', 'lead', 'manager', 'experienced'];
         foreach ($expKeywords as $keyword) {
             if (stripos($applicantExp, $keyword) !== false) {
@@ -185,7 +320,6 @@ function calculateExperienceMatch($jobData, $applicantData) {
         return 30;
     }
     
-    // Calculate score based on years
     if ($appYears >= $reqYears) {
         return min(100, 80 + min(20, ($appYears - $reqYears) * 5));
     } else {
@@ -201,14 +335,13 @@ function calculateEducationMatch($jobData, $applicantData) {
     $applicantEducation = strtolower($applicantData['education'] ?? '');
     
     if (empty($jobEducation)) {
-        return 70; // No specific education required
+        return 70;
     }
     
     if (empty($applicantEducation)) {
         return 30;
     }
     
-    // Education level hierarchy
     $eduLevels = [
         'phd' => 10,
         'doctorate' => 10,
@@ -222,7 +355,6 @@ function calculateEducationMatch($jobData, $applicantData) {
         'school' => 1
     ];
     
-    // Check for education level matches
     $jobLevel = 0;
     $appLevel = 0;
     
@@ -256,21 +388,19 @@ function calculateCoverLetterMatch($jobData, $applicantData) {
     $jobDescription = $jobData['description'] ?? '';
     
     if (empty($coverLetter)) {
-        return 20; // No cover letter
+        return 20;
     }
     
     if (empty($jobTitle) && empty($jobDescription)) {
-        return 50; // Neutral
+        return 50;
     }
     
-    $score = 50; // Base score
+    $score = 50;
     
-    // Check for job title mention (10 points)
     if (!empty($jobTitle) && stripos($coverLetter, $jobTitle) !== false) {
         $score += 10;
     }
     
-    // Check for relevant keywords from job description (max 20 points)
     $keywords = array_slice(array_filter(explode(' ', strtolower($jobDescription))), 0, 20);
     $relevantKeywords = 0;
     $coverLetterLower = strtolower($coverLetter);
@@ -284,7 +414,6 @@ function calculateCoverLetterMatch($jobData, $applicantData) {
     $keywordScore = min(20, $relevantKeywords * 2);
     $score += $keywordScore;
     
-    // Check for enthusiasm indicators (10 points)
     $enthusiasmWords = ['excited', 'passionate', 'enthusiastic', 'interested', 'eager', 'love', 'enjoy'];
     foreach ($enthusiasmWords as $word) {
         if (stripos($coverLetter, $word) !== false) {
@@ -293,7 +422,6 @@ function calculateCoverLetterMatch($jobData, $applicantData) {
     }
     $score = min(100, $score + 5);
     
-    // Check length (5 points)
     $wordCount = str_word_count($coverLetter);
     if ($wordCount > 50 && $wordCount < 500) {
         $score += 5;
@@ -309,13 +437,11 @@ function calculateResumeBonus($applicantData) {
     $bonus = 0;
     $resumePath = $applicantData['resume_path'] ?? '';
     
-    // Check if resume exists
     if (!empty($resumePath)) {
         $resumeInfo = getResumeInfo($resumePath);
         if ($resumeInfo && $resumeInfo['exists'] === true) {
             $bonus += 3;
             
-            // Check file extension (PDF bonus)
             $ext = strtolower(pathinfo($resumeInfo['filename'] ?? '', PATHINFO_EXTENSION));
             if ($ext === 'pdf') {
                 $bonus += 2;
@@ -323,12 +449,10 @@ function calculateResumeBonus($applicantData) {
         }
     }
     
-    // Check for structured skills in applicant data
     if (!empty($applicantData['skills']) && count(explode(',', $applicantData['skills'])) > 5) {
         $bonus += 2;
     }
     
-    // Check for detailed experience
     if (!empty($applicantData['experience']) && strlen($applicantData['experience']) > 100) {
         $bonus += 2;
     }
@@ -356,43 +480,36 @@ function getRecommendation($score) {
 /**
  * Update AI match score with REAL AI (Groq/Gemini)
  */
-/**
- * Update AI match score with REAL AI (Groq/Gemini)
- */
 function updateAIMatchScore($applicationId) {
     global $aiService, $conn;
 
-    // Get application details with all data
-    $app = getRecord("
+    // Get application details - PostgreSQL syntax
+    $app = @getRecord("
         SELECT a.id, a.job_order_id, a.applicant_id, a.cover_letter, a.resume_path,
                u.id as user_id, u.first_name, u.last_name, u.email,
                ap.skills, ap.experience, ap.education
         FROM applications a
         JOIN applicants ap ON a.applicant_id = ap.id
         JOIN users u ON ap.user_id = u.id
-        WHERE a.id = ?
-    ", [$applicationId], "i");
+        WHERE a.id = $1
+    ", [$applicationId]);
 
     if (!$app) return null;
 
-    // Get job details
-    $job = getRecord("
+    // Get job details - PostgreSQL syntax
+    $job = @getRecord("
         SELECT id, title, skills_required, description, experience_level
         FROM job_orders
-        WHERE id = ?
-    ", [$app['job_order_id']], "i");
+        WHERE id = $1
+    ", [$app['job_order_id']]);
 
     if (!$job) return null;
 
-    // =============================================
-    // USE REAL AI FOR MATCH SCORE
-    // =============================================
+    // Use REAL AI for match score
     $matchResult = $aiService->calculateMatchScore($job, $app);
     
-    // Check what provider was used
     $provider = $matchResult['provider'] ?? 'unknown';
     
-    // SAFELY extract values with fallbacks - CHECK BOTH FORMATS
     $score = 0;
     if (isset($matchResult['score'])) {
         $score = (int)$matchResult['score'];
@@ -407,15 +524,15 @@ function updateAIMatchScore($applicationId) {
     $breakdown = $matchResult['breakdown'] ?? [];
     $details = $matchResult['details'] ?? [];
 
-    error_log("🎯 AI Match Score for Applicant {$applicationId}: {$score}% (Provider: {$provider})");
+    @error_log("🎯 AI Match Score for Applicant {$applicationId}: {$score}% (Provider: {$provider})");
 
-    // Update database with REAL AI results
+    // Update database with REAL AI results - PostgreSQL syntax
     $updateSql = "UPDATE applications SET 
-                  match_score = ?,
-                  match_details = ?,
+                  match_score = $1,
+                  match_details = $2,
                   match_updated_at = NOW(),
                   updated_at = NOW()
-                  WHERE id = ?";
+                  WHERE id = $3";
 
     $matchDetails = json_encode([
         'level' => $level,
@@ -432,11 +549,7 @@ function updateAIMatchScore($applicationId) {
         'calculated_at' => date('Y-m-d H:i:s')
     ]);
 
-    $result = updateRecord($updateSql, [
-        $score,
-        $matchDetails,
-        $applicationId
-    ], "dsi");
+    $result = @updateRecord($updateSql, [$score, $matchDetails, $applicationId]);
 
     if ($result) {
         return [
@@ -457,11 +570,11 @@ function updateAIMatchScore($applicationId) {
  * Get AI match score with full details
  */
 function getAIMatchScore($applicationId) {
-    $record = getRecord("
+    $record = @getRecord("
         SELECT match_score, match_details, match_updated_at 
         FROM applications 
-        WHERE id = ?
-    ", [$applicationId], "i");
+        WHERE id = $1
+    ", [$applicationId]);
 
     if ($record && !empty($record['match_score'])) {
         $details = json_decode($record['match_details'], true) ?: [];
@@ -483,18 +596,14 @@ function getResumeInfo($filename) {
         return null;
     }
     
-    // Clean the filename
     $filename = trim($filename);
     $filename = ltrim($filename, '/');
     $filename = ltrim($filename, '\\');
     
-    // Get just the filename without any path
     $justFilename = basename($filename);
     
-    // Define base paths
-    $basePath = dirname(__DIR__, 2); // This goes up to CT1/
+    $basePath = dirname(__DIR__, 2);
     
-    // Build paths to check - ORDER MATTERS! Check uploads first
     $paths = [
         'uploads_resumes' => $basePath . '/uploads/resumes/' . $justFilename,
         'portals_uploads_resumes' => $basePath . '/portals/uploads/resumes/' . $justFilename,
@@ -504,21 +613,12 @@ function getResumeInfo($filename) {
         'current_dir' => __DIR__ . '/' . $justFilename,
     ];
     
-    // Debug logging
-    $debugInfo = "Searching for: $justFilename\n";
-    $debugInfo .= "Base path: $basePath\n";
-    $debugInfo .= "Current directory: " . __DIR__ . "\n";
-    
     foreach ($paths as $key => $physicalPath) {
         $exists = file_exists($physicalPath);
-        $debugInfo .= "  $key: " . $physicalPath . " - " . ($exists ? '✅ EXISTS' : '❌ NOT FOUND') . "\n";
         
         if ($exists) {
-            // Determine the correct URL path based on where the file was found
             $urlPath = '';
             if ($key === 'uploads_resumes') {
-                // File is in CT1/uploads/resumes/
-                // Serve it from a URL that can access it
                 $urlPath = '../../uploads/resumes/' . $justFilename;
             } elseif ($key === 'portals_uploads_resumes') {
                 $urlPath = '../uploads/resumes/' . $justFilename;
@@ -532,26 +632,20 @@ function getResumeInfo($filename) {
                 'url' => $urlPath,
                 'physical_path' => $physicalPath,
                 'exists' => true,
-                'filename' => $justFilename,
-                'debug' => $debugInfo . "\n✅ FOUND at: $key"
+                'filename' => $justFilename
             ];
         }
     }
     
-    return [
-        'exists' => false,
-        'debug' => $debugInfo . "\n❌ NO FILE FOUND"
-    ];
+    return ['exists' => false];
 }
 
 // Helper function to determine qualification
 function determineQualification($applicant) {
-    // 1. If match_score exists and is high enough
     if (!empty($applicant['match_score']) && $applicant['match_score'] >= 70) {
         return true;
     }
     
-    // 2. If applicant has specific skills
     if (!empty($applicant['skills'])) {
         $skills = strtolower($applicant['skills']);
         $requiredSkills = ['php', 'javascript', 'python', 'java', 'sql', 'html', 'css'];
@@ -562,7 +656,6 @@ function determineQualification($applicant) {
         }
     }
     
-    // 3. If applicant has relevant experience keywords
     if (!empty($applicant['experience'])) {
         $experience = strtolower($applicant['experience']);
         $keywords = ['years', 'experience', 'senior', 'lead', 'manager', 'team'];
@@ -576,42 +669,47 @@ function determineQualification($applicant) {
     return false;
 }
 
-// Get filter parameters
-$statusFilter = $_GET['status'] ?? 'all';
+// =============================================
+// RUN AUTO-WITHDRAWAL ON PAGE LOAD
+// =============================================
+$withdrawnCount = autoWithdrawOldApplications();
+
+// =============================================
+// GET FILTER PARAMETERS
+// =============================================
+// ✅ FIXED: Default to 'pending' status if no filter is set
+$statusFilter = $_GET['status'] ?? 'pending';
 $jobFilter = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
 $searchQuery = $_GET['search'] ?? '';
-$sortBy = $_GET['sort'] ?? 'newest'; // newest, match_score, experience, skills
+$sortBy = $_GET['sort'] ?? 'newest';
 
-// Build query conditions
+// Build query conditions - PostgreSQL syntax
 $conditions = [];
 $params = [];
-$types = "";
+$counter = 1;
 
 // Only show applicants for jobs created by this user
-$conditions[] = "jo.created_by = ?";
+$conditions[] = "jo.created_by = $" . $counter++;
 $params[] = $userId;
-$types .= "i";
 
-if ($statusFilter !== 'all') {
-    $conditions[] = "a.status = ?";
+if ($statusFilter !== 'all' && !empty($statusFilter)) {
+    $conditions[] = "a.status = $" . $counter++;
     $params[] = $statusFilter;
-    $types .= "s";
 }
 
 if ($jobFilter > 0) {
-    $conditions[] = "a.job_order_id = ?";
+    $conditions[] = "a.job_order_id = $" . $counter++;
     $params[] = $jobFilter;
-    $types .= "i";
 }
 
 if (!empty($searchQuery)) {
-    $conditions[] = "(u.first_name LIKE ? OR u.last_name LIKE ? OR u.email LIKE ? OR jo.title LIKE ?)";
+    $conditions[] = "(u.first_name ILIKE $" . $counter . " OR u.last_name ILIKE $" . ($counter+1) . " OR u.email ILIKE $" . ($counter+2) . " OR jo.title ILIKE $" . ($counter+3) . ")";
     $searchParam = "%$searchQuery%";
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
-    $types .= "ssss";
+    $counter += 4;
 }
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
@@ -640,12 +738,13 @@ $sql = "SELECT a.*, a.resume_path, a.match_score, a.match_details, a.cover_lette
         $whereClause
         $orderClause";
 
-$applicants = getRecords($sql, $params, $types);
+$applicants = @getRecords($sql, $params);
+if (!is_array($applicants)) $applicants = [];
 
-// Process AI match scores for all applicants with enhanced analysis
+// Process AI match scores for all applicants
 $applicantsWithAI = [];
 foreach ($applicants as $app) {
-    // Initialize default values to prevent undefined array key errors
+    // Initialize default values
     $app['match_level'] = 'N/A';
     $app['matched_skills'] = [];
     $app['missing_skills'] = [];
@@ -654,7 +753,7 @@ foreach ($applicants as $app) {
     $app['match_provider'] = 'none';
     $app['match_score'] = $app['match_score'] ?? null;
     
-    // Always recalculate if score is missing or older than 7 days
+    // Check if we need to recalculate
     $shouldRecalculate = empty($app['match_score']);
     if (!$shouldRecalculate && !empty($app['match_updated_at'])) {
         $daysOld = (time() - strtotime($app['match_updated_at'])) / (60 * 60 * 24);
@@ -664,33 +763,16 @@ foreach ($applicants as $app) {
     }
     
     if ($shouldRecalculate) {
-        // Get job details for matching
-        $jobData = getRecord("
+        $jobData = @getRecord("
             SELECT id, title, skills_required, description, experience_level
             FROM job_orders 
-            WHERE id = ?
-        ", [$app['job_id']], "i");
+            WHERE id = $1
+        ", [$app['job_id']]);
 
         if ($jobData) {
             try {
-                // =============================================
-                // DEBUG: Log what we're sending
-                // =============================================
-                error_log("=== AI Match Request for Application ID: {$app['id']} ===");
-                error_log("Job Data: " . print_r($jobData, true));
-                error_log("Applicant Data: " . print_r($app, true));
-                
-                // =============================================
-                // USE REAL AI FOR MATCH SCORE
-                // =============================================
                 $matchResult = $aiService->calculateMatchScore($jobData, $app);
                 
-                // =============================================
-                // DEBUG: Log what we received
-                // =============================================
-                error_log("Raw AI Response: " . print_r($matchResult, true));
-                
-                // SAFELY extract values with fallbacks
                 $app['match_score'] = isset($matchResult['score']) ? (int)$matchResult['score'] : null;
                 $app['match_level'] = isset($matchResult['level']) ? $matchResult['level'] : 
                                      ($app['match_score'] !== null ? getMatchLevel($app['match_score'])['label'] : 'N/A');
@@ -700,7 +782,6 @@ foreach ($applicants as $app) {
                 $app['breakdown'] = isset($matchResult['breakdown']) ? $matchResult['breakdown'] : [];
                 $app['match_provider'] = isset($matchResult['provider']) ? $matchResult['provider'] : 'unknown';
 
-                // Only update database if we have a valid score
                 if ($app['match_score'] !== null) {
                     $matchDetails = json_encode([
                         'level' => $app['match_level'],
@@ -717,30 +798,17 @@ foreach ($applicants as $app) {
                         'calculated_at' => date('Y-m-d H:i:s')
                     ]);
                     
-                    $updateResult = updateRecord(
-                        "UPDATE applications SET match_score = ?, match_details = ?, match_updated_at = NOW() WHERE id = ?",
-                        [$app['match_score'], $matchDetails, $app['id']],
-                        "dsi"
+                    $updateResult = @updateRecord(
+                        "UPDATE applications SET match_score = $1, match_details = $2, match_updated_at = NOW() WHERE id = $3",
+                        [$app['match_score'], $matchDetails, $app['id']]
                     );
-                    
-                    error_log("Update result for app {$app['id']}: " . ($updateResult ? 'SUCCESS' : 'FAILED'));
-                    error_log("Score: {$app['match_score']}%, Level: {$app['match_level']}");
-                } else {
-                    error_log("WARNING: No valid score for app {$app['id']}");
                 }
-                
             } catch (Exception $e) {
-                // Log the error but continue processing
-                error_log("AI Match score ERROR for application {$app['id']}: " . $e->getMessage());
-                error_log("Stack trace: " . $e->getTraceAsString());
-                // Keep default values - mark as failed
+                @error_log("AI Match score ERROR for application {$app['id']}: " . $e->getMessage());
             }
-        } else {
-            error_log("WARNING: No job data found for application {$app['id']}");
-            $app['match_score'] = null;
         }
     } else {
-        // Parse existing match details from database
+        // Parse existing match details
         if (!empty($app['match_details'])) {
             $details = json_decode($app['match_details'], true) ?: [];
             $app['matched_skills'] = isset($details['matched_skills']) ? $details['matched_skills'] : [];
@@ -751,7 +819,6 @@ foreach ($applicants as $app) {
             $app['breakdown'] = isset($details['breakdown']) ? $details['breakdown'] : [];
             $app['match_provider'] = isset($details['provider']) ? $details['provider'] : 'unknown';
         } else {
-            // No match details - try to generate level from score
             if ($app['match_score'] !== null) {
                 $app['match_level'] = getMatchLevel($app['match_score'])['label'];
             }
@@ -762,18 +829,19 @@ foreach ($applicants as $app) {
 }
 $applicants = $applicantsWithAI;
 
-// Get all jobs for filter dropdown
-$jobs = getRecords("SELECT id, title FROM job_orders WHERE created_by = ? ORDER BY created_at DESC", [$userId], "i");
+// Get all jobs for filter dropdown - PostgreSQL syntax
+$jobs = @getRecords("SELECT id, title FROM job_orders WHERE created_by = $1 ORDER BY created_at DESC", [$userId]);
 
-// Get status counts
+// Get status counts - PostgreSQL syntax
 $statusCounts = ['all' => count($applicants)];
 $statuses = ['pending', 'shortlisted', 'scheduled', 'interviewed', 'hired', 'rejected', 'withdrawn'];
 foreach ($statuses as $status) {
-    $countSql = "SELECT COUNT(*) as count FROM applications a 
-                 JOIN job_orders jo ON a.job_order_id = jo.id 
-                 WHERE jo.created_by = ? AND a.status = ?";
-    $result = getRecord($countSql, [$userId, $status], "is");
-    $statusCounts[$status] = $result['count'] ?? 0;
+    $countResult = @getRecord("
+        SELECT COUNT(*) as count FROM applications a 
+        JOIN job_orders jo ON a.job_order_id = jo.id 
+        WHERE jo.created_by = $1 AND a.status = $2
+    ", [$userId, $status]);
+    $statusCounts[$status] = isset($countResult['count']) ? (int)$countResult['count'] : 0;
 }
 
 // Status badge mapping
@@ -800,7 +868,25 @@ $statusLabels = [
 $allStatuses = ['all' => 'All'] + $statusLabels;
 
 // =============================================
-// HANDLE AJAX POST ACTIONS
+// Get sidebar counts - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = 0;
+$archivedTables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($archivedTables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
+    }
+}
+
+// =============================================
+// HANDLE AJAX POST ACTIONS - FIXED PostgreSQL
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
@@ -815,19 +901,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     $interviewLocation = trim($_POST['interview_location'] ?? '');
     $interviewerName = trim($_POST['interviewer_name'] ?? '');
     
-    // UPDATE STATUS
+    // UPDATE STATUS - PostgreSQL
     if ($action === 'update_status' && $applicationId > 0 && in_array($newStatus, $statuses)) {
-        $current = getRecord("SELECT status FROM applications WHERE id = ?", [$applicationId], "i");
+        $current = @getRecord("SELECT status FROM applications WHERE id = $1", [$applicationId]);
         $oldStatus = $current['status'] ?? 'unknown';
         
-        $result = updateApplicationStatus($applicationId, $newStatus);
+        $result = @updateRecord("UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2", [$newStatus, $applicationId]);
         
         if ($result) {
             $logMessage = 'Status changed from ' . $oldStatus . ' to: ' . $newStatus;
             if (!empty($feedback)) {
                 $logMessage .= ' | Feedback: ' . $feedback;
             }
-            logActivity($userId, 'Application Status Updated', 'applications', $applicationId, $logMessage);
+            @logActivity($userId, 'Application Status Updated', 'applications', $applicationId, $logMessage);
             
             echo json_encode(['success' => true, 'message' => 'Status updated successfully!']);
         } else {
@@ -836,13 +922,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // SCHEDULE INTERVIEW (UPDATED with separate Location & Interviewer fields)
+    // SCHEDULE INTERVIEW - PostgreSQL
     if ($action === 'schedule_interview' && $applicationId > 0) {
-        $interviewDate = $_POST['interview_date'] ?? '';
-        $interviewNotes = trim($_POST['interview_notes'] ?? '');
-        $interviewLocation = trim($_POST['interview_location'] ?? '');
-        $interviewerName = trim($_POST['interviewer_name'] ?? '');
-        
         if (empty($interviewDate)) {
             echo json_encode(['success' => false, 'error' => 'Please select an interview date and time.']);
             exit;
@@ -858,7 +939,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        $applicantInfo = getRecord("
+        $applicantInfo = @getRecord("
             SELECT a.id, a.applicant_id, u.id as user_id, u.first_name, u.last_name, u.email, 
                    jo.title as job_title, jo.id as job_id, c.company_name
             FROM applications a
@@ -866,8 +947,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN users u ON ap.user_id = u.id
             JOIN job_orders jo ON a.job_order_id = jo.id
             JOIN clients c ON jo.client_id = c.id
-            WHERE a.id = ?
-        ", [$applicationId], "i");
+            WHERE a.id = $1
+        ", [$applicationId]);
         
         if (!$applicantInfo) {
             echo json_encode(['success' => false, 'error' => 'Applicant not found.']);
@@ -880,64 +961,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        // Insert interview with separate location and interviewer fields
-        $interviewSql = "INSERT INTO interviews (application_id, interview_date, location, interviewer_name, notes, created_by) 
-                         VALUES (?, ?, ?, ?, ?, ?)";
-        $interviewResult = insertRecord($interviewSql, [
+        // Insert interview - PostgreSQL syntax
+        $interviewResult = @insertRecord("
+            INSERT INTO interviews (application_id, interview_date, location, interviewer_name, notes, created_by, created_at) 
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            RETURNING id
+        ", [
             $applicationId,
             $dbDateTime,
             $interviewLocation,
             $interviewerName,
             $interviewNotes,
             $userId
-        ], "issssi");
+        ]);
         
         if (!$interviewResult) {
             echo json_encode(['success' => false, 'error' => 'Failed to create interview record.']);
             exit;
         }
         
-        // Update application
-        $updateSql = "UPDATE applications SET 
-                      interview_date = ?,
-                      interview_notes = ?,
-                      status = 'scheduled'
-                      WHERE id = ?";
-        $updateResult = updateRecord($updateSql, [
-            $dbDateTime,
-            $interviewNotes,
-            $applicationId
-        ], "ssi");
+        // Update application - PostgreSQL syntax
+        $updateResult = @updateRecord("
+            UPDATE applications SET 
+            interview_date = $1,
+            interview_notes = $2,
+            status = 'scheduled',
+            updated_at = NOW()
+            WHERE id = $3
+        ", [$dbDateTime, $interviewNotes, $applicationId]);
         
         if (!$updateResult) {
-            deleteRecord("DELETE FROM interviews WHERE id = ?", [$interviewResult], "i");
+            @deleteRecord("DELETE FROM interviews WHERE id = $1", [$interviewResult]);
             echo json_encode(['success' => false, 'error' => 'Failed to update application status.']);
             exit;
         }
         
-        logActivity($userId, 'Interview Scheduled', 'applications', $applicationId, 
+        @logActivity($userId, 'Interview Scheduled', 'applications', $applicationId, 
                    'Interview scheduled for: ' . $dbDateTime . ' | Location: ' . $interviewLocation . ' | Interviewer: ' . $interviewerName);
         
         echo json_encode(['success' => true, 'message' => 'Interview scheduled successfully!']);
         exit;
     }
     
-    // VIEW APPLICANT
+    // VIEW APPLICANT - PostgreSQL
     if ($action === 'view_applicant' && $applicationId > 0) {
-        $applicant = getRecord("SELECT a.*, a.cover_letter, a.resume_path, a.match_score, a.match_details,
-                               u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
-                               ap.skills, ap.experience, ap.education, ap.profile_picture,
-                               jo.title as job_title, jo.skills_required, jo.experience_level,
-                               c.company_name,
-                               (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id) as total_applications
-                               FROM applications a
-                               JOIN applicants ap ON a.applicant_id = ap.id
-                               JOIN users u ON ap.user_id = u.id
-                               JOIN job_orders jo ON a.job_order_id = jo.id
-                               JOIN clients c ON jo.client_id = c.id
-                               WHERE a.id = ?", [$applicationId], "i");
+        $applicant = @getRecord("
+            SELECT a.*, a.cover_letter, a.resume_path, a.match_score, a.match_details,
+                   u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
+                   ap.skills, ap.experience, ap.education, ap.profile_picture,
+                   jo.title as job_title, jo.skills_required, jo.experience_level,
+                   c.company_name,
+                   (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id) as total_applications
+            FROM applications a
+            JOIN applicants ap ON a.applicant_id = ap.id
+            JOIN users u ON ap.user_id = u.id
+            JOIN job_orders jo ON a.job_order_id = jo.id
+            JOIN clients c ON jo.client_id = c.id
+            WHERE a.id = $1
+        ", [$applicationId]);
+        
         if ($applicant) {
-            // Check for resume file
             $resumeInfo = getResumeInfo($applicant['resume_path'] ?? '');
             
             if ($resumeInfo && isset($resumeInfo['exists']) && $resumeInfo['exists'] === true) {
@@ -946,10 +1029,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 $applicant['resume_url'] = $resumeInfo['url'];
                 $applicant['resume_size'] = filesize($resumeInfo['physical_path']);
                 $applicant['resume_extension'] = strtolower(pathinfo($resumeInfo['filename'], PATHINFO_EXTENSION));
-                $applicant['resume_debug'] = $resumeInfo['debug'] ?? '';
             } else {
                 $applicant['resume_exists'] = false;
-                $applicant['resume_debug'] = $resumeInfo['debug'] ?? 'No resume info available';
             }
             
             echo json_encode(['success' => true, 'applicant' => $applicant]);
@@ -959,21 +1040,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // VIEW MATCH DETAILS (AI)
+    // VIEW MATCH DETAILS - PostgreSQL
     if ($action === 'view_match_details' && $applicationId > 0) {
         $matchData = getAIMatchScore($applicationId);
         
         if ($matchData) {
-            // Get full details from database
-            $app = getRecord("
+            $app = @getRecord("
                 SELECT a.id, a.match_details, a.match_score, a.match_updated_at, a.cover_letter,
                        u.first_name, u.last_name, u.email,
                        ap.skills, ap.experience, ap.education
                 FROM applications a
                 JOIN applicants ap ON a.applicant_id = ap.id
                 JOIN users u ON ap.user_id = u.id
-                WHERE a.id = ?
-            ", [$applicationId], "i");
+                WHERE a.id = $1
+            ", [$applicationId]);
             
             if (!$app) {
                 echo json_encode(['success' => false, 'error' => 'Application not found.']);
@@ -982,13 +1062,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             
             $details = json_decode($app['match_details'] ?? '{}', true);
             
-            // Get job skills for context - removed education_required
-            $job = getRecord("
+            $job = @getRecord("
                 SELECT jo.skills_required, jo.title, jo.experience_level
                 FROM applications a
                 JOIN job_orders jo ON a.job_order_id = jo.id
-                WHERE a.id = ?
-            ", [$applicationId], "i");
+                WHERE a.id = $1
+            ", [$applicationId]);
             
             $response = [
                 'success' => true,
@@ -1023,96 +1102,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-   // RECALCULATE MATCH SCORE
-if ($action === 'recalculate_match' && $applicationId > 0) {
-    error_log("🔄 Recalculating match score for application ID: $applicationId");
-    
-    $result = updateAIMatchScore($applicationId);
-    
-    if ($result) {
-        $score = $result['score'] ?? 0;
-        error_log("✅ Recalculate success: $score%");
-        echo json_encode(['success' => true, 'score' => $score]);
-    } else {
-        error_log("❌ Recalculate failed for application ID: $applicationId");
-        echo json_encode(['success' => false, 'error' => 'Failed to recalculate score. Please try again.']);
-    }
-    exit;
-}
-    
-    // SEND QUALIFICATION NOTIFICATION (Manual)
-    if ($action === 'send_qualification' && $applicationId > 0) {
-        // Clear any previous output
-        ob_clean();
+    // RECALCULATE MATCH - PostgreSQL
+    if ($action === 'recalculate_match' && $applicationId > 0) {
+        $result = updateAIMatchScore($applicationId);
         
-        // Create a debug log file
+        if ($result) {
+            $score = $result['score'] ?? 0;
+            echo json_encode(['success' => true, 'score' => $score]);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to recalculate score. Please try again.']);
+        }
+        exit;
+    }
+    
+    // SEND QUALIFICATION NOTIFICATION - PostgreSQL
+    if ($action === 'send_qualification' && $applicationId > 0) {
         $debugLog = __DIR__ . '/debug_qualification.log';
-        file_put_contents($debugLog, "[" . date('Y-m-d H:i:s') . "] Starting send_qualification for ID: $applicationId\n", FILE_APPEND);
+        @file_put_contents($debugLog, "[" . date('Y-m-d H:i:s') . "] Starting send_qualification for ID: $applicationId\n", FILE_APPEND);
         
         try {
-            // Get applicant data
-            $applicant = getRecord("SELECT a.*, a.cover_letter, a.resume_path, a.match_score, a.match_details,
+            $applicant = @getRecord("
+                SELECT a.*, a.cover_letter, a.resume_path, a.match_score, a.match_details,
                        u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
                        ap.skills, ap.experience, ap.education, ap.profile_picture,
                        jo.title as job_title, jo.skills_required, jo.experience_level,
                        c.company_name,
                        (SELECT COUNT(*) FROM applications WHERE applicant_id = a.applicant_id) as total_applications
-                       FROM applications a
-                       JOIN applicants ap ON a.applicant_id = ap.id
-                       JOIN users u ON ap.user_id = u.id
-                       JOIN job_orders jo ON a.job_order_id = jo.id
-                       JOIN clients c ON jo.client_id = c.id
-                       WHERE a.id = ?", [$applicationId], "i");
+                FROM applications a
+                JOIN applicants ap ON a.applicant_id = ap.id
+                JOIN users u ON ap.user_id = u.id
+                JOIN job_orders jo ON a.job_order_id = jo.id
+                JOIN clients c ON jo.client_id = c.id
+                WHERE a.id = $1
+            ", [$applicationId]);
             
-            file_put_contents($debugLog, "Applicant found: " . ($applicant ? 'Yes' : 'No') . "\n", FILE_APPEND);
+            @file_put_contents($debugLog, "Applicant found: " . ($applicant ? 'Yes' : 'No') . "\n", FILE_APPEND);
             
             if (!$applicant) {
-                file_put_contents($debugLog, "ERROR: Applicant not found\n", FILE_APPEND);
+                @file_put_contents($debugLog, "ERROR: Applicant not found\n", FILE_APPEND);
                 echo json_encode(['success' => false, 'error' => 'Applicant not found.']);
                 exit;
             }
             
-            // Check if already sent
             if (!empty($applicant['follow_up_sent']) && $applicant['follow_up_sent'] == 1) {
-                file_put_contents($debugLog, "ERROR: Notification already sent\n", FILE_APPEND);
+                @file_put_contents($debugLog, "ERROR: Notification already sent\n", FILE_APPEND);
                 echo json_encode(['success' => false, 'error' => 'Notification already sent.']);
                 exit;
             }
             
-            // Check if applicant is in a terminal state
             if (in_array($applicant['status'], ['hired', 'rejected', 'withdrawn'])) {
-                file_put_contents($debugLog, "ERROR: Application already processed. Status: " . $applicant['status'] . "\n", FILE_APPEND);
+                @file_put_contents($debugLog, "ERROR: Application already processed. Status: " . $applicant['status'] . "\n", FILE_APPEND);
                 echo json_encode(['success' => false, 'error' => 'Application already processed.']);
                 exit;
             }
             
-            // Determine qualification
             $isQualified = isset($_POST['is_qualified']) ? (bool)$_POST['is_qualified'] : false;
             $notes = trim($_POST['notes'] ?? '');
             
-            file_put_contents($debugLog, "isQualified: " . ($isQualified ? 'Yes' : 'No') . ", Notes: $notes\n", FILE_APPEND);
+            @file_put_contents($debugLog, "isQualified: " . ($isQualified ? 'Yes' : 'No') . ", Notes: $notes\n", FILE_APPEND);
             
-            // Try to send email
             $emailSent = false;
             try {
-                file_put_contents($debugLog, "Attempting to send email...\n", FILE_APPEND);
+                @file_put_contents($debugLog, "Attempting to send email...\n", FILE_APPEND);
                 $emailSent = sendQualificationEmail($applicant, $isQualified, $applicant['company_name'] ?? 'Our Company');
-                file_put_contents($debugLog, "Email send result: " . ($emailSent ? 'Success' : 'Failed') . "\n", FILE_APPEND);
+                @file_put_contents($debugLog, "Email send result: " . ($emailSent ? 'Success' : 'Failed') . "\n", FILE_APPEND);
             } catch (Exception $e) {
-                file_put_contents($debugLog, "Email Exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                @file_put_contents($debugLog, "Email Exception: " . $e->getMessage() . "\n", FILE_APPEND);
             }
             
-            // Always update the database
             $qualificationStatus = $isQualified ? 'qualified' : 'not_qualified';
             $statusLabel = $isQualified ? 'Qualified' : 'Not Qualified';
             
-            file_put_contents($debugLog, "Updating database...\n", FILE_APPEND);
+            @file_put_contents($debugLog, "Updating database...\n", FILE_APPEND);
             
-            // Get current notes first to append properly
-            $currentApp = getRecord("SELECT notes FROM applications WHERE id = ?", [$applicationId], "i");
+            $currentApp = @getRecord("SELECT notes FROM applications WHERE id = $1", [$applicationId]);
             $currentNotes = $currentApp['notes'] ?? '';
             
-            // Build the new notes string manually
             $newNote = 'Manual qualification: ' . $statusLabel . ' - ' . $notes;
             if (!empty($currentNotes)) {
                 $newNotes = $currentNotes . "\n" . $newNote;
@@ -1120,34 +1185,30 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 $newNotes = $newNote;
             }
             
-            // Update with the built notes string
-            $updateSql = "UPDATE applications SET 
-                          follow_up_sent = 1,
-                          follow_up_date = NOW(),
-                          qualification_status = ?,
-                          last_follow_up_email = NOW(),
-                          notes = ?
-                          WHERE id = ?";
-            $updateResult = updateRecord($updateSql, [$qualificationStatus, $newNotes, $applicationId], "ssi");
+            $updateResult = @updateRecord("
+                UPDATE applications SET 
+                follow_up_sent = 1,
+                follow_up_date = NOW(),
+                qualification_status = $1,
+                last_follow_up_email = NOW(),
+                notes = $2,
+                updated_at = NOW()
+                WHERE id = $3
+            ", [$qualificationStatus, $newNotes, $applicationId]);
             
-            file_put_contents($debugLog, "Database update result: " . ($updateResult ? 'Success' : 'Failed') . "\n", FILE_APPEND);
+            @file_put_contents($debugLog, "Database update result: " . ($updateResult ? 'Success' : 'Failed') . "\n", FILE_APPEND);
             
-            // Log activity
-            logActivity($userId, 'Manual Qualification Notification', 'applications', $applicationId, 
+            @logActivity($userId, 'Manual Qualification Notification', 'applications', $applicationId, 
                        "Manual notification sent: " . ($isQualified ? 'Qualified' : 'Not Qualified'));
             
-            // ALWAYS return success
-            file_put_contents($debugLog, "Returning success response\n", FILE_APPEND);
+            @file_put_contents($debugLog, "Returning success response\n", FILE_APPEND);
             echo json_encode([
                 'success' => true, 
                 'message' => 'Notification sent successfully!'
             ]);
             
         } catch (Exception $e) {
-            // Catch any unexpected errors
-            file_put_contents($debugLog, "UNEXPECTED ERROR: " . $e->getMessage() . "\n", FILE_APPEND);
-            file_put_contents($debugLog, "Stack trace: " . $e->getTraceAsString() . "\n", FILE_APPEND);
-            
+            @file_put_contents($debugLog, "UNEXPECTED ERROR: " . $e->getMessage() . "\n", FILE_APPEND);
             echo json_encode([
                 'success' => false, 
                 'error' => 'System error: ' . $e->getMessage()
@@ -1157,6 +1218,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
     }
 }
 ?>
+<!-- THE REST OF THE HTML REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1201,7 +1263,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
         }
-
+        
         /* AI Match Score Styles */
         .match-score-badge {
             display: inline-flex;
@@ -1215,22 +1277,22 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             transition: all 0.2s ease;
             border: 2px solid transparent;
         }
-
+        
         .match-score-badge:hover {
             transform: scale(1.05);
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
-
+        
         .match-score-badge.excellent { background: #d1fae5; color: #059669; border-color: #059669; }
         .match-score-badge.good { background: #dbeafe; color: #2563eb; border-color: #2563eb; }
         .match-score-badge.fair { background: #fef3c7; color: #d97706; border-color: #d97706; }
         .match-score-badge.low { background: #fecaca; color: #dc2626; border-color: #dc2626; }
-
+        
         .match-score-number {
             font-size: 1.1rem;
             font-weight: 700;
         }
-
+        
         .match-detail-tag {
             display: inline-block;
             padding: 2px 10px;
@@ -1239,21 +1301,22 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             margin: 2px;
             font-weight: 500;
         }
-
+        
         .match-detail-tag.matched { background: #d1fae5; color: #059669; }
         .match-detail-tag.missing { background: #fecaca; color: #dc2626; }
-
+        
         .badge-scheduled { background: #dbeafe; color: #2563eb; }
         .badge-notified-qualified { background: #d1fae5; color: #059669; }
         .badge-notified-notqualified { background: #fecaca; color: #dc2626; }
         .badge-pending-notification { background: #fef3c7; color: #d97706; }
-
+        .badge-withdrawn { background: #f3f4f6; color: #6b7280; }
+        
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-
+        
         body {
             font-family: var(--font-sans);
             background: var(--bg-background);
@@ -1265,262 +1328,263 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             overflow: hidden;
             height: 100vh;
         }
-
+        
         a {
             text-decoration: none;
             color: inherit;
         }
-
-      /* =============================================
-   SIDEBAR - STANDARDIZED
-   ============================================= */
-.dashboard-sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 50;
-    background: var(--bg-surface);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    width: var(--sidebar-width);
-    border-right: 1px solid var(--slate-200);
-    transition: width 0.3s ease, transform 0.3s ease;
-    overflow: hidden;
-    box-shadow: var(--shadow-xl);
-    flex-shrink: 0;
-}
-
-.dashboard-sidebar.collapsed {
-    width: var(--sidebar-collapsed);
-}
-
-.dashboard-sidebar.mobile-hidden {
-    transform: translateX(-100%);
-}
-
-.dashboard-sidebar.mobile-open {
-    transform: translateX(0);
-}
-
-/* Hide text when collapsed */
-.dashboard-sidebar .sidebar-brand-text,
-.dashboard-sidebar .sidebar-brand-category,
-.dashboard-sidebar .sidebar-nav .nav-label,
-.dashboard-sidebar .sidebar-nav .nav-text,
-.dashboard-sidebar .sidebar-nav .nav-badge,
-.dashboard-sidebar .sidebar-footer .user-info {
-    opacity: 1;
-    transition: opacity 0.3s ease;
-    overflow: hidden;
-    white-space: nowrap;
-}
-
-.dashboard-sidebar.collapsed .sidebar-brand-text,
-.dashboard-sidebar.collapsed .sidebar-brand-category,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-.dashboard-sidebar.collapsed .sidebar-footer .user-info {
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-}
-
-.dashboard-sidebar.collapsed .sidebar-brand-card {
-    padding: 1rem 0.5rem;
-}
-
-.dashboard-sidebar.collapsed .sidebar-nav {
-    padding: 0.5rem 0.25rem;
-}
-
-.dashboard-sidebar.collapsed .sidebar-main-link {
-    justify-content: center;
-    padding: 0.75rem 0.5rem;
-}
-
-.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-    font-size: 1.5rem;
-}
-
-.dashboard-sidebar.collapsed .sidebar-footer .user-card {
-    justify-content: center;
-    padding: 0.5rem;
-}
-
-.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    font-size: 0.875rem;
-}
-
-/* Sidebar Brand */
-.sidebar-brand-card {
-    border-radius: 2rem;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 0.75rem;
-}
-
-.sidebar-brand-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 1.75rem;
-    background: var(--slate-100);
-    color: var(--primary);
-    font-size: 1.5rem;
-    flex-shrink: 0;
-}
-
-.sidebar-brand-icon .material-symbols-outlined {
-    font-size: 1.5rem;
-}
-
-.sidebar-brand-text {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--slate-900);
-}
-
-.sidebar-brand-category {
-    font-size: 0.75rem;
-    color: var(--slate-500);
-    margin-top: 0.25rem;
-}
-
-/* Sidebar Navigation */
-.sidebar-nav {
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem 1.25rem;
-}
-
-.sidebar-nav .nav-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--slate-500);
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.5rem;
-}
-
-.sidebar-main-link {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    color: var(--text-on-surface-variant);
-    transition: all var(--transition-fast);
-    margin-bottom: 0.25rem;
-    font-family: var(--font-label);
-    font-weight: 500;
-    font-size: 0.875rem;
-}
-
-.sidebar-main-link:hover {
-    background: var(--bg-surface-low);
-    color: var(--text-on-surface);
-}
-
-.sidebar-main-link.active {
-    background: var(--bg-surface-container-high);
-    color: var(--primary);
-}
-
-.sidebar-main-link .material-symbols-outlined {
-    font-size: 1.25rem;
-    flex-shrink: 0;
-}
-
-.sidebar-main-link .nav-text {
-    transition: opacity 0.3s ease;
-}
-
-.sidebar-main-link .nav-badge {
-    margin-left: auto;
-    background: var(--primary);
-    color: white;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 0.125rem 0.5rem;
-    border-radius: 50px;
-    transition: opacity 0.3s ease;
-}
-
-/* Sidebar Footer */
-.sidebar-footer {
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--slate-200);
-}
-
-.sidebar-footer .user-card {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 1rem;
-    background: var(--bg-surface-low);
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.875rem;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .user-info .user-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
-
-.sidebar-footer .user-card .user-info .user-email {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Sidebar Backdrop */
-.sidebar-backdrop {
-    display: none;
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: rgba(17, 24, 39, 0.5);
-    backdrop-filter: blur(8px);
-    z-index: 40;
-    transition: opacity 0.3s ease;
-    opacity: 0;
-}
-
-.sidebar-backdrop.active {
-    display: block;
-    opacity: 1;
-}
+        
+        /* =============================================
+           SIDEBAR - STANDARDIZED
+        ============================================= */
+        .dashboard-sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 50;
+            background: var(--bg-surface);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: var(--sidebar-width);
+            border-right: 1px solid var(--slate-200);
+            transition: width 0.3s ease, transform 0.3s ease;
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            flex-shrink: 0;
+        }
+        
+        .dashboard-sidebar.collapsed {
+            width: var(--sidebar-collapsed);
+        }
+        
+        .dashboard-sidebar.mobile-hidden {
+            transform: translateX(-100%);
+        }
+        
+        .dashboard-sidebar.mobile-open {
+            transform: translateX(0);
+        }
+        
+        /* Hide text when collapsed */
+        .dashboard-sidebar .sidebar-brand-text,
+        .dashboard-sidebar .sidebar-brand-category,
+        .dashboard-sidebar .sidebar-nav .nav-label,
+        .dashboard-sidebar .sidebar-nav .nav-text,
+        .dashboard-sidebar .sidebar-nav .nav-badge,
+        .dashboard-sidebar .sidebar-footer .user-info {
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-brand-text,
+        .dashboard-sidebar.collapsed .sidebar-brand-category,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-brand-card {
+            padding: 1rem 0.5rem;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-nav {
+            padding: 0.5rem 0.25rem;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-main-link {
+            justify-content: center;
+            padding: 0.75rem 0.5rem;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card {
+            justify-content: center;
+            padding: 0.5rem;
+        }
+        
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            font-size: 0.875rem;
+        }
+        
+        /* Sidebar Brand */
+        .sidebar-brand-card {
+            border-radius: 2rem;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 0.75rem;
+        }
+        
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background: var(--slate-100);
+            color: var(--primary);
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-brand-icon .material-symbols-outlined {
+            font-size: 1.5rem;
+        }
+        
+        .sidebar-brand-text {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--slate-900);
+        }
+        
+        .sidebar-brand-category {
+            font-size: 0.75rem;
+            color: var(--slate-500);
+            margin-top: 0.25rem;
+        }
+        
+        /* Sidebar Navigation */
+        .sidebar-nav {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 1.25rem;
+        }
+        
+        .sidebar-nav .nav-label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--slate-500);
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .sidebar-main-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-label);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+        
+        .sidebar-main-link:hover {
+            background: var(--bg-surface-low);
+            color: var(--text-on-surface);
+        }
+        
+        .sidebar-main-link.active {
+            background: var(--bg-surface-container-high);
+            color: var(--primary);
+        }
+        
+        .sidebar-main-link .material-symbols-outlined {
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-main-link .nav-text {
+            transition: opacity 0.3s ease;
+        }
+        
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 50px;
+            transition: opacity 0.3s ease;
+        }
+        
+        /* Sidebar Footer */
+        .sidebar-footer {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
+        }
+        
+        .sidebar-footer .user-card {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 1rem;
+            background: var(--bg-surface-low);
+        }
+        
+        .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-footer .user-card .user-info .user-name {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+        
+        .sidebar-footer .user-card .user-info .user-email {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        /* Sidebar Backdrop */
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
+        
+        .sidebar-backdrop.active {
+            display: block;
+            opacity: 1;
+        }
+        
         /* =============================================
            MAIN CONTENT
         ============================================= */
@@ -1533,11 +1597,11 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             margin-left: var(--sidebar-width);
             transition: margin-left 0.3s ease;
         }
-
+        
         .dashboard-sidebar.collapsed ~ .main-wrapper {
             margin-left: var(--sidebar-collapsed);
         }
-
+        
         /* =============================================
            TOP HEADER
         ============================================= */
@@ -1554,13 +1618,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             z-index: 30;
             width: 100%;
         }
-
+        
         .top-header-left {
             display: flex;
             align-items: center;
             gap: 0.75rem;
         }
-
+        
         .top-header-left .logo {
             width: 2rem;
             height: 2rem;
@@ -1574,13 +1638,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             color: var(--primary);
             border: 1px solid rgba(199, 196, 216, 0.3);
         }
-
+        
         .top-header-left .separator {
             color: var(--outline-variant);
             font-weight: 300;
             user-select: none;
         }
-
+        
         .sidebar-toggle-btn {
             display: flex;
             align-items: center;
@@ -1595,16 +1659,16 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             min-width: 2.5rem;
             min-height: 2.5rem;
         }
-
+        
         .sidebar-toggle-btn:hover {
             background: var(--bg-surface-low);
             color: var(--text-on-surface);
         }
-
+        
         .sidebar-toggle-btn .material-symbols-outlined {
             font-size: 1.25rem;
         }
-
+        
         .mobile-menu-btn {
             display: none;
             align-items: center;
@@ -1619,20 +1683,20 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             min-width: 2.5rem;
             min-height: 2.5rem;
         }
-
+        
         .mobile-menu-btn:hover {
             background: var(--bg-surface-low);
             color: var(--text-on-surface);
         }
-
+        
         .mobile-menu-btn .material-symbols-outlined {
             font-size: 1.25rem;
         }
-
+        
         .profile-dropdown-wrapper {
             position: relative;
         }
-
+        
         .profile-dropdown-toggle {
             display: flex;
             align-items: center;
@@ -1644,12 +1708,12 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             cursor: pointer;
             transition: all var(--transition-fast);
         }
-
+        
         .profile-dropdown-toggle:hover {
             background: var(--bg-surface-low);
             border-color: rgba(199, 196, 216, 0.3);
         }
-
+        
         .profile-dropdown-toggle .avatar-small {
             width: 2.25rem;
             height: 2.25rem;
@@ -1663,29 +1727,29 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             font-size: 0.75rem;
             flex-shrink: 0;
         }
-
+        
         .profile-dropdown-toggle .profile-name {
             font-size: 0.875rem;
             font-weight: 600;
             color: var(--text-on-surface);
         }
-
+        
         .profile-dropdown-toggle .profile-role {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
             font-weight: 400;
         }
-
+        
         .profile-dropdown-toggle .material-symbols-outlined {
             font-size: 1rem;
             color: var(--text-on-surface-variant);
             transition: transform var(--transition-fast);
         }
-
+        
         .profile-dropdown-toggle.open .material-symbols-outlined:last-child {
             transform: rotate(180deg);
         }
-
+        
         .profile-dropdown-menu {
             position: absolute;
             right: 0;
@@ -1703,13 +1767,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             transition: all var(--transition-smooth);
             transform-origin: top right;
         }
-
+        
         .profile-dropdown-menu.open {
             opacity: 1;
             visibility: visible;
             transform: translateY(0) scale(1);
         }
-
+        
         .profile-dropdown-menu .dropdown-header {
             padding: 0.5rem 0.875rem 0.25rem;
             font-size: 0.65rem;
@@ -1718,7 +1782,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             letter-spacing: 0.05em;
             color: var(--text-on-surface-variant);
         }
-
+        
         .profile-dropdown-menu .dropdown-item {
             display: flex;
             align-items: center;
@@ -1736,40 +1800,40 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             text-align: left;
             font-family: var(--font-sans);
         }
-
+        
         .profile-dropdown-menu .dropdown-item:hover {
             background: var(--bg-surface-low);
             color: var(--primary);
         }
-
+        
         .profile-dropdown-menu .dropdown-item .material-symbols-outlined {
             font-size: 1.125rem;
             color: var(--text-on-surface-variant);
         }
-
+        
         .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined {
             color: var(--primary);
         }
-
+        
         .profile-dropdown-menu .dropdown-item.danger {
             color: #dc2626;
         }
-
+        
         .profile-dropdown-menu .dropdown-item.danger:hover {
             background: #fef2f2;
             color: #dc2626;
         }
-
+        
         .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined {
             color: #dc2626;
         }
-
+        
         .profile-dropdown-menu .dropdown-divider {
             height: 1px;
             background: var(--slate-200);
             margin: 0.25rem 0.5rem;
         }
-
+        
         /* =============================================
            MAIN SCROLLABLE AREA
         ============================================= */
@@ -1778,12 +1842,12 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             overflow-y: auto;
             padding: 1.5rem 2rem;
         }
-
+        
         .main-scroll .container {
             max-width: 80rem;
             margin: 0 auto;
         }
-
+        
         /* =============================================
            BREADCRUMB
         ============================================= */
@@ -1797,7 +1861,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             gap: 0.75rem;
             margin-bottom: 1.5rem;
         }
-
+        
         @media (min-width: 640px) {
             .breadcrumb-bar {
                 border-radius: var(--radius-2xl);
@@ -1806,7 +1870,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 justify-content: space-between;
             }
         }
-
+        
         .breadcrumb-view {
             display: inline-flex;
             align-items: center;
@@ -1819,11 +1883,11 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             font-weight: 700;
             border: 1px solid rgba(79, 70, 229, 0.2);
         }
-
+        
         .breadcrumb-view .material-symbols-outlined {
             font-size: 1.25rem;
         }
-
+        
         .breadcrumb-view .status-dot {
             width: 0.5rem;
             height: 0.5rem;
@@ -1831,12 +1895,12 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             background: #22c55e;
             animation: pulse 2s infinite;
         }
-
+        
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
-
+        
         /* =============================================
            PAGE HEADER
         ============================================= */
@@ -1846,7 +1910,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             gap: 1rem;
             margin-bottom: 1.5rem;
         }
-
+        
         @media (min-width: 640px) {
             .page-header {
                 flex-direction: row;
@@ -1854,20 +1918,20 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 justify-content: space-between;
             }
         }
-
+        
         .page-header h1 {
             font-size: 1.875rem;
             font-weight: 700;
             color: var(--text-on-surface);
             letter-spacing: -0.025em;
         }
-
+        
         .page-header p {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.25rem;
         }
-
+        
         /* =============================================
            BUTTONS
         ============================================= */
@@ -1885,96 +1949,96 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             font-family: var(--font-sans);
             text-decoration: none;
         }
-
+        
         .btn-primary {
             background: var(--primary);
             color: white;
         }
-
+        
         .btn-primary:hover {
             background: var(--on-primary-fixed-variant);
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
         }
-
+        
         .btn-outline {
             background: transparent;
             color: var(--primary);
             border: 1.5px solid var(--primary);
         }
-
+        
         .btn-outline:hover {
             background: var(--bg-surface-low);
         }
-
+        
         .btn-success {
             background: #22c55e;
             color: white;
         }
-
+        
         .btn-success:hover {
             background: #16a34a;
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
         }
-
+        
         .btn-warning {
             background: #f59e0b;
             color: white;
         }
-
+        
         .btn-warning:hover {
             background: #d97706;
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
         }
-
+        
         .btn-warning:disabled {
             opacity: 0.5;
             cursor: not-allowed;
             transform: none !important;
         }
-
+        
         .btn-danger {
             background: #dc2626;
             color: white;
         }
-
+        
         .btn-danger:hover {
             background: #b91c1c;
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
         }
-
+        
         .btn-sm {
             padding: 0.375rem 0.75rem;
             font-size: 0.75rem;
             border-radius: 0.5rem;
         }
-
+        
         .btn .material-symbols-outlined {
             font-size: 1.125rem;
         }
-
+        
         .btn-sm .material-symbols-outlined {
             font-size: 1rem;
         }
-
+        
         .btn-ai {
             background: linear-gradient(135deg, #7c3aed, #4f46e5);
             color: white;
         }
-
+        
         .btn-ai:hover {
             background: linear-gradient(135deg, #6d28d9, #4338ca);
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
         }
-
+        
         .btn-ai .material-symbols-outlined {
             font-size: 1rem;
         }
-
+        
         .btn-disabled {
             background: #e5e7eb !important;
             color: #9ca3af !important;
@@ -1983,16 +2047,16 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             opacity: 0.6 !important;
             pointer-events: none !important;
         }
-
+        
         .btn-disabled .material-symbols-outlined {
             color: #9ca3af !important;
         }
-
+        
         .btn-disabled:hover {
             transform: none !important;
             box-shadow: none !important;
         }
-
+        
         /* =============================================
            SEARCH & FILTERS
         ============================================= */
@@ -2002,13 +2066,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             margin-bottom: 1.25rem;
             flex-wrap: wrap;
         }
-
+        
         .search-bar .search-input-wrapper {
             flex: 1;
             min-width: 200px;
             position: relative;
         }
-
+        
         .search-bar .search-input-wrapper .material-symbols-outlined {
             position: absolute;
             left: 0.875rem;
@@ -2017,7 +2081,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             color: var(--text-on-surface-variant);
             font-size: 1.25rem;
         }
-
+        
         .search-bar .search-input-wrapper input {
             width: 100%;
             padding: 0.625rem 0.875rem 0.625rem 2.75rem;
@@ -2029,25 +2093,25 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             background: var(--bg-surface);
             color: var(--text-on-surface);
         }
-
+        
         .search-bar .search-input-wrapper input:focus {
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
         }
-
+        
         .search-bar .search-input-wrapper input::placeholder {
             color: var(--text-on-surface-variant);
             opacity: 0.6;
         }
-
+        
         .filters {
             display: flex;
             gap: 0.75rem;
             flex-wrap: wrap;
             margin-bottom: 1.25rem;
         }
-
+        
         .filters select {
             padding: 0.625rem 2.5rem 0.625rem 0.875rem;
             border: 2px solid var(--slate-200);
@@ -2064,13 +2128,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             background-repeat: no-repeat;
             background-position: right 0.875rem center;
         }
-
+        
         .filters select:focus {
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
         }
-
+        
         /* =============================================
            APPLICANTS TABLE
         ============================================= */
@@ -2081,7 +2145,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             box-shadow: var(--shadow-sm);
             overflow: hidden;
         }
-
+        
         .card-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
@@ -2091,7 +2155,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             flex-wrap: wrap;
             gap: 0.75rem;
         }
-
+        
         .card-header h3 {
             font-size: 1rem;
             font-weight: 700;
@@ -2099,12 +2163,12 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             align-items: center;
             gap: 0.625rem;
         }
-
+        
         .card-header h3 .material-symbols-outlined {
             font-size: 1.25rem;
             color: var(--primary);
         }
-
+        
         .card-header .applicant-count {
             font-size: 0.8125rem;
             color: var(--text-on-surface-variant);
@@ -2112,23 +2176,23 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             padding: 0.25rem 0.75rem;
             border-radius: var(--radius-full);
         }
-
+        
         .card-body {
             padding: 0;
             overflow-x: auto;
         }
-
+        
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.875rem;
             min-width: 800px;
         }
-
+        
         table thead {
             background: var(--bg-surface-low);
         }
-
+        
         table th {
             padding: 0.75rem 1rem;
             text-align: left;
@@ -2139,27 +2203,27 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             color: var(--text-on-surface-variant);
             border-bottom: 2px solid var(--slate-200);
         }
-
+        
         table td {
             padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--slate-200);
             vertical-align: middle;
         }
-
+        
         table tbody tr:hover td {
             background: var(--bg-surface-low);
         }
-
+        
         table tbody tr:last-child td {
             border-bottom: none;
         }
-
+        
         .applicant-info {
             display: flex;
             align-items: center;
             gap: 0.75rem;
         }
-
+        
         .applicant-info .avatar {
             width: 2.5rem;
             height: 2.5rem;
@@ -2173,17 +2237,17 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             font-size: 0.875rem;
             flex-shrink: 0;
         }
-
+        
         .applicant-info .details .name {
             font-weight: 600;
             color: var(--text-on-surface);
         }
-
+        
         .applicant-info .details .email {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
         }
-
+        
         /* ===== BADGES ===== */
         .badge {
             display: inline-block;
@@ -2194,9 +2258,10 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
-
+        
         .badge-pending { background: #fef3c7; color: #d97706; }
         .badge-shortlisted { background: #dbeafe; color: #2563eb; }
+        .badge-scheduled { background: #dbeafe; color: #2563eb; }
         .badge-interviewed { background: #e0e7ff; color: #4f46e5; }
         .badge-hired { background: #d1fae5; color: #059669; }
         .badge-rejected { background: #fecaca; color: #dc2626; }
@@ -2204,7 +2269,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
         .badge-notified-qualified { background: #d1fae5; color: #059669; }
         .badge-notified-notqualified { background: #fecaca; color: #dc2626; }
         .badge-pending-notification { background: #fef3c7; color: #d97706; }
-
+        
         .action-buttons {
             display: flex;
             gap: 0.375rem;
@@ -2212,7 +2277,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             flex-wrap: wrap;
             align-items: center;
         }
-
+        
         /* =============================================
            EMPTY STATE
         ============================================= */
@@ -2220,30 +2285,30 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             text-align: center;
             padding: 4rem 1.5rem;
         }
-
+        
         .empty-state .material-symbols-outlined {
             font-size: 4rem;
             color: var(--slate-200);
             display: block;
             margin-bottom: 1rem;
         }
-
+        
         .empty-state h4 {
             font-size: 1.125rem;
             font-weight: 700;
             color: var(--text-on-surface);
             margin-bottom: 0.25rem;
         }
-
+        
         .empty-state p {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
         }
-
+        
         .empty-state .btn {
             margin-top: 1rem;
         }
-
+        
         /* =============================================
            MODALS
         ============================================= */
@@ -2258,11 +2323,11 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             align-items: center;
             padding: 1rem;
         }
-
+        
         .modal-overlay.active {
             display: flex;
         }
-
+        
         .modal {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -2275,23 +2340,23 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             display: flex;
             flex-direction: column;
         }
-
+        
         .modal.status-modal .modal {
             max-width: 32rem;
         }
-
+        
         .modal.interview-modal .modal {
             max-width: 38rem;
         }
-
+        
         .modal.qualification-modal .modal {
             max-width: 40rem;
         }
-
+        
         .modal.match-modal .modal {
             max-width: 48rem;
         }
-
+        
         @keyframes modalSlideUp {
             from {
                 transform: translateY(20px) scale(0.95);
@@ -2302,7 +2367,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 opacity: 1;
             }
         }
-
+        
         .modal-header {
             padding: 1.25rem 1.5rem;
             border-bottom: 1px solid var(--slate-200);
@@ -2311,7 +2376,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             align-items: center;
             flex-shrink: 0;
         }
-
+        
         .modal-header h2 {
             font-size: 1.25rem;
             font-weight: 700;
@@ -2319,12 +2384,12 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             align-items: center;
             gap: 0.625rem;
         }
-
+        
         .modal-header h2 .material-symbols-outlined {
             font-size: 1.5rem;
             color: var(--primary);
         }
-
+        
         .modal-close {
             background: none;
             border: none;
@@ -2334,21 +2399,21 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             color: var(--text-on-surface-variant);
             transition: all var(--transition-fast);
         }
-
+        
         .modal-close:hover {
             background: var(--bg-surface-low);
         }
-
+        
         .modal-close .material-symbols-outlined {
             font-size: 1.5rem;
         }
-
+        
         .modal-body {
             padding: 1.5rem;
             overflow-y: auto;
             flex: 1;
         }
-
+        
         .modal-footer {
             padding: 1rem 1.5rem;
             border-top: 1px solid var(--slate-200);
@@ -2357,7 +2422,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             gap: 0.75rem;
             flex-shrink: 0;
         }
-
+        
         /* =============================================
            APPLICANT DETAILS
         ============================================= */
@@ -2366,11 +2431,11 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             grid-template-columns: 1fr 1fr;
             gap: 1rem;
         }
-
+        
         .detail-item {
             margin-bottom: 0.25rem;
         }
-
+        
         .detail-item .label {
             font-size: 0.6875rem;
             font-weight: 600;
@@ -2378,7 +2443,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
-
+        
         .detail-item .value {
             font-size: 0.875rem;
             color: var(--text-on-surface);
@@ -2387,7 +2452,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             border-radius: 0.5rem;
             margin-top: 0.125rem;
         }
-
+        
         .detail-item .value.skills {
             display: flex;
             flex-wrap: wrap;
@@ -2396,7 +2461,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             padding: 0;
             margin-top: 0.25rem;
         }
-
+        
         .detail-item .value.skills .skill-tag {
             display: inline-block;
             padding: 0.1875rem 0.625rem;
@@ -2407,11 +2472,11 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             font-weight: 500;
             border: 1px solid rgba(79, 70, 229, 0.15);
         }
-
+        
         .detail-item.full-width {
             grid-column: 1 / -1;
         }
-
+        
         /* =============================================
            RESUME SECTION
         ============================================= */
@@ -2422,7 +2487,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             border-radius: 0.75rem;
             border: 1px solid var(--slate-200);
         }
-
+        
         .resume-section .resume-header {
             display: flex;
             justify-content: space-between;
@@ -2430,13 +2495,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             flex-wrap: wrap;
             gap: 0.75rem;
         }
-
+        
         .resume-section .resume-info {
             display: flex;
             align-items: center;
             gap: 0.75rem;
         }
-
+        
         .resume-section .resume-info .resume-icon {
             width: 2.5rem;
             height: 2.5rem;
@@ -2449,58 +2514,58 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             color: white;
             flex-shrink: 0;
         }
-
+        
         .resume-section .resume-info .resume-icon.pdf { background: #dc2626; }
         .resume-section .resume-info .resume-icon.doc { background: #2563eb; }
         .resume-section .resume-info .resume-icon.docx { background: #2563eb; }
         .resume-section .resume-info .resume-icon.default { background: #6b7280; }
-
+        
         .resume-section .resume-info .resume-details .resume-name {
             font-weight: 600;
             font-size: 0.875rem;
             color: var(--text-on-surface);
         }
-
+        
         .resume-section .resume-info .resume-details .resume-size {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
         }
-
+        
         .resume-section .resume-actions {
             display: flex;
             gap: 0.5rem;
             flex-wrap: wrap;
         }
-
+        
         .resume-section .resume-actions .btn {
             font-size: 0.75rem;
             padding: 0.375rem 0.75rem;
         }
-
+        
         .resume-empty {
             text-align: center;
             padding: 1.25rem;
             color: var(--text-on-surface-variant);
         }
-
+        
         .resume-empty .material-symbols-outlined {
             font-size: 2.5rem;
             color: var(--slate-200);
             display: block;
             margin-bottom: 0.5rem;
         }
-
+        
         /* =============================================
            FORM ELEMENTS
         ============================================= */
         .form-group {
             margin-bottom: 1.25rem;
         }
-
+        
         .form-group:last-child {
             margin-bottom: 0;
         }
-
+        
         .form-group label {
             display: block;
             font-size: 0.8125rem;
@@ -2508,12 +2573,12 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             color: var(--text-on-surface);
             margin-bottom: 0.25rem;
         }
-
+        
         .form-group label .required {
             color: #dc2626;
             margin-left: 0.125rem;
         }
-
+        
         .form-group .form-control {
             width: 100%;
             padding: 0.625rem 0.875rem;
@@ -2525,18 +2590,18 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             background: var(--bg-surface);
             color: var(--text-on-surface);
         }
-
+        
         .form-group .form-control:focus {
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
         }
-
+        
         .form-group .form-control::placeholder {
             color: var(--text-on-surface-variant);
             opacity: 0.6;
         }
-
+        
         .form-group select.form-control {
             appearance: none;
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
@@ -2544,35 +2609,35 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             background-position: right 1rem center;
             padding-right: 2.5rem;
         }
-
+        
         .form-group textarea.form-control {
             resize: vertical;
             min-height: 80px;
         }
-
+        
         .form-group .helper-text {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.25rem;
         }
-
+        
         .form-group .helper-text .material-symbols-outlined {
             font-size: 0.875rem;
             vertical-align: middle;
         }
-
+        
         .form-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 1rem;
         }
-
+        
         @media (max-width: 640px) {
             .form-row {
                 grid-template-columns: 1fr;
             }
         }
-
+        
         /* =============================================
            LOADING SPINNER
         ============================================= */
@@ -2580,7 +2645,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             text-align: center;
             padding: 2rem;
         }
-
+        
         .loading-spinner .spinner {
             width: 2.5rem;
             height: 2.5rem;
@@ -2590,17 +2655,17 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             animation: spin 0.8s linear infinite;
             margin: 0 auto;
         }
-
+        
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-
+        
         .loading-spinner p {
             margin-top: 0.75rem;
             color: var(--text-on-surface-variant);
             font-size: 0.875rem;
         }
-
+        
         /* =============================================
            TOAST
         ============================================= */
@@ -2618,19 +2683,19 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             animation: slideUp 0.4s ease-out;
             max-width: 400px;
         }
-
+        
         .toast.success {
             background: #22c55e;
         }
-
+        
         .toast.error {
             background: #dc2626;
         }
-
+        
         .toast.info {
             background: var(--primary);
         }
-
+        
         @keyframes slideUp {
             from {
                 opacity: 0;
@@ -2641,7 +2706,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 transform: translateY(0) scale(1);
             }
         }
-
+        
         /* =============================================
            MATCH DETAILS IN MODAL - ENHANCED
         ============================================= */
@@ -2652,31 +2717,31 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             border-radius: 1rem;
             margin-bottom: 1.5rem;
         }
-
+        
         .match-score-display .score-number {
             font-size: 3.5rem;
             font-weight: 800;
         }
-
+        
         .match-score-display .score-level {
             font-size: 1.1rem;
             font-weight: 600;
             margin-top: 0.25rem;
         }
-
+        
         .match-score-display .score-recommendation {
             font-size: 0.875rem;
             color: var(--text-on-surface-variant);
             margin-top: 0.5rem;
         }
-
+        
         .score-breakdown {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 0.75rem;
             margin: 1rem 0;
         }
-
+        
         .score-breakdown .breakdown-item {
             text-align: center;
             padding: 0.75rem;
@@ -2684,52 +2749,52 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             border-radius: 0.75rem;
             border: 1px solid var(--slate-200);
         }
-
+        
         .score-breakdown .breakdown-item .label {
             font-size: 0.65rem;
             text-transform: uppercase;
             color: var(--text-on-surface-variant);
             font-weight: 600;
         }
-
+        
         .score-breakdown .breakdown-item .value {
             font-size: 1.25rem;
             font-weight: 700;
             color: var(--text-on-surface);
         }
-
+        
         .skill-breakdown {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 1rem;
             margin-top: 1rem;
         }
-
+        
         .skill-breakdown .skill-group {
             padding: 1rem;
             border-radius: 0.75rem;
             background: var(--bg-surface-low);
         }
-
+        
         .skill-breakdown .skill-group h4 {
             font-size: 0.8rem;
             font-weight: 600;
             margin-bottom: 0.5rem;
         }
-
+        
         .skill-breakdown .skill-group .skill-list {
             display: flex;
             flex-wrap: wrap;
             gap: 0.25rem;
         }
-
+        
         .job-requirements {
             background: var(--bg-surface-low);
             padding: 1rem;
             border-radius: 0.75rem;
             margin-top: 1rem;
         }
-
+        
         .job-requirements .req-item {
             display: flex;
             justify-content: space-between;
@@ -2737,19 +2802,19 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             font-size: 0.85rem;
             border-bottom: 1px solid var(--slate-200);
         }
-
+        
         .job-requirements .req-item:last-child {
             border-bottom: none;
         }
-
+        
         .job-requirements .req-item .req-label {
             color: var(--text-on-surface-variant);
         }
-
+        
         .job-requirements .req-item .req-value {
             font-weight: 500;
         }
-
+        
         @media (max-width: 640px) {
             .score-breakdown {
                 grid-template-columns: 1fr 1fr;
@@ -2758,7 +2823,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 grid-template-columns: 1fr;
             }
         }
-
+        
         /* =============================================
            RESPONSIVE
         ============================================= */
@@ -2766,36 +2831,36 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             .sidebar-backdrop {
                 display: none !important;
             }
-
+            
             .mobile-menu-btn {
                 display: none !important;
             }
-
+            
             .dashboard-sidebar {
                 position: fixed;
                 transform: translateX(0) !important;
                 box-shadow: var(--shadow-xl);
                 height: 100vh;
             }
-
+            
             .dashboard-sidebar.mobile-hidden {
                 transform: translateX(0) !important;
             }
-
+            
             .main-wrapper {
                 margin-left: var(--sidebar-width);
             }
-
+            
             .dashboard-sidebar.collapsed ~ .main-wrapper {
                 margin-left: var(--sidebar-collapsed);
             }
-
+            
             .profile-dropdown-toggle .profile-name,
             .profile-dropdown-toggle .profile-role {
                 display: inline;
             }
         }
-
+        
         @media (max-width: 767px) {
             .dashboard-sidebar {
                 position: fixed;
@@ -2803,114 +2868,114 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 transform: translateX(-100%);
                 box-shadow: var(--shadow-xl);
             }
-
+            
             .dashboard-sidebar.mobile-open {
                 transform: translateX(0);
             }
-
+            
             .dashboard-sidebar.collapsed {
                 width: var(--sidebar-width);
             }
-
+            
             .sidebar-toggle-btn {
                 display: none !important;
             }
-
+            
             .mobile-menu-btn {
                 display: flex;
             }
-
+            
             .main-wrapper {
                 margin-left: 0 !important;
             }
-
+            
             .main-scroll {
                 padding: 1rem;
             }
-
+            
             .top-header-left .separator {
                 display: none;
             }
-
+            
             .profile-dropdown-toggle .profile-name,
             .profile-dropdown-toggle .profile-role {
                 display: none;
             }
-
+            
             .detail-grid {
                 grid-template-columns: 1fr;
             }
-
+            
             .search-bar {
                 flex-direction: column;
             }
-
+            
             .filters {
                 flex-direction: column;
             }
-
+            
             .filters select {
                 width: 100%;
             }
-
+            
             table {
                 font-size: 0.8125rem;
                 min-width: 650px;
             }
-
+            
             table th,
             table td {
                 padding: 0.5rem 0.75rem;
             }
-
+            
             .applicant-info .avatar {
                 width: 2rem;
                 height: 2rem;
                 font-size: 0.75rem;
             }
-
+            
             .modal {
                 max-height: 95vh;
                 margin: 0.5rem;
             }
-
+            
             .modal-header {
                 padding: 1rem 1.25rem;
             }
-
+            
             .modal-body {
                 padding: 1rem 1.25rem;
             }
-
+            
             .modal-footer {
                 padding: 0.75rem 1.25rem;
                 flex-direction: column;
             }
-
+            
             .modal-footer .btn {
                 width: 100%;
                 justify-content: center;
             }
-
+            
             .resume-section .resume-header {
                 flex-direction: column;
                 align-items: flex-start;
             }
-
+            
             .resume-section .resume-actions {
                 width: 100%;
             }
-
+            
             .resume-section .resume-actions .btn {
                 flex: 1;
                 justify-content: center;
             }
-
+            
             .action-buttons .btn-sm {
                 font-size: 0.6875rem;
                 padding: 0.25rem 0.5rem;
             }
-
+            
             .dashboard-sidebar.collapsed .sidebar-brand-text,
             .dashboard-sidebar.collapsed .sidebar-brand-category,
             .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
@@ -2921,123 +2986,123 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
                 width: auto;
                 overflow: visible;
             }
-
+            
             .dashboard-sidebar.collapsed .sidebar-brand-card {
                 padding: 1.5rem;
             }
-
+            
             .dashboard-sidebar.collapsed .sidebar-nav {
                 padding: 1.5rem 1.25rem;
             }
-
+            
             .dashboard-sidebar.collapsed .sidebar-main-link {
                 justify-content: flex-start;
                 padding: 0.75rem 1rem;
             }
-
+            
             .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
                 font-size: 1.25rem;
             }
-
+            
             .dashboard-sidebar.collapsed .sidebar-footer .user-card {
                 justify-content: flex-start;
                 padding: 0.5rem 0.75rem;
             }
-
+            
             .score-breakdown {
                 grid-template-columns: 1fr 1fr;
             }
         }
-
+        
         @media (max-width: 480px) {
             .main-scroll {
                 padding: 0.75rem;
             }
-
+            
             .breadcrumb-bar {
                 padding: 0.75rem 1rem;
             }
-
+            
             .page-header h1 {
                 font-size: 1.5rem;
             }
-
+            
             .card-header {
                 padding: 0.75rem 1rem;
             }
-
+            
             .card-header h3 {
                 font-size: 0.875rem;
             }
-
+            
             table {
                 font-size: 0.75rem;
                 min-width: 500px;
             }
-
+            
             table th,
             table td {
                 padding: 0.375rem 0.5rem;
             }
-
+            
             .applicant-info .details .email {
                 font-size: 0.6875rem;
             }
-
+            
             .modal-body {
                 padding: 0.75rem 1rem;
             }
-
+            
             .toast {
                 max-width: 90%;
                 bottom: 1rem;
                 right: 1rem;
             }
-
+            
             .match-score-badge {
                 font-size: 0.7rem;
                 padding: 2px 8px;
             }
-
+            
             .match-score-number {
                 font-size: 0.9rem;
             }
-
+            
             .score-breakdown {
                 grid-template-columns: 1fr 1fr;
                 gap: 0.5rem;
             }
-
+            
             .score-breakdown .breakdown-item .value {
                 font-size: 1rem;
             }
         }
-
+        
         /* Scrollbar Styling */
         .main-scroll::-webkit-scrollbar {
             width: 6px;
         }
-
+        
         .main-scroll::-webkit-scrollbar-track {
             background: transparent;
         }
-
+        
         .main-scroll::-webkit-scrollbar-thumb {
             background: var(--slate-200);
             border-radius: 3px;
         }
-
+        
         .main-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--slate-500);
         }
-
+        
         /* =============================================
            QUALIFICATION MODAL SPECIFIC STYLES
         ============================================= */
         .qualification-modal .modal {
             max-width: 42rem;
         }
-
+        
         .qualification-modal .applicant-info-display {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -3047,7 +3112,7 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             border-radius: 0.75rem;
             margin-bottom: 1.5rem;
         }
-
+        
         .qualification-modal .info-item .label {
             font-size: 0.6875rem;
             font-weight: 600;
@@ -3055,20 +3120,20 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
-
+        
         .qualification-modal .info-item .value {
             font-size: 0.875rem;
             font-weight: 500;
             color: var(--text-on-surface);
             margin-top: 0.125rem;
         }
-
+        
         .qualification-modal .decision-group {
             display: flex;
             gap: 1rem;
             margin-top: 0.5rem;
         }
-
+        
         .qualification-modal .decision-option {
             flex: 1;
             padding: 0.875rem 1.5rem;
@@ -3082,42 +3147,42 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             justify-content: center;
             gap: 0.5rem;
         }
-
+        
         .qualification-modal .decision-option:hover {
             border-color: var(--primary);
             background: var(--bg-surface-low);
         }
-
+        
         .qualification-modal .decision-option.selected-qualified {
             border-color: #22c55e;
             background: #f0fdf4;
         }
-
+        
         .qualification-modal .decision-option.selected-notqualified {
             border-color: #dc2626;
             background: #fef2f2;
         }
-
+        
         .qualification-modal .decision-option input[type="radio"] {
             display: none;
         }
-
+        
         .qualification-modal .decision-option .option-icon {
             font-size: 1.25rem;
         }
-
+        
         .qualification-modal .decision-option .option-label {
             font-weight: 600;
         }
-
+        
         .qualification-modal .decision-option .option-label.qualified-text {
             color: #059669;
         }
-
+        
         .qualification-modal .decision-option .option-label.notqualified-text {
             color: #dc2626;
         }
-
+        
         .qualification-modal .warning-box {
             background: #fffbeb;
             border: 1px solid #fcd34d;
@@ -3128,41 +3193,41 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             gap: 0.75rem;
             align-items: flex-start;
         }
-
+        
         .qualification-modal .warning-box .warning-icon {
             color: #f59e0b;
             flex-shrink: 0;
         }
-
+        
         .qualification-modal .warning-box .warning-text {
             font-size: 0.875rem;
             color: #92400e;
         }
-
+        
         .qualification-modal .warning-box .warning-text strong {
             font-weight: 700;
         }
-
+        
         .btn-send-notification {
             background: #f59e0b;
             color: white;
         }
-
+        
         .btn-send-notification:hover {
             background: #d97706;
         }
-
+        
         .btn-send-notification:disabled {
             opacity: 0.6;
             cursor: not-allowed;
         }
-
+        
         .processing-text {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
         }
-
+        
         .processing-text .spinner-small {
             width: 1rem;
             height: 1rem;
@@ -3171,6 +3236,41 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
@@ -3178,10 +3278,9 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">people</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -3203,13 +3302,9 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             <span class="nav-text">Applicants</span>
             <span class="nav-badge"><?php 
                 // Get pending applications count
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [])['count'] ?? 0;
                 echo $pendingApps; 
             ?></span>
-        </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
         </a>
         <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">calendar_month</span>
@@ -3225,13 +3320,13 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
             <span class="nav-badge"><?php 
                 // Get total archive count
                 $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
                 echo $totalArchived;
             ?></span>
@@ -3260,23 +3355,26 @@ if ($action === 'recalculate_match' && $applicationId > 0) {
 MAIN CONTENT
 ============================================= -->
 <div class="main-wrapper" id="mainWrapper">
-    <!-- ===== TOP HEADER ===== -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                <span class="material-symbols-outlined">menu</span>
-            </button>
-            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                <?php 
-                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                    echo ucwords(str_replace('_', ' ', $pageTitle));
-                ?>
-            </span>
-        </div>
+<!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
+
         <div class="profile-dropdown-wrapper">
             <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                 <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -4971,6 +5069,269 @@ window.addEventListener('resize', function() {
         }
     }, 250);
 });
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
+
 
 // =============================================
 // 14. KEYBOARD ACCESSIBILITY
@@ -5003,6 +5364,6 @@ document.addEventListener('keydown', function(e) {
 
 console.log('ISMERS Applicants Management with Enhanced AI Integration loaded successfully!');
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

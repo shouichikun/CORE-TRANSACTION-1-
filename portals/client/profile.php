@@ -1,8 +1,12 @@
 <?php
 // portals/client/profile.php - Client Profile Management (Resume Style - Single Container)
+// ✅ POSTGRESQL COMPATIBLE VERSION
+
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -23,13 +27,13 @@ $email = $_SESSION['email'] ?? '';
 $fullName = $_SESSION['full_name'] ?? 'Client User';
 $role = $_SESSION['role'] ?? 'client';
 
-// Get client profile
+// ✅ FIXED: PostgreSQL uses $1 placeholder, removed type string
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name, u.first_name, u.last_name, u.phone, u.profile_picture
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = [
@@ -58,10 +62,11 @@ if (!$client) {
 $pendingAgencyCount = 0;
 $clientId = $client['id'] ?? 0;
 if ($clientId > 0) {
+    // ✅ FIXED: PostgreSQL uses $1 placeholder, removed type string
     $pendingAgencies = getRecords("
         SELECT COUNT(*) as count FROM agency_applications 
-        WHERE client_id = ? AND status = 'pending'
-    ", [$clientId], "i");
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
     if (!empty($pendingAgencies)) {
         $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
     }
@@ -71,7 +76,9 @@ $message = '';
 $messageType = '';
 $isEditing = isset($_GET['edit']) && $_GET['edit'] === 'true';
 
-// Handle Profile Update
+// =============================================
+// ✅ FIXED: Handle Profile Update - PostgreSQL version
+// =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
@@ -94,47 +101,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $message = 'First name and last name are required.';
             $messageType = 'error';
         } else {
-            mysqli_begin_transaction($conn);
+            // ✅ FIXED: Use PostgreSQL transaction
+            beginTransaction();
             
             try {
-                $updateUserSql = "UPDATE users SET 
-                                first_name = ?,
-                                last_name = ?,
-                                full_name = ?,
-                                phone = ?,
-                                updated_at = NOW()
-                                WHERE id = ?";
-                $stmt = mysqli_prepare($conn, $updateUserSql);
                 $fullName = $firstName . ' ' . $lastName;
-                mysqli_stmt_bind_param($stmt, 'ssssi', $firstName, $lastName, $fullName, $phone, $userId);
                 
-                if (!mysqli_stmt_execute($stmt)) {
+                // ✅ FIXED: PostgreSQL uses $1, $2 placeholders
+                $updateUserSql = "UPDATE users SET 
+                                first_name = $1,
+                                last_name = $2,
+                                full_name = $3,
+                                phone = $4,
+                                updated_at = NOW()
+                                WHERE id = $5";
+                $userResult = updateRecord($updateUserSql, [
+                    $firstName, $lastName, $fullName, $phone, $userId
+                ]);
+                
+                if (!$userResult) {
                     throw new Exception('Failed to update user information.');
                 }
-                mysqli_stmt_close($stmt);
                 
+                // ✅ FIXED: PostgreSQL uses $1-$8 placeholders
                 $updateClientSql = "UPDATE clients SET 
-                                    company_name = ?,
-                                    industry = ?,
-                                    company_size = ?,
-                                    company_website = ?,
-                                    company_description = ?,
-                                    company_address = ?,
-                                    company_phone = ?,
+                                    company_name = $1,
+                                    industry = $2,
+                                    company_size = $3,
+                                    company_website = $4,
+                                    company_description = $5,
+                                    company_address = $6,
+                                    company_phone = $7,
                                     updated_at = NOW()
-                                    WHERE user_id = ?";
-                $stmt = mysqli_prepare($conn, $updateClientSql);
-                mysqli_stmt_bind_param($stmt, 'sssssssi', 
+                                    WHERE user_id = $8";
+                $clientResult = updateRecord($updateClientSql, [
                     $companyName, $industry, $companySize, $companyWebsite,
                     $companyDescription, $companyAddress, $companyPhone, $userId
-                );
+                ]);
                 
-                if (!mysqli_stmt_execute($stmt)) {
+                if (!$clientResult) {
                     throw new Exception('Failed to update company information.');
                 }
-                mysqli_stmt_close($stmt);
                 
-                mysqli_commit($conn);
+                commitTransaction();
                 
                 $_SESSION['first_name'] = $firstName;
                 $_SESSION['last_name'] = $lastName;
@@ -143,12 +152,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message = 'Profile updated successfully!';
                 $messageType = 'success';
                 
+                // ✅ FIXED: PostgreSQL uses $1 placeholder
                 $client = getRecord("
                     SELECT c.*, u.email as user_email, u.full_name, u.first_name, u.last_name, u.phone, u.profile_picture
                     FROM clients c
                     JOIN users u ON c.user_id = u.id
-                    WHERE c.user_id = ?
-                ", [$userId], "i");
+                    WHERE c.user_id = $1
+                ", [$userId]);
                 
                 if ($client) {
                     $client['email'] = $client['user_email'] ?? $email;
@@ -158,14 +168,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
                 
             } catch (Exception $e) {
-                mysqli_rollback($conn);
+                rollbackTransaction();
                 $message = 'Error updating profile: ' . $e->getMessage();
                 $messageType = 'error';
             }
         }
     }
     
-    // Handle Profile Picture Upload
+    // ✅ FIXED: Handle Profile Picture Upload - PostgreSQL version
     if ($action === 'upload_profile_picture') {
         if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] === UPLOAD_ERR_OK) {
             $uploadDir = '../../uploads/profile_pictures/';
@@ -194,11 +204,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     
                     $profilePath = 'uploads/profile_pictures/' . $newFileName;
-                    $updateSql = "UPDATE users SET profile_picture = ? WHERE id = ?";
-                    $stmt = mysqli_prepare($conn, $updateSql);
-                    mysqli_stmt_bind_param($stmt, 'si', $profilePath, $userId);
                     
-                    if (mysqli_stmt_execute($stmt)) {
+                    // ✅ FIXED: PostgreSQL uses $1, $2 placeholders
+                    $updateSql = "UPDATE users SET profile_picture = $1 WHERE id = $2";
+                    $result = updateRecord($updateSql, [$profilePath, $userId]);
+                    
+                    if ($result) {
                         $message = 'Profile picture uploaded successfully!';
                         $messageType = 'success';
                         $client['profile_picture'] = $profilePath;
@@ -206,7 +217,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $message = 'Failed to update profile picture in database.';
                         $messageType = 'error';
                     }
-                    mysqli_stmt_close($stmt);
                 } else {
                     $message = 'Failed to upload profile picture.';
                     $messageType = 'error';
@@ -251,6 +261,9 @@ $industries = [
 ];
 
 $showSuccess = isset($_GET['updated']) && $_GET['updated'] == 1;
+
+// Get user profile data for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -261,9 +274,9 @@ $showSuccess = isset($_GET['updated']) && $_GET['updated'] == 1;
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           RESUME STYLE PROFILE - SINGLE CONTAINER
-           ========================================================================== */
+        /* ========================================================================== */
+        /* RESUME STYLE PROFILE - SINGLE CONTAINER */
+        /* ========================================================================== */
         :root {
             --bg-background: #f0f2f5;
             --bg-surface: #ffffff;
@@ -294,6 +307,8 @@ $showSuccess = isset($_GET['updated']) && $_GET['updated'] == 1;
             --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
             --sidebar-width: 280px;
             --sidebar-collapsed: 72px;
+            --transition-fast: 0.15s ease;
+            --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1090,9 +1105,6 @@ $showSuccess = isset($_GET['updated']) && $_GET['updated'] == 1;
         <!-- =============================================
         SIDEBAR FOOTER
         ============================================= -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1123,9 +1135,6 @@ $showSuccess = isset($_GET['updated']) && $_GET['updated'] == 1;
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Profile</span>
             </div>
-            <?php
-            $userProfile = getUserProfileData($userId);
-            ?>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1555,6 +1564,6 @@ $showSuccess = isset($_GET['updated']) && $_GET['updated'] == 1;
 
         console.log('👤 ISMERS Client Profile (Single Container) loaded successfully!');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

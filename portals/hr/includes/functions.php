@@ -1,8 +1,9 @@
 <?php
 // portals/hr/includes/functions.php - HR Shared Functions
+// ✅ POSTGRESQL COMPATIBLE VERSION
 
 // =============================================
-// MATCH SCORE CALCULATION (FIXED - Proper try/catch)
+// MATCH SCORE CALCULATION (FIXED - PostgreSQL syntax)
 // =============================================
 
 /**
@@ -14,24 +15,26 @@ function calculateMatchScore($applicantId, $jobId) {
         global $conn;
         
         // Get applicant data
+        // ✅ POSTGRESQL: Use $1 placeholder, remove type string
         $applicant = getRecord("
             SELECT ap.skills, ap.experience, ap.education,
                    u.id as user_id
             FROM applicants ap
             JOIN users u ON ap.user_id = u.id
-            WHERE ap.id = ?
-        ", [$applicantId], "i");
+            WHERE ap.id = $1
+        ", [$applicantId]);
         
         if (!$applicant) {
             return ['score' => 0, 'details' => [], 'level' => ['label' => 'Low', 'color' => '#dc2626', 'icon' => '📉']];
         }
         
         // Get job data
+        // ✅ POSTGRESQL: Use $1 placeholder, remove type string
         $job = getRecord("
             SELECT skills_required, experience_level, location, title
             FROM job_orders
-            WHERE id = ?
-        ", [$jobId], "i");
+            WHERE id = $1
+        ", [$jobId]);
         
         if (!$job) {
             return ['score' => 0, 'details' => [], 'level' => ['label' => 'Low', 'color' => '#dc2626', 'icon' => '📉']];
@@ -202,8 +205,9 @@ function sendEmailNotification($to, $subject, $message, $template = 'custom') {
     $success = mail($to, $subject, $htmlMessage, $headers);
     
     // Log the email
+    // ✅ POSTGRESQL: Use $1-$6 placeholders, remove type string
     $logSql = "INSERT INTO email_logs (recipient_email, recipient_name, subject, template, status, created_by) 
-               VALUES (?, ?, ?, ?, ?, ?)";
+               VALUES ($1, $2, $3, $4, $5, $6)";
     insertRecord($logSql, [
         $to,
         $to,
@@ -211,7 +215,7 @@ function sendEmailNotification($to, $subject, $message, $template = 'custom') {
         $template,
         $success ? 'sent' : 'failed',
         $userId ?? null
-    ], "sssssi");
+    ]);
     
     return $success;
 }
@@ -219,6 +223,7 @@ function sendEmailNotification($to, $subject, $message, $template = 'custom') {
 function sendStatusUpdateEmail($applicationId, $newStatus, $feedback = '') {
     global $conn;
     
+    // ✅ POSTGRESQL: Use $1 placeholder, remove type string
     $app = getRecord("
         SELECT a.*, u.id as user_id, u.first_name, u.last_name, u.email,
                jo.title as job_title, c.company_name
@@ -227,8 +232,8 @@ function sendStatusUpdateEmail($applicationId, $newStatus, $feedback = '') {
         JOIN users u ON ap.user_id = u.id
         JOIN job_orders jo ON a.job_order_id = jo.id
         JOIN clients c ON jo.client_id = c.id
-        WHERE a.id = ?
-    ", [$applicationId], "i");
+        WHERE a.id = $1
+    ", [$applicationId]);
     
     if (!$app) return false;
     
@@ -282,6 +287,7 @@ function sendStatusUpdateEmail($applicationId, $newStatus, $feedback = '') {
 function sendInterviewScheduledEmail($applicationId, $interviewDate, $interviewNotes = '') {
     global $conn;
     
+    // ✅ POSTGRESQL: Use $1 placeholder, remove type string
     $app = getRecord("
         SELECT a.*, u.id as user_id, u.first_name, u.last_name, u.email,
                jo.title as job_title, c.company_name
@@ -290,8 +296,8 @@ function sendInterviewScheduledEmail($applicationId, $interviewDate, $interviewN
         JOIN users u ON ap.user_id = u.id
         JOIN job_orders jo ON a.job_order_id = jo.id
         JOIN clients c ON jo.client_id = c.id
-        WHERE a.id = ?
-    ", [$applicationId], "i");
+        WHERE a.id = $1
+    ", [$applicationId]);
     
     if (!$app) return false;
     
@@ -327,6 +333,7 @@ function sendInterviewScheduledEmail($applicationId, $interviewDate, $interviewN
 function sendOfferEmail($offerId) {
     global $conn;
     
+    // ✅ POSTGRESQL: Use $1 placeholder, remove type string
     $offer = getRecord("
         SELECT o.*, a.*, u.id as user_id, u.first_name, u.last_name, u.email,
                jo.title as job_title, c.company_name
@@ -336,8 +343,8 @@ function sendOfferEmail($offerId) {
         JOIN users u ON ap.user_id = u.id
         JOIN job_orders jo ON a.job_order_id = jo.id
         JOIN clients c ON jo.client_id = c.id
-        WHERE o.id = ?
-    ", [$offerId], "i");
+        WHERE o.id = $1
+    ", [$offerId]);
     
     if (!$offer) return false;
     

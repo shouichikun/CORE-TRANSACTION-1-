@@ -2,7 +2,9 @@
 // portals/client/jobs.php - AI-Powered Client Job Management
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
@@ -17,7 +19,7 @@ if ($_SESSION['role'] !== 'client') {
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
@@ -27,32 +29,31 @@ $role = $_SESSION['role'] ?? 'client';
 // =============================================
 $aiService = new AiService();
 
-// Get client profile
+// Get client profile - PostgreSQL
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = ['company_name' => 'Your Company', 'id' => 0];
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = $client['id'] ?? 0;
+$clientId = (int)($client['id'] ?? 0);
 
 // =============================================
 // GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
 // =============================================
 $pendingAgencyCount = 0;
-$pendingAgencies = getRecords("
-    SELECT COUNT(*) as count FROM agency_applications 
-    WHERE client_id = ? AND status = 'pending'
-", [$clientId], "i");
-
-if (!empty($pendingAgencies)) {
-    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+if ($clientId > 0) {
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
 }
 
 // =============================================
@@ -62,11 +63,11 @@ $agencies = getRecords("
     SELECT ra.*, 
            (SELECT COUNT(*) FROM job_orders WHERE agency_id = ra.id) as job_count
     FROM recruitment_agencies ra
-    WHERE ra.client_id = ? 
-    AND ra.is_active = 1
+    WHERE ra.client_id = $1 
+    AND ra.is_active = true
     AND ra.application_status = 'approved'
     ORDER BY ra.agency_name ASC
-", [$clientId], "i");
+", [$clientId]);
 
 // =============================================
 // AI HELPER FUNCTIONS
@@ -196,128 +197,122 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
     
-// =============================================
-// REQUEST JOB POST (Client -> HR) - FIXED VERSION
-// =============================================
-if ($_POST['action'] === 'request_job') {
-    // Validate inputs
-    $title = trim($_POST['title'] ?? '');
-    $description = trim($_POST['description'] ?? '');
-    $location = trim($_POST['location'] ?? '');
-    $job_type = trim($_POST['job_type'] ?? 'Full-time');
-    $salary_min = floatval($_POST['salary_min'] ?? 0);
-    $salary_max = floatval($_POST['salary_max'] ?? 0);
-    $positions = intval($_POST['positions'] ?? 1);
-    $experience_level = trim($_POST['experience_level'] ?? 'Entry');
-    $urgency = trim($_POST['urgency'] ?? 'medium');
-    $application_deadline = trim($_POST['application_deadline'] ?? '');
-    $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : null;
-    $request_notes = trim($_POST['request_notes'] ?? '');
-    
-    // Get selected items from checklists
-    $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
-    $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
-    $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
-    
-    // Get custom input values
-    $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
-    $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
-    $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
-    
-    // Merge selected + custom
-    $allSkills = array_merge($selectedSkills, array_filter($customSkills));
-    $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
-    $allExperience = array_merge($selectedExperience, array_filter($customExperience));
-    
-    // Convert to JSON for storage in skills_required
-    $skillsData = [
-        'skills' => array_values(array_unique($allSkills)),
-        'qualifications' => array_values(array_unique($allQualifications)),
-        'experience' => array_values(array_unique($allExperience))
-    ];
-    $skillsJson = json_encode($skillsData);
-    
-    // Build salary range string
-    $salaryRange = '';
-    if ($salary_min > 0 && $salary_max > 0) {
-        $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
-    } elseif ($salary_min > 0) {
-        $salaryRange = '₱' . number_format($salary_min) . ' and up';
-    } elseif ($salary_max > 0) {
-        $salaryRange = 'Up to ₱' . number_format($salary_max);
-    }
-    
-    // Validate required fields
-    $errors = [];
-    if (empty($title)) $errors[] = 'Job title is required.';
-    if (empty($description)) $errors[] = 'Job description is required.';
-    if (empty($location)) $errors[] = 'Location is required.';
-    if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
-    if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
-    if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
-    if (empty($agency_id)) $errors[] = 'Please select a recruitment agency.';
-    
-    if (empty($errors)) {
-        // Use simple query with escaped values - NO prepared statements to avoid the types issue
-        $status = 'pending_review';
+    // =============================================
+    // REQUEST JOB POST (Client -> HR)
+    // =============================================
+    if ($_POST['action'] === 'request_job') {
+        // Validate inputs
+        $title = trim($_POST['title'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $location = trim($_POST['location'] ?? '');
+        $job_type = trim($_POST['job_type'] ?? 'Full-time');
+        $salary_min = floatval($_POST['salary_min'] ?? 0);
+        $salary_max = floatval($_POST['salary_max'] ?? 0);
+        $positions = intval($_POST['positions'] ?? 1);
+        $experience_level = trim($_POST['experience_level'] ?? 'Entry');
+        $urgency = trim($_POST['urgency'] ?? 'medium');
+        $application_deadline = trim($_POST['application_deadline'] ?? '');
+        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : null;
+        $request_notes = trim($_POST['request_notes'] ?? '');
         
-        // Escape all string values
-        $title_esc = mysqli_real_escape_string($conn, $title);
-        $description_esc = mysqli_real_escape_string($conn, $description);
-        $skillsJson_esc = mysqli_real_escape_string($conn, $skillsJson);
-        $location_esc = mysqli_real_escape_string($conn, $location);
-        $job_type_esc = mysqli_real_escape_string($conn, $job_type);
-        $salaryRange_esc = mysqli_real_escape_string($conn, $salaryRange);
-        $experience_level_esc = mysqli_real_escape_string($conn, $experience_level);
-        $status_esc = mysqli_real_escape_string($conn, $status);
-        $urgency_esc = mysqli_real_escape_string($conn, $urgency);
-        $application_deadline_esc = mysqli_real_escape_string($conn, $application_deadline);
-        $request_notes_esc = mysqli_real_escape_string($conn, $request_notes);
+        // Get selected items from checklists
+        $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
+        $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
+        $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
         
-        // Build the INSERT query
-        $insertSql = "INSERT INTO job_orders SET 
-            client_id = " . intval($clientId) . ",
-            agency_id = " . intval($agency_id) . ",
-            title = '$title_esc',
-            description = '$description_esc',
-            skills_required = '$skillsJson_esc',
-            location = '$location_esc',
-            job_type = '$job_type_esc',
-            salary_min = " . floatval($salary_min) . ",
-            salary_max = " . floatval($salary_max) . ",
-            salary_range = '$salaryRange_esc',
-            experience_level = '$experience_level_esc',
-            positions_available = " . intval($positions) . ",
-            status = '$status_esc',
-            urgency = '$urgency_esc',
-            application_deadline = '$application_deadline_esc',
-            created_by = " . intval($userId) . ",
-            request_notes = '$request_notes_esc',
-            requested_by = " . intval($userId) . ",
-            created_at = NOW(),
-            updated_at = NOW()";
+        // Get custom input values
+        $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
+        $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
+        $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
         
-        // Execute the query
-        if (mysqli_query($conn, $insertSql)) {
-            $jobId = mysqli_insert_id($conn);
-            $message = 'Job request submitted successfully! HR will review and approve it.';
-            $messageType = 'success';
+        // Merge selected + custom
+        $allSkills = array_merge($selectedSkills, array_filter($customSkills));
+        $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
+        $allExperience = array_merge($selectedExperience, array_filter($customExperience));
+        
+        // Convert to JSON for storage in skills_required
+        $skillsData = [
+            'skills' => array_values(array_unique($allSkills)),
+            'qualifications' => array_values(array_unique($allQualifications)),
+            'experience' => array_values(array_unique($allExperience))
+        ];
+        $skillsJson = json_encode($skillsData);
+        
+        // Build salary range string
+        $salaryRange = '';
+        if ($salary_min > 0 && $salary_max > 0) {
+            $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
+        } elseif ($salary_min > 0) {
+            $salaryRange = '₱' . number_format($salary_min) . ' and up';
+        } elseif ($salary_max > 0) {
+            $salaryRange = 'Up to ₱' . number_format($salary_max);
+        }
+        
+        // Validate required fields
+        $errors = [];
+        if (empty($title)) $errors[] = 'Job title is required.';
+        if (empty($description)) $errors[] = 'Job description is required.';
+        if (empty($location)) $errors[] = 'Location is required.';
+        if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
+        if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
+        if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
+        if (empty($agency_id)) $errors[] = 'Please select a recruitment agency.';
+        
+        if (empty($errors)) {
+            $status = 'pending_review';
             
-            // Log activity
-            logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
-                       'Client requested job: ' . $title . ' (Pending HR Review)');
+            // PostgreSQL INSERT using helper function
+            $insertSql = "INSERT INTO job_orders (
+                client_id, agency_id, title, description, skills_required, location, 
+                job_type, salary_min, salary_max, salary_range, experience_level, 
+                positions_available, status, urgency, application_deadline, 
+                created_by, request_notes, requested_by, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
+            )";
             
-            // Redirect to jobs page after successful submission
-            header('Refresh: 2; URL=jobs.php');
+            $params = [
+                $clientId,
+                $agency_id,
+                $title,
+                $description,
+                $skillsJson,
+                $location,
+                $job_type,
+                $salary_min,
+                $salary_max,
+                $salaryRange,
+                $experience_level,
+                $positions,
+                $status,
+                $urgency,
+                $application_deadline,
+                $userId,
+                $request_notes,
+                $userId
+            ];
+            
+            $jobId = insertRecord($insertSql, $params);
+            
+            if ($jobId) {
+                $message = 'Job request submitted successfully! HR will review and approve it.';
+                $messageType = 'success';
+                
+                if (function_exists('logActivity')) {
+                    logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
+                               'Client requested job: ' . $title . ' (Pending HR Review)');
+                }
+                
+                header('Refresh: 2; URL=jobs.php');
+            } else {
+                $message = 'Error submitting job request. Please try again.';
+                $messageType = 'error';
+            }
         } else {
-            $message = 'Error submitting job request: ' . mysqli_error($conn);
+            $message = implode('<br>', $errors);
             $messageType = 'error';
         }
-    } else {
-        $message = implode('<br>', $errors);
-        $messageType = 'error';
     }
-}
     
     // =============================================
     // CANCEL JOB REQUEST
@@ -326,24 +321,21 @@ if ($_POST['action'] === 'request_job') {
         $jobId = intval($_POST['job_id'] ?? 0);
         
         if ($jobId > 0) {
-            // Only allow cancellation if status is pending_review
-            $checkSql = "SELECT id, status FROM job_orders WHERE id = ? AND client_id = ? AND status = 'pending_review'";
-            $check = getRecord($checkSql, [$jobId, $clientId], "ii");
+            $checkSql = "SELECT id, status FROM job_orders WHERE id = $1 AND client_id = $2 AND status = 'pending_review'";
+            $check = getRecord($checkSql, [$jobId, $clientId]);
             
             if ($check) {
                 $updateSql = "UPDATE job_orders SET status = 'cancelled', updated_at = NOW() 
-                              WHERE id = ? AND client_id = ?";
-                $stmt = mysqli_prepare($conn, $updateSql);
-                mysqli_stmt_bind_param($stmt, 'ii', $jobId, $clientId);
+                              WHERE id = $1 AND client_id = $2";
+                $updateResult = updateRecord($updateSql, [$jobId, $clientId]);
                 
-                if (mysqli_stmt_execute($stmt)) {
+                if ($updateResult) {
                     $message = 'Job request cancelled successfully.';
                     $messageType = 'success';
                 } else {
                     $message = 'Error cancelling job request.';
                     $messageType = 'error';
                 }
-                mysqli_stmt_close($stmt);
             } else {
                 $message = 'Job request not found or already processed.';
                 $messageType = 'error';
@@ -353,24 +345,17 @@ if ($_POST['action'] === 'request_job') {
 }
 
 // =============================================
-// GET ALL JOBS FOR THIS CLIENT
+// GET ALL JOBS FOR THIS CLIENT - PostgreSQL
 // =============================================
 $jobsSql = "SELECT j.*, 
             a.agency_name, a.agency_code,
             (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as applicant_count
             FROM job_orders j
             LEFT JOIN recruitment_agencies a ON j.agency_id = a.id
-            WHERE j.client_id = ?
+            WHERE j.client_id = $1
             ORDER BY j.created_at DESC";
-$stmt = mysqli_prepare($conn, $jobsSql);
-mysqli_stmt_bind_param($stmt, 'i', $clientId);
-mysqli_stmt_execute($stmt);
-$jobsResult = mysqli_stmt_get_result($stmt);
-$jobs = [];
-while ($row = mysqli_fetch_assoc($jobsResult)) {
-    $jobs[] = $row;
-}
-mysqli_stmt_close($stmt);
+
+$jobs = getRecords($jobsSql, [$clientId]);
 
 // Get status counts for filter
 $statusCounts = [
@@ -480,6 +465,9 @@ $statusBadges = [
     'pending_review' => 'badge-pending',
     'rejected' => 'badge-rejected'
 ];
+
+// Get user profile for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -490,35 +478,26 @@ $statusBadges = [
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ========================================================================== */
+        /* ===== ALL STYLES from your original ===== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
             --bg-surface-low: #f8f9fc;
-            --bg-surface-container-low: #f5f6fa;
-            --bg-surface-container-high: #eef0f5;
             --text-on-surface: #0a0e1a;
             --text-on-surface-variant: #4a5168;
-            --outline-variant: #d0d5dd;
             --primary: #4f46e5;
             --primary-container: #eef0ff;
-            --on-primary: #ffffff;
             --on-primary-fixed-variant: #4338ca;
-            --slate-50: #f8fafc;
             --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
             --slate-300: #cbd5e1;
             --slate-400: #94a3b8;
             --slate-500: #64748b;
-            --slate-600: #475569;
-            --slate-700: #334155;
-            --slate-800: #1e293b;
-            --slate-900: #0f172a;
-            --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
-            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
-            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08);
+            --shadow-xl: 0 20px 25px -5px rgba(0,0,0,0.1);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -711,28 +690,16 @@ $statusBadges = [
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .sidebar-footer .user-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .sidebar-footer .logout-btn {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 0.75rem;
-            margin-top: 0.5rem;
-            border-radius: 0.75rem;
-            color: #dc2626;
-            transition: all var(--transition-fast);
-            text-decoration: none;
-            font-weight: 500;
-            font-size: 0.8125rem;
-            border: none;
-            background: none;
-            cursor: pointer;
-            width: 100%;
-        }
-        .sidebar-footer .logout-btn:hover { background: #fef2f2; }
-        .sidebar-footer .logout-btn .material-symbols-outlined { font-size: 1.125rem; }
 
         .sidebar-backdrop {
             display: none;
@@ -830,6 +797,13 @@ $statusBadges = [
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .profile-dropdown-toggle .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
@@ -889,6 +863,7 @@ $statusBadges = [
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
+        /* ===== BREADCRUMB ===== */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -959,7 +934,6 @@ $statusBadges = [
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Toast */
         .toast {
             position: fixed;
             top: 1rem;
@@ -986,7 +960,223 @@ $statusBadges = [
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* Modal */
+        /* ===== JOB FILTERS ===== */
+        .job-filters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
+        }
+        .filter-btn {
+            padding: 0.375rem 1rem;
+            border-radius: var(--radius-full);
+            border: 1px solid var(--slate-200);
+            background: var(--bg-surface);
+            color: var(--text-on-surface-variant);
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
+        }
+        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
+        .filter-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .filter-btn .count {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.05rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6rem;
+            margin-left: 0.25rem;
+        }
+        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
+
+        /* ===== JOB CARDS ===== */
+        .job-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+            padding: 1.25rem;
+            margin-bottom: 0.75rem;
+            transition: all var(--transition-fast);
+            box-shadow: var(--shadow-xs);
+        }
+        .job-card:hover { box-shadow: var(--shadow-md); border-color: var(--slate-300); }
+        .job-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .job-card-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+        }
+        .job-card-title a { color: var(--primary); }
+        .job-card-title a:hover { text-decoration: underline; }
+        .job-card-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 0.375rem;
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+        .job-card-meta .material-symbols-outlined { font-size: 0.875rem; vertical-align: middle; }
+        .job-card-description {
+            margin-top: 0.625rem;
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .job-card-skills {
+            margin-top: 0.625rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        .job-card-skills .skill-tag {
+            padding: 0.0625rem 0.5rem;
+            background: var(--bg-surface-low);
+            border: 1px solid var(--slate-200);
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            color: var(--text-on-surface-variant);
+        }
+        .job-card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 0.875rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--slate-100);
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .job-card-stats {
+            display: flex;
+            gap: 1.25rem;
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+        .job-card-stats span { display: flex; align-items: center; gap: 0.25rem; }
+        .job-card-stats .material-symbols-outlined { font-size: 0.875rem; }
+        .job-card-actions { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+        .job-card-agency {
+            font-size: 0.6875rem;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.0625rem 0.5rem;
+            border-radius: var(--radius-full);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .job-card-agency .material-symbols-outlined { font-size: 0.875rem; color: var(--primary); }
+
+        .badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .badge-open { background: #dbeafe; color: #2563eb; }
+        .badge-ongoing { background: #e0e7ff; color: #4f46e5; }
+        .badge-closed { background: #f1f5f9; color: #64748b; }
+        .badge-on_hold { background: #fef3c7; color: #d97706; }
+        .badge-draft { background: #f1f5f9; color: #64748b; }
+        .badge-filled { background: #d1fae5; color: #059669; }
+        .badge-cancelled { background: #fecaca; color: #dc2626; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-on-surface-variant);
+        }
+        .empty-state .material-symbols-outlined {
+            font-size: 4rem;
+            color: var(--slate-300);
+            display: block;
+            margin-bottom: 0.75rem;
+        }
+        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state p { font-size: 0.8125rem; }
+
+        .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            background: var(--primary-container);
+        }
+        .avatar-small {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+            object-fit: cover;
+        }
+        .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
+        @media (min-width: 768px) {
+            .sidebar-backdrop { display: none !important; }
+            .mobile-menu-btn { display: none !important; }
+            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-sm); height: 100vh; }
+            .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
+            .main-wrapper { margin-left: var(--sidebar-width); }
+            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+        }
+        @media (max-width: 767px) {
+            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
+            .dashboard-sidebar.mobile-open { transform: translateX(0); }
+            .sidebar-toggle-btn { display: none !important; }
+            .mobile-menu-btn { display: flex; }
+            .main-wrapper { margin-left: 0 !important; }
+            .main-scroll { padding: 1rem; }
+            .top-header-left .separator { display: none; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
+        }
+        @media (max-width: 480px) {
+            .main-scroll { padding: 0.75rem; }
+            .breadcrumb-bar { padding: 0.625rem 0.875rem; }
+            .page-header h1 { font-size: 1.25rem; }
+            .job-card-header { flex-direction: column; }
+            .job-card-footer { flex-direction: column; align-items: stretch; }
+            .job-card-actions { justify-content: flex-start; }
+        }
+        .main-scroll::-webkit-scrollbar { width: 5px; }
+        .main-scroll::-webkit-scrollbar-track { background: transparent; }
+        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
+        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
+
+        /* ===== MODAL ===== */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -1297,227 +1487,173 @@ $statusBadges = [
             .agency-selection { grid-template-columns: 1fr; }
         }
 
-        .job-filters {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin-bottom: 1.25rem;
+        /* AI Optimistic Modal */
+        .ai-optimistic-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(12px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
         }
-        .filter-btn {
-            padding: 0.375rem 1rem;
-            border-radius: var(--radius-full);
-            border: 1px solid var(--slate-200);
+        .ai-optimistic-card {
             background: var(--bg-surface);
-            color: var(--text-on-surface-variant);
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            font-family: var(--font-sans);
+            border-radius: var(--radius-2xl);
+            max-width: 720px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 2rem 2rem 1.5rem;
+            box-shadow: var(--shadow-xl);
+            animation: slideUp 0.4s cubic-bezier(0.16,1,0.3,1);
         }
-        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
-        .filter-btn.active {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.97); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
         }
-        .filter-btn .count {
-            background: rgba(255, 255, 255, 0.2);
-            padding: 0.05rem 0.5rem;
-            border-radius: var(--radius-full);
-            font-size: 0.6rem;
-            margin-left: 0.25rem;
-        }
-        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
-
-        .job-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-xl);
-            border: 1px solid var(--slate-200);
-            padding: 1.25rem;
-            margin-bottom: 0.75rem;
-            transition: all var(--transition-fast);
-            box-shadow: var(--shadow-xs);
-        }
-        .job-card:hover { box-shadow: var(--shadow-md); border-color: var(--slate-300); }
-        .job-card-header {
+        .ai-header {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-        .job-card-title {
-            font-size: 1rem;
-            font-weight: 700;
-            color: var(--text-on-surface);
-        }
-        .job-card-title a { color: var(--primary); }
-        .job-card-title a:hover { text-decoration: underline; }
-        .job-card-meta {
-            display: flex;
-            flex-wrap: wrap;
+            align-items: center;
             gap: 0.75rem;
-            margin-top: 0.375rem;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--slate-200);
         }
-        .job-card-meta .material-symbols-outlined { font-size: 0.875rem; vertical-align: middle; }
-        .job-card-description {
-            margin-top: 0.625rem;
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        .job-card-skills {
-            margin-top: 0.625rem;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.25rem;
-        }
-        .job-card-skills .skill-tag {
-            padding: 0.0625rem 0.5rem;
-            background: var(--bg-surface-low);
-            border: 1px solid var(--slate-200);
-            border-radius: var(--radius-full);
-            font-size: 0.625rem;
-            color: var(--text-on-surface-variant);
-        }
-        .job-card-footer {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 0.875rem;
-            padding-top: 0.75rem;
-            border-top: 1px solid var(--slate-100);
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
-        .job-card-stats {
-            display: flex;
-            gap: 1.25rem;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-        .job-card-stats span { display: flex; align-items: center; gap: 0.25rem; }
-        .job-card-stats .material-symbols-outlined { font-size: 0.875rem; }
-        .job-card-actions { display: flex; gap: 0.375rem; flex-wrap: wrap; }
-        .job-card-agency {
-            font-size: 0.6875rem;
-            color: var(--text-on-surface-variant);
-            background: var(--bg-surface-low);
-            padding: 0.0625rem 0.5rem;
-            border-radius: var(--radius-full);
-            display: inline-flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-        .job-card-agency .material-symbols-outlined { font-size: 0.875rem; color: var(--primary); }
-
-        .badge {
-            display: inline-block;
-            padding: 0.125rem 0.625rem;
-            border-radius: var(--radius-full);
-            font-size: 0.625rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-        }
-        .badge-open { background: #dbeafe; color: #2563eb; }
-        .badge-ongoing { background: #e0e7ff; color: #4f46e5; }
-        .badge-closed { background: #f1f5f9; color: #64748b; }
-        .badge-on_hold { background: #fef3c7; color: #d97706; }
-        .badge-draft { background: #f1f5f9; color: #64748b; }
-        .badge-filled { background: #d1fae5; color: #059669; }
-        .badge-cancelled { background: #fecaca; color: #dc2626; }
-        .badge-pending { background: #fef3c7; color: #d97706; }
-        .badge-rejected { background: #fecaca; color: #dc2626; }
-
-        .empty-state {
-            text-align: center;
-            padding: 3rem 1.5rem;
-            color: var(--text-on-surface-variant);
-        }
-        .empty-state .material-symbols-outlined {
-            font-size: 4rem;
-            color: var(--slate-300);
-            display: block;
-            margin-bottom: 0.75rem;
-        }
-        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.8125rem; }
-
-        .avatar-img {
-            width: 2.25rem;
-            height: 2.25rem;
+        .ai-icon {
+            width: 2.75rem;
+            height: 2.75rem;
             border-radius: 50%;
-            object-fit: cover;
-            flex-shrink: 0;
-            background: var(--primary-container);
-        }
-        .avatar-small {
-            width: 2rem;
-            height: 2rem;
-            border-radius: 50%;
-            background: var(--primary);
-            color: white;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: 700;
-            font-size: 0.75rem;
+            color: white;
+            font-size: 1.25rem;
             flex-shrink: 0;
-            object-fit: cover;
         }
-        .avatar-small img {
-            width: 100%;
-            height: 100%;
-            border-radius: 50%;
-            object-fit: cover;
+        .ai-title { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); }
+        .ai-subtitle { font-size: 0.75rem; color: var(--text-on-surface-variant); }
+        .ai-provider {
+            margin-left: auto;
+            font-size: 0.6rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
         }
 
-        @media (min-width: 768px) {
-            .sidebar-backdrop { display: none !important; }
-            .mobile-menu-btn { display: none !important; }
-            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-sm); height: 100vh; }
-            .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
-            .main-wrapper { margin-left: var(--sidebar-width); }
-            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+        .ai-dots-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 2rem 0;
+            min-height: 120px;
         }
-        @media (max-width: 767px) {
-            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
-            .dashboard-sidebar.mobile-open { transform: translateX(0); }
-            .sidebar-toggle-btn { display: none !important; }
-            .mobile-menu-btn { display: flex; }
-            .main-wrapper { margin-left: 0 !important; }
-            .main-scroll { padding: 1rem; }
-            .top-header-left .separator { display: none; }
-            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
+        .ai-dots-loading .dot {
+            width: 0.75rem;
+            height: 0.75rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotBounce 1.4s infinite ease-in-out both;
         }
-        @media (max-width: 480px) {
-            .main-scroll { padding: 0.75rem; }
-            .breadcrumb-bar { padding: 0.625rem 0.875rem; }
-            .page-header h1 { font-size: 1.25rem; }
-            .job-card-header { flex-direction: column; }
-            .job-card-footer { flex-direction: column; align-items: stretch; }
-            .job-card-actions { justify-content: flex-start; }
-            .modal { max-height: 95vh; }
-            .modal-body { padding: 1rem; }
+        .ai-dots-loading .dot:nth-child(2) { animation-delay: 0.2s; }
+        .ai-dots-loading .dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes dotBounce {
+            0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
         }
-        .main-scroll::-webkit-scrollbar { width: 5px; }
-        .main-scroll::-webkit-scrollbar-track { background: transparent; }
-        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
-        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
+        .ai-dots-loading .loading-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-left: 0.75rem;
+            font-weight: 500;
+        }
+
+        .ai-error {
+            display: none;
+            text-align: center;
+            padding: 1.5rem;
+            color: #dc2626;
+            background: #fef2f2;
+            border-radius: var(--radius-md);
+            margin: 1rem 0;
+        }
+
+        .ai-generated-content { display: none; animation: fadeIn 0.5s ease; }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .ai-gen-section {
+            margin-bottom: 1.25rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-md);
+            border-left: 3px solid var(--primary);
+        }
+        .ai-gen-section .section-label {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            margin-bottom: 0.25rem;
+        }
+        .ai-gen-section .section-label .material-symbols-outlined { font-size: 0.875rem; }
+        .ai-gen-section .section-value {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .ai-gen-section .section-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        .ai-gen-section .section-tags .tag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: var(--primary);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 0.8rem;
+            font-weight: 500;
+            margin: 0.15rem;
+        }
+        .ai-gen-section .section-salary {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .ai-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
     </style>
 </head>
 <body>
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR - FIXED ===== -->
+    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -1574,9 +1710,6 @@ $statusBadges = [
             </a>
         </nav>
         <!-- ===== SIDEBAR FOOTER ===== -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1611,9 +1744,6 @@ $statusBadges = [
                     AI Powered
                 </span>
             </div>
-            <?php
-            $userProfile = getUserProfileData($userId);
-            ?>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1741,7 +1871,7 @@ $statusBadges = [
                                         <?php if ($isPending || $isRejected): ?>
                                             <?php echo htmlspecialchars($job['title']); ?>
                                         <?php else: ?>
-                                            <a href="job-details.php?id=<?php echo $job['id']; ?>">
+                                            <a href="job-details.php?id=<?php echo (int)$job['id']; ?>">
                                                 <?php echo htmlspecialchars($job['title']); ?>
                                             </a>
                                         <?php endif; ?>
@@ -1847,7 +1977,7 @@ $statusBadges = [
                                             Resubmit
                                         </button>
                                     <?php else: ?>
-                                        <a href="job-details.php?id=<?php echo $job['id']; ?>" class="btn btn-sm btn-outline">
+                                        <a href="job-details.php?id=<?php echo (int)$job['id']; ?>" class="btn btn-sm btn-outline">
                                             <span class="material-symbols-outlined">visibility</span>
                                             View
                                         </a>
@@ -1861,74 +1991,72 @@ $statusBadges = [
         </main>
     </div>
 
-    <!-- =============================================
-    AI OPTIMISTIC MODAL
-    ============================================= -->
-    <div class="ai-optimistic-modal" id="aiOptimisticModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(12px); z-index:9999; align-items:center; justify-content:center; padding:1.5rem;">
-        <div class="ai-optimistic-card" style="background:var(--bg-surface); border-radius:var(--radius-2xl); max-width:720px; width:100%; max-height:90vh; overflow-y:auto; padding:2rem 2rem 1.5rem; box-shadow:var(--shadow-xl); animation:slideUp 0.4s cubic-bezier(0.16,1,0.3,1);">
-            <div class="ai-header" style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1.5rem; padding-bottom:1rem; border-bottom:1px solid var(--slate-200);">
-                <div class="ai-icon" style="width:2.75rem; height:2.75rem; border-radius:50%; background:linear-gradient(135deg,#7c3aed,#4f46e5); display:flex; align-items:center; justify-content:center; color:white; font-size:1.25rem; flex-shrink:0;">
+    <!-- ===== AI OPTIMISTIC MODAL ===== -->
+    <div class="ai-optimistic-modal" id="aiOptimisticModal" style="display:none;">
+        <div class="ai-optimistic-card">
+            <div class="ai-header">
+                <div class="ai-icon">
                     <span class="material-symbols-outlined">auto_awesome</span>
                 </div>
                 <div>
-                    <div class="ai-title" style="font-size:1.125rem; font-weight:700; color:var(--text-on-surface);">AI is crafting your job posting</div>
-                    <div class="ai-subtitle" style="font-size:0.75rem; color:var(--text-on-surface-variant);">Generating optimized description, skills, qualifications, and salary</div>
+                    <div class="ai-title">AI is crafting your job posting</div>
+                    <div class="ai-subtitle">Generating optimized description, skills, qualifications, and salary</div>
                 </div>
-                <div class="ai-provider" id="aiProvider" style="margin-left:auto; font-size:0.6rem; font-weight:600; color:var(--text-on-surface-variant); background:var(--bg-surface-low); padding:0.125rem 0.625rem; border-radius:var(--radius-full);">Groq</div>
+                <div class="ai-provider" id="aiProvider">Groq</div>
             </div>
 
             <!-- Loading State -->
-            <div class="ai-dots-loading" id="aiDotsLoading" style="display:flex; align-items:center; justify-content:center; gap:0.5rem; padding:2rem 0; min-height:120px;">
-                <div class="dot" style="width:0.75rem; height:0.75rem; background:var(--primary); border-radius:50%; animation:dotBounce 1.4s infinite ease-in-out both;"></div>
-                <div class="dot" style="width:0.75rem; height:0.75rem; background:var(--primary); border-radius:50%; animation:dotBounce 1.4s infinite ease-in-out both; animation-delay:0.2s;"></div>
-                <div class="dot" style="width:0.75rem; height:0.75rem; background:var(--primary); border-radius:50%; animation:dotBounce 1.4s infinite ease-in-out both; animation-delay:0.4s;"></div>
-                <span class="loading-text" style="font-size:0.875rem; color:var(--text-on-surface-variant); margin-left:0.75rem; font-weight:500;">Analyzing job requirements</span>
+            <div class="ai-dots-loading" id="aiDotsLoading">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <span class="loading-text">Analyzing job requirements</span>
             </div>
 
             <!-- Error State -->
-            <div class="ai-error" id="aiError" style="display:none; text-align:center; padding:1.5rem; color:#dc2626; background:#fef2f2; border-radius:var(--radius-md); margin:1rem 0;">
+            <div class="ai-error" id="aiError">
                 <span class="material-symbols-outlined" style="font-size:2rem; display:block; margin-bottom:0.5rem;">error</span>
                 <span id="aiErrorMessage">Something went wrong. Please try again.</span>
             </div>
 
             <!-- Generated Content -->
-            <div class="ai-generated-content" id="aiGeneratedContent" style="display:none; animation:fadeIn 0.5s ease;">
-                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
-                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem;">description</span> Job Description
+            <div class="ai-generated-content" id="aiGeneratedContent">
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">description</span> Job Description
                     </div>
-                    <div class="section-value" id="aiGenDescription" style="font-size:0.875rem; color:var(--text-on-surface); line-height:1.6; white-space:pre-wrap;"></div>
+                    <div class="section-value" id="aiGenDescription"></div>
                 </div>
 
-                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
-                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem;">psychology</span> Suggested Skills
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">psychology</span> Suggested Skills
                     </div>
-                    <div class="section-tags" id="aiGenSkills" style="display:flex; flex-wrap:wrap; gap:0.25rem;"></div>
+                    <div class="section-tags" id="aiGenSkills"></div>
                 </div>
 
-                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
-                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem;">school</span> Suggested Qualifications
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">school</span> Suggested Qualifications
                     </div>
-                    <div class="section-tags" id="aiGenQualifications" style="display:flex; flex-wrap:wrap; gap:0.25rem;"></div>
+                    <div class="section-tags" id="aiGenQualifications"></div>
                 </div>
 
-                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid var(--primary);">
-                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--primary); display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem;">work_history</span> Suggested Experience
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">work_history</span> Suggested Experience
                     </div>
-                    <div class="section-tags" id="aiGenExperience" style="display:flex; flex-wrap:wrap; gap:0.25rem;"></div>
+                    <div class="section-tags" id="aiGenExperience"></div>
                 </div>
 
-                <div class="ai-gen-section" style="margin-bottom:1.25rem; padding:0.75rem 1rem; background:var(--bg-surface-low); border-radius:var(--radius-md); border-left:3px solid #059669;">
-                    <div class="section-label" style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#059669; display:flex; align-items:center; gap:0.375rem; margin-bottom:0.25rem;">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem;">payments</span> Recommended Salary
+                <div class="ai-gen-section" style="border-left-color:#059669;">
+                    <div class="section-label" style="color:#059669;">
+                        <span class="material-symbols-outlined">payments</span> Recommended Salary
                     </div>
-                    <div class="section-salary" id="aiGenSalary" style="font-size:1rem; font-weight:700; color:var(--primary);">₱50,000 - ₱80,000</div>
+                    <div class="section-salary" id="aiGenSalary">₱50,000 - ₱80,000</div>
                 </div>
 
-                <div class="ai-actions" style="display:flex; gap:0.75rem; margin-top:1.5rem; padding-top:1rem; border-top:1px solid var(--slate-200); flex-wrap:wrap;">
+                <div class="ai-actions">
                     <button class="btn btn-primary" onclick="applyAIGeneratedData()">
                         <span class="material-symbols-outlined">check</span> Apply All
                     </button>
@@ -1966,17 +2094,12 @@ $statusBadges = [
                                     No active recruitment agencies found. Please apply for an agency first.
                                 </div>
                             <?php else: ?>
-                                <?php 
-                                $firstAgency = true;
-                                foreach ($agencies as $agency): 
-                                ?>
+                                <?php $firstAgency = true; foreach ($agencies as $agency): ?>
                                     <label class="agency-option" data-agency-id="<?php echo $agency['id']; ?>">
-                                        <input type="radio" name="agency_id" value="<?php echo $agency['id']; ?>" 
-                                               <?php echo $firstAgency ? 'checked' : ''; ?>>
+                                        <input type="radio" name="agency_id" value="<?php echo $agency['id']; ?>" <?php echo $firstAgency ? 'checked' : ''; ?>>
                                         <div class="agency-logo">
                                             <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
-                                                <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" 
-                                                     alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
+                                                <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
                                             <?php else: ?>
                                                 <?php echo substr($agency['agency_name'], 0, 1); ?>
                                             <?php endif; ?>
@@ -1986,17 +2109,14 @@ $statusBadges = [
                                             <span class="agency-code"><?php echo htmlspecialchars($agency['agency_code']); ?></span>
                                         </div>
                                     </label>
-                                <?php 
-                                    $firstAgency = false;
-                                endforeach; 
-                                ?>
+                                <?php $firstAgency = false; endforeach; ?>
                             <?php endif; ?>
                         </div>
                     </div>
 
                     <!-- Job Title with AI Button -->
                     <div class="form-group">
-                        <label>Job Title <span class="required">*</span></label>
+                        <label for="jobTitle">Job Title <span class="required">*</span></label>
                         <div style="display:flex; gap:0.5rem;">
                             <input type="text" id="jobTitle" name="title" class="form-control" 
                                    placeholder="e.g., Senior Software Engineer" required style="flex:1;">
@@ -2013,12 +2133,12 @@ $statusBadges = [
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Location <span class="required">*</span></label>
-                            <input type="text" name="location" class="form-control" placeholder="e.g., Makati City, Remote" required>
+                            <label for="jobLocation">Location <span class="required">*</span></label>
+                            <input type="text" id="jobLocation" name="location" class="form-control" placeholder="e.g., Makati City, Remote" required>
                         </div>
                         <div class="form-group">
-                            <label>Job Type <span class="required">*</span></label>
-                            <select name="job_type" class="form-control" required>
+                            <label for="jobTypeSelect">Job Type <span class="required">*</span></label>
+                            <select id="jobTypeSelect" name="job_type" class="form-control" required>
                                 <?php foreach ($jobTypes as $type): ?>
                                     <option value="<?php echo $type; ?>"><?php echo $type; ?></option>
                                 <?php endforeach; ?>
@@ -2028,16 +2148,16 @@ $statusBadges = [
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Experience Level <span class="required">*</span></label>
-                            <select name="experience_level" id="experienceLevel" class="form-control" required>
+                            <label for="experienceLevel">Experience Level <span class="required">*</span></label>
+                            <select id="experienceLevel" name="experience_level" class="form-control" required>
                                 <?php foreach ($experienceLevels as $level): ?>
                                     <option value="<?php echo $level; ?>"><?php echo $level; ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Urgency</label>
-                            <select name="urgency" class="form-control">
+                            <label for="urgency">Urgency</label>
+                            <select id="urgency" name="urgency" class="form-control">
                                 <?php foreach ($urgencyLevels as $level): ?>
                                     <option value="<?php echo $level; ?>"><?php echo ucfirst($level); ?></option>
                                 <?php endforeach; ?>
@@ -2047,29 +2167,29 @@ $statusBadges = [
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Salary Range (Min)</label>
-                            <input type="number" name="salary_min" id="salaryMin" class="form-control" placeholder="e.g., 30000" min="0">
+                            <label for="salaryMin">Salary Range (Min)</label>
+                            <input type="number" id="salaryMin" name="salary_min" class="form-control" placeholder="e.g., 30000" min="0">
                         </div>
                         <div class="form-group">
-                            <label>Salary Range (Max)</label>
-                            <input type="number" name="salary_max" id="salaryMax" class="form-control" placeholder="e.g., 50000" min="0">
+                            <label for="salaryMax">Salary Range (Max)</label>
+                            <input type="number" id="salaryMax" name="salary_max" class="form-control" placeholder="e.g., 50000" min="0">
                         </div>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Number of Positions</label>
-                            <input type="number" name="positions" class="form-control" value="1" min="1">
+                            <label for="positions">Number of Positions</label>
+                            <input type="number" id="positions" name="positions" class="form-control" value="1" min="1">
                         </div>
                         <div class="form-group">
-                            <label>Application Deadline</label>
-                            <input type="date" name="application_deadline" class="form-control">
+                            <label for="applicationDeadline">Application Deadline</label>
+                            <input type="date" id="applicationDeadline" name="application_deadline" class="form-control">
                         </div>
                     </div>
 
                     <div class="form-group">
-                        <label>Job Description <span class="required">*</span></label>
-                        <textarea name="description" id="jobDescription" class="form-control" 
+                        <label for="jobDescription">Job Description <span class="required">*</span></label>
+                        <textarea id="jobDescription" name="description" class="form-control" 
                                   placeholder="Describe the role, responsibilities, and what makes this opportunity great..." 
                                   rows="4" required></textarea>
                     </div>
@@ -2163,8 +2283,8 @@ $statusBadges = [
 
                     <!-- Request Notes -->
                     <div class="form-group">
-                        <label>Request Notes</label>
-                        <textarea name="request_notes" class="form-control" 
+                        <label for="requestNotes">Request Notes</label>
+                        <textarea id="requestNotes" name="request_notes" class="form-control" 
                                   placeholder="Add any notes or instructions for HR regarding this job request..." rows="2"></textarea>
                         <div class="helper-text">
                             <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
@@ -2188,9 +2308,7 @@ $statusBadges = [
         </div>
     </div>
 
-    <!-- =============================================
-    JAVASCRIPT - ENHANCED AI
-    ============================================= -->
+    <!-- ============================================= JAVASCRIPT ============================================= -->
     <script>
     // =============================================
     // 1. SIDEBAR TOGGLE
@@ -2299,8 +2417,6 @@ $statusBadges = [
     }
 
     function openModalWithData(jobId) {
-        // Fetch job data and populate form for resubmission
-        // For now, just open the modal
         openModal();
     }
 
@@ -2419,7 +2535,6 @@ $statusBadges = [
                     data.skills.forEach(skill => {
                         const tag = document.createElement('span');
                         tag.className = 'tag';
-                        tag.style.cssText = 'display:inline-block; padding:0.25rem 0.75rem; background:var(--primary); color:white; border-radius:var(--radius-full); font-size:0.8rem; font-weight:500; margin:0.15rem;';
                         tag.textContent = skill;
                         skillsContainer.appendChild(tag);
                     });
@@ -2433,7 +2548,6 @@ $statusBadges = [
                     data.qualifications.forEach(qual => {
                         const tag = document.createElement('span');
                         tag.className = 'tag';
-                        tag.style.cssText = 'display:inline-block; padding:0.25rem 0.75rem; background:var(--primary); color:white; border-radius:var(--radius-full); font-size:0.8rem; font-weight:500; margin:0.15rem;';
                         tag.textContent = qual;
                         qualContainer.appendChild(tag);
                     });
@@ -2447,7 +2561,6 @@ $statusBadges = [
                     data.experience.forEach(exp => {
                         const tag = document.createElement('span');
                         tag.className = 'tag';
-                        tag.style.cssText = 'display:inline-block; padding:0.25rem 0.75rem; background:var(--primary); color:white; border-radius:var(--radius-full); font-size:0.8rem; font-weight:500; margin:0.15rem;';
                         tag.textContent = exp;
                         expContainer.appendChild(tag);
                     });
@@ -2786,85 +2899,39 @@ $statusBadges = [
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-        const skillsCheckboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
-        skillsCheckboxes.forEach(cb => {
-            cb.addEventListener('change', function() {
-                updateDisplay('skills', 'skillsDisplay', 'skillsCount');
-            });
-            const label = cb.closest('.checklist-item');
-            if (label) {
-                label.addEventListener('click', function(e) {
-                    if (e.target.tagName !== 'INPUT') {
-                        const c = this.querySelector('input[type="checkbox"]');
-                        if (c) {
-                            c.checked = !c.checked;
-                            updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+        ['skills', 'qualifications', 'experience'].forEach(type => {
+            const checkboxes = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]`);
+            checkboxes.forEach(cb => {
+                cb.addEventListener('change', function() {
+                    updateDisplay(type, `${type}Display`, `${type}Count`);
+                });
+                const label = cb.closest('.checklist-item');
+                if (label) {
+                    label.addEventListener('click', function(e) {
+                        if (e.target.tagName !== 'INPUT') {
+                            const c = this.querySelector('input[type="checkbox"]');
+                            if (c) {
+                                c.checked = !c.checked;
+                                updateDisplay(type, `${type}Display`, `${type}Count`);
+                            }
                         }
+                    });
+                }
+            });
+            
+            const inputId = `custom${type.charAt(0).toUpperCase() + type.slice(1)}Input`;
+            const input = document.getElementById(inputId);
+            if (input) {
+                input.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addCustomItem(type, inputId);
                     }
                 });
             }
+            
+            updateDisplay(type, `${type}Display`, `${type}Count`);
         });
-        
-        const qualCheckboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
-        qualCheckboxes.forEach(cb => {
-            cb.addEventListener('change', function() {
-                updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
-            });
-            const label = cb.closest('.checklist-item');
-            if (label) {
-                label.addEventListener('click', function(e) {
-                    if (e.target.tagName !== 'INPUT') {
-                        const c = this.querySelector('input[type="checkbox"]');
-                        if (c) {
-                            c.checked = !c.checked;
-                            updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
-                        }
-                    }
-                });
-            }
-        });
-        
-        const expCheckboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
-        expCheckboxes.forEach(cb => {
-            cb.addEventListener('change', function() {
-                updateDisplay('experience', 'experienceDisplay', 'experienceCount');
-            });
-            const label = cb.closest('.checklist-item');
-            if (label) {
-                label.addEventListener('click', function(e) {
-                    if (e.target.tagName !== 'INPUT') {
-                        const c = this.querySelector('input[type="checkbox"]');
-                        if (c) {
-                            c.checked = !c.checked;
-                            updateDisplay('experience', 'experienceDisplay', 'experienceCount');
-                        }
-                    }
-                });
-            }
-        });
-
-        document.getElementById('customSkillInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                addCustomItem('skills', 'customSkillInput');
-            }
-        });
-        document.getElementById('customQualificationInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                addCustomItem('qualifications', 'customQualificationInput');
-            }
-        });
-        document.getElementById('customExperienceInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                addCustomItem('experience', 'customExperienceInput');
-            }
-        });
-
-        updateDisplay('skills', 'skillsDisplay', 'skillsCount');
-        updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
-        updateDisplay('experience', 'experienceDisplay', 'experienceCount');
     });
 
     // =============================================
@@ -2965,11 +3032,10 @@ $statusBadges = [
             }
         })
         .then(response => response.text())
-        .then(data => {
-            // Reload the page to reflect changes
+        .then(() => {
             window.location.reload();
         })
-        .catch(error => {
+        .catch(() => {
             showToast('Error cancelling job request.', 'error');
         });
     }
@@ -2995,6 +3061,269 @@ $statusBadges = [
             setTimeout(() => toast.remove(), 400);
         }, 3500);
     }
+
+
+
+    // =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
 
     // =============================================
     // 11. RESPONSIVE HANDLING
@@ -3023,6 +3352,7 @@ $statusBadges = [
     console.log('📋 ISMERS Client Job Management with HR Approval Flow loaded successfully!');
     console.log('🤖 AI Features: Optimistic Modal, Dots Loading, Full Job Data Generation');
     console.log('📤 Job requests are sent to HR for review (status: pending_review)');
-</script>
+    </script>
+   <script src="/CT1/session_guard.js"></script>
 </body>
 </html>

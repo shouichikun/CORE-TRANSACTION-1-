@@ -3,6 +3,7 @@
 session_start();
 
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
@@ -28,27 +29,12 @@ $role = $_SESSION['role'] ?? 'hr_manager';
 // =============================================
 $aiService = new AiService();
 
-// Database helper function
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn;
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
-        }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
-        }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
-    }
-}
+// =============================================
+// DATABASE HELPER FUNCTIONS (PostgreSQL)
+// =============================================
 
 // Get user's clients with industry info
-$clients = getRecords("SELECT id, company_name, industry FROM clients WHERE user_id = ? OR is_active = 1", [$userId], "i");
+$clients = getRecords("SELECT id, company_name, industry FROM clients WHERE user_id = $1 OR is_active = 1", [$userId]);
 $hasClients = !empty($clients);
 
 // Initialize variables
@@ -322,7 +308,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'ai_suggestions') {
     // Get client industry
     $clientIndustry = 'Technology';
     if ($client_id > 0) {
-        $client = getRecord("SELECT industry FROM clients WHERE id = ?", [$client_id], "i");
+        $client = getRecord("SELECT industry FROM clients WHERE id = $1", [$client_id]);
         if ($client && !empty($client['industry'])) {
             $clientIndustry = $client['industry'];
         }
@@ -465,11 +451,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($formData['skills_required'])) $errors[] = 'Skills required is required.';
     
     if (empty($errors)) {
+        // PostgreSQL: Use $1, $2, etc. placeholders
         $sql = "INSERT INTO job_orders (
             client_id, title, description, skills_required, salary_range, 
             location, job_type, experience_level, status, urgency, 
             positions_available, application_deadline, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())";
         
         $jobId = insertRecord($sql, [
             $formData['client_id'],
@@ -485,7 +472,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $formData['positions_available'],
             $formData['application_deadline'],
             $userId
-        ], "issssssssssis");
+        ]);
         
         if ($jobId) {
             logActivity($userId, 'Job Posted', 'job_orders', $jobId, 'Posted job: ' . $formData['title']);
@@ -1957,6 +1944,41 @@ foreach ($clients as $client) {
         .main-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--slate-500);
         }
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
@@ -1964,10 +1986,9 @@ foreach ($clients as $client) {
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">add_circle</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1989,14 +2010,11 @@ foreach ($clients as $client) {
             <span class="nav-text">Applicants</span>
             <span class="nav-badge"><?php 
                 // Get pending applications count
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [])['count'] ?? 0;
                 echo $pendingApps; 
             ?></span>
         </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
-        </a>
+
         <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">calendar_month</span>
             <span class="nav-text">Interviews</span>
@@ -2011,13 +2029,13 @@ foreach ($clients as $client) {
             <span class="nav-badge"><?php 
                 // Get total archive count
                 $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
+                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", []);
                 $totalArchived += $archivedResult['count'] ?? 0;
                 echo $totalArchived;
             ?></span>
@@ -2046,23 +2064,25 @@ foreach ($clients as $client) {
 MAIN CONTENT
 ============================================= -->
 <div class="main-wrapper" id="mainWrapper">
-    <!-- Top Header -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                <span class="material-symbols-outlined">menu</span>
-            </button>
-            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                <?php 
-                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                    echo ucwords(str_replace('_', ' ', $pageTitle));
-                ?>
-            </span>
-        </div>
+   <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
         <div class="profile-dropdown-wrapper">
             <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                 <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -2864,7 +2884,266 @@ window.addEventListener('resize', function() {
         }
     }, 250);
 });
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
 
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
 // =============================================
 // 10. KEYBOARD ACCESSIBILITY
 // =============================================
@@ -2882,7 +3161,7 @@ document.addEventListener('keydown', function(e) {
 
 console.log('📝 ISMERS Post Job with INDUSTRY-BASED AI Integration loaded successfully!');
 console.log('💪 Skills and descriptions are now tailored to your client\'s industry!');
-</script>
 
-</body>
+</script>
+<script src="/CT1/session_guard.js"></script></body>
 </html>

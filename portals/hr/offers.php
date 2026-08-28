@@ -1,8 +1,18 @@
 <?php
 // portals/hr/offers.php - AI-Powered Offer Management
+// FIXED: PostgreSQL compatibility + proper error handling
+
 session_start();
 
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once 'includes/functions.php';
 require_once '../../app/ai/AiService.php';
 
@@ -12,7 +22,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     exit;
 }
 
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter', 'admin'])) {
     header('Location: ../../login.php');
     exit;
 }
@@ -27,13 +37,6 @@ $role = $_SESSION['role'] ?? 'hr_manager';
 // AI SERVICE INITIALIZATION
 // =============================================
 $aiService = new AiService();
-
-// DEBUG: Check which provider is being used
-error_log("=== AI SERVICE DEBUG ===");
-error_log("Provider: " . $aiService->getProvider());
-error_log("Using Groq: " . ($aiService->isUsingGroq() ? 'YES' : 'NO'));
-error_log("Using Mock: " . ($aiService->isUsingMock() ? 'YES' : 'NO'));
-error_log("=========================");
 
 // =============================================
 // AI HELPER FUNCTIONS
@@ -55,32 +58,16 @@ function getAISalaryRecommendation($jobTitle, $applicantSkills, $experience) {
         
         $result = $aiService->optimizeJobDescription($jobData);
         
-        // Debug: Log what we got from AI
-        error_log("=== AI Salary Debug ===");
-        error_log("Job Title: " . $jobTitle);
-        error_log("AI Result: " . json_encode($result));
-        
         if ($result && !isset($result['error'])) {
-            // Check provider
             $provider = $result['provider'] ?? 'fallback';
-            error_log("Provider from AI: " . $provider);
-            
-            // Get salary range from AI response
             $salaryRange = $result['salary_range'] ?? '';
             $salaryMin = $result['salary_min'] ?? 0;
             $salaryMax = $result['salary_max'] ?? 0;
             
-            error_log("Salary Range: " . $salaryRange);
-            error_log("Salary Min: " . $salaryMin);
-            error_log("Salary Max: " . $salaryMax);
-            
-            // If we have min and max from AI, use them
             if ($salaryMin > 0 && $salaryMax > 0 && $salaryMax > $salaryMin) {
-                // Calculate recommended offer based on experience
                 $experienceFactor = 0.8 + ($experience / 10);
                 $recommended = round(($salaryMin + $salaryMax) / 2 * $experienceFactor);
                 
-                // Ensure recommended is within range
                 if ($recommended < $salaryMin) $recommended = $salaryMin;
                 if ($recommended > $salaryMax) $recommended = $salaryMax;
                 
@@ -96,13 +83,11 @@ function getAISalaryRecommendation($jobTitle, $applicantSkills, $experience) {
                 ];
             }
             
-            // Try to parse from range string
             if (!empty($salaryRange)) {
-                // Try different patterns
                 $patterns = [
-                    '/₱([0-9,]+)\s*-\s*₱([0-9,]+)/',  // ₱50,000 - ₱80,000
-                    '/PHP\s*([0-9,]+)\s*-\s*PHP\s*([0-9,]+)/i', // PHP 25,000 - 40,000
-                    '/([0-9,]+)\s*-\s*([0-9,]+)/', // 50,000 - 80,000
+                    '/₱([0-9,]+)\s*-\s*₱([0-9,]+)/',
+                    '/PHP\s*([0-9,]+)\s*-\s*PHP\s*([0-9,]+)/i',
+                    '/([0-9,]+)\s*-\s*([0-9,]+)/',
                 ];
                 
                 foreach ($patterns as $pattern) {
@@ -131,11 +116,9 @@ function getAISalaryRecommendation($jobTitle, $applicantSkills, $experience) {
             }
         }
     } catch (Exception $e) {
-        error_log("AI Salary Error: " . $e->getMessage());
+        @error_log("AI Salary Error: " . $e->getMessage());
     }
     
-    // Fallback to manual calculation
-    error_log("Using fallback salary calculation for: " . $jobTitle);
     return getFallbackSalaryRecommendation($jobTitle, $experience);
 }
 
@@ -143,34 +126,16 @@ function getAISalaryRecommendation($jobTitle, $applicantSkills, $experience) {
  * Get fallback salary recommendation
  */
 function getFallbackSalaryRecommendation($jobTitle, $experience) {
-    // Base salary by job title keywords - updated with more realistic ranges
     $baseSalaries = [
-        'fitness' => 25000,
-        'coach' => 25000,
-        'trainer' => 25000,
-        'developer' => 55000,
-        'engineer' => 60000,
-        'designer' => 45000,
-        'manager' => 75000,
-        'analyst' => 50000,
-        'senior' => 85000,
-        'lead' => 95000,
-        'architect' => 110000,
-        'junior' => 35000,
-        'intern' => 20000,
-        'assistant' => 30000,
-        'supervisor' => 65000,
-        'director' => 130000,
-        'vp' => 180000,
-        'president' => 250000,
-        'ceo' => 300000,
-        'cto' => 280000,
-        'cfo' => 270000,
-        'cmo' => 260000,
-        'coo' => 290000
+        'fitness' => 25000, 'coach' => 25000, 'trainer' => 25000,
+        'developer' => 55000, 'engineer' => 60000, 'designer' => 45000,
+        'manager' => 75000, 'analyst' => 50000, 'senior' => 85000,
+        'lead' => 95000, 'architect' => 110000, 'junior' => 35000,
+        'intern' => 20000, 'assistant' => 30000, 'supervisor' => 65000,
+        'director' => 130000
     ];
     
-    $base = 45000; // Default
+    $base = 45000;
     $titleLower = strtolower($jobTitle);
     foreach ($baseSalaries as $keyword => $amount) {
         if (strpos($titleLower, $keyword) !== false) {
@@ -179,11 +144,8 @@ function getFallbackSalaryRecommendation($jobTitle, $experience) {
         }
     }
     
-    // Adjust by experience
     $experienceFactor = 0.8 + ($experience / 10);
     $adjusted = $base * $experienceFactor;
-    
-    // Round to nearest 5000
     $recommended = round($adjusted / 5000) * 5000;
     $min = max(15000, $recommended - 10000);
     $max = $recommended + 15000;
@@ -223,17 +185,16 @@ function getOfferOptimizationTips($jobTitle, $applicantName) {
         $result = $aiService->optimizeJobDescription($jobData);
         
         if ($result && !isset($result['error'])) {
-            $aiTips = [
+            return [
                 "✨ Personalize the offer for {$applicantName} with specific achievements mentioned in their interview",
                 "💰 Consider offering the upper end of the salary range for top talent",
                 "📝 Highlight the benefits package and career growth opportunities",
                 "🎯 Emphasize the impact they'll make in the role",
                 "📅 Include a clear timeline for decision and onboarding"
             ];
-            return $aiTips;
         }
     } catch (Exception $e) {
-        error_log("AI Tips Error: " . $e->getMessage());
+        @error_log("AI Tips Error: " . $e->getMessage());
     }
     
     return $tips;
@@ -243,112 +204,63 @@ function getOfferOptimizationTips($jobTitle, $applicantName) {
  * Get AI-powered offer acceptance prediction
  */
 function predictOfferAcceptance($offerData, $applicantData) {
-    global $aiService;
-    
     $jobTitle = $offerData['job_title'] ?? 'position';
     $salary = $offerData['salary_offered'] ?? 0;
     $applicantSkills = $applicantData['skills'] ?? '';
     $experience = $applicantData['experience'] ?? 0;
     
-    // Calculate factors
-    $salaryScore = 0;
-    $skillScore = 0;
-    $experienceScore = 0;
-    
-    // Get salary recommendation
     $recommendation = getAISalaryRecommendation($jobTitle, $applicantSkills, $experience);
     $recommendedSalary = $recommendation['recommended'] ?? 0;
     
+    $salaryScore = 50;
     if ($salary > 0 && $recommendedSalary > 0) {
         $ratio = $salary / $recommendedSalary;
-        if ($ratio >= 1.1) {
-            $salaryScore = 90;
-        } elseif ($ratio >= 0.95) {
-            $salaryScore = 75;
-        } elseif ($ratio >= 0.8) {
-            $salaryScore = 50;
-        } else {
-            $salaryScore = 25;
-        }
-    } else {
-        $salaryScore = 50;
+        if ($ratio >= 1.1) $salaryScore = 90;
+        elseif ($ratio >= 0.95) $salaryScore = 75;
+        elseif ($ratio >= 0.8) $salaryScore = 50;
+        else $salaryScore = 25;
     }
     
-    // Skill match (assume good if skills exist)
-    if (!empty($applicantSkills)) {
-        $skillScore = 70 + min(25, count(explode(',', $applicantSkills)) * 5);
-    } else {
-        $skillScore = 50;
-    }
+    $skillScore = !empty($applicantSkills) ? 70 + min(25, count(explode(',', $applicantSkills)) * 5) : 50;
+    $experienceScore = $experience >= 3 ? 80 : ($experience >= 1 ? 60 : 40);
     
-    // Experience match
-    if ($experience >= 3) {
-        $experienceScore = 80;
-    } elseif ($experience >= 1) {
-        $experienceScore = 60;
-    } else {
-        $experienceScore = 40;
-    }
-    
-    // Weighted score
-    $score = ($salaryScore * 0.5) + ($skillScore * 0.3) + ($experienceScore * 0.2);
-    $score = round($score);
+    $score = round(($salaryScore * 0.5) + ($skillScore * 0.3) + ($experienceScore * 0.2));
     
     if ($score >= 80) {
-        $level = 'High';
-        $emoji = '🔥';
-        $message = 'Strong likelihood of acceptance. The offer is competitive!';
+        return ['score' => $score, 'level' => 'High', 'emoji' => '🔥', 'message' => 'Strong likelihood of acceptance. The offer is competitive!'];
     } elseif ($score >= 60) {
-        $level = 'Medium';
-        $emoji = '📊';
-        $message = 'Moderate likelihood. Consider adjusting the offer to improve chances.';
+        return ['score' => $score, 'level' => 'Medium', 'emoji' => '📊', 'message' => 'Moderate likelihood. Consider adjusting the offer to improve chances.'];
     } else {
-        $level = 'Low';
-        $emoji = '⚠️';
-        $message = 'Low likelihood. The offer may need significant improvement.';
+        return ['score' => $score, 'level' => 'Low', 'emoji' => '⚠️', 'message' => 'Low likelihood. The offer may need significant improvement.'];
     }
-    
-    return [
-        'score' => $score,
-        'level' => $level,
-        'emoji' => $emoji,
-        'message' => $message,
-        'factors' => [
-            'salary_score' => $salaryScore,
-            'skill_score' => $skillScore,
-            'experience_score' => $experienceScore
-        ]
-    ];
 }
 
 // =============================================
-// GET OFFERS
+// GET OFFERS - PostgreSQL syntax
 // =============================================
 $statusFilter = $_GET['status'] ?? 'all';
 $searchQuery = $_GET['search'] ?? '';
 
 $conditions = [];
 $params = [];
-$types = "";
+$counter = 1;
 
-$conditions[] = "jo.created_by = ?";
+$conditions[] = "jo.created_by = $" . $counter++;
 $params[] = $userId;
-$types .= "i";
 
 if ($statusFilter !== 'all') {
-    $conditions[] = "o.status = ?";
+    $conditions[] = "o.status = $" . $counter++;
     $params[] = $statusFilter;
-    $types .= "s";
 }
 
 if (!empty($searchQuery)) {
-    $conditions[] = "(u.first_name LIKE ? OR u.last_name LIKE ? OR u.email LIKE ? OR jo.title LIKE ?)";
+    $conditions[] = "(u.first_name ILIKE $" . $counter . " OR u.last_name ILIKE $" . ($counter+1) . " OR u.email ILIKE $" . ($counter+2) . " OR jo.title ILIKE $" . ($counter+3) . ")";
     $searchParam = "%$searchQuery%";
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
-    $types .= "ssss";
+    $counter += 4;
 }
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
@@ -369,18 +281,20 @@ $sql = "SELECT o.*,
         $whereClause
         ORDER BY o.created_at DESC";
 
-$offers = getRecords($sql, $params, $types);
+$offers = @getRecords($sql, $params);
+if (!is_array($offers)) $offers = [];
 
-// Get status counts
+// Get status counts - PostgreSQL syntax
 $statusCounts = ['all' => count($offers)];
 $statuses = ['draft', 'sent', 'accepted', 'rejected', 'expired'];
 foreach ($statuses as $status) {
-    $countSql = "SELECT COUNT(*) as count FROM offers o 
-                 JOIN applications a ON o.application_id = a.id
-                 JOIN job_orders jo ON a.job_order_id = jo.id 
-                 WHERE jo.created_by = ? AND o.status = ?";
-    $result = getRecord($countSql, [$userId, $status], "is");
-    $statusCounts[$status] = $result['count'] ?? 0;
+    $countResult = @getRecord("
+        SELECT COUNT(*) as count FROM offers o 
+        JOIN applications a ON o.application_id = a.id
+        JOIN job_orders jo ON a.job_order_id = jo.id 
+        WHERE jo.created_by = $1 AND o.status = $2
+    ", [$userId, $status]);
+    $statusCounts[$status] = isset($countResult['count']) ? (int)$countResult['count'] : 0;
 }
 
 // Status badge mapping
@@ -403,9 +317,9 @@ $statusLabels = [
 $allStatuses = ['all' => 'All'] + $statusLabels;
 
 // =============================================
-// GET ELIGIBLE APPLICANTS WITH AI DATA
+// GET ELIGIBLE APPLICANTS - PostgreSQL syntax
 // =============================================
-$eligibleApplicants = getRecords("
+$eligibleApplicants = @getRecords("
     SELECT a.id, u.first_name, u.last_name, u.email,
            jo.id as job_id, jo.title as job_title, c.company_name,
            a.status as application_status,
@@ -415,16 +329,35 @@ $eligibleApplicants = getRecords("
     JOIN users u ON ap.user_id = u.id
     JOIN job_orders jo ON a.job_order_id = jo.id
     JOIN clients c ON jo.client_id = c.id
-    WHERE jo.created_by = ? 
+    WHERE jo.created_by = $1 
     AND a.status IN ('interviewed', 'shortlisted')
     AND NOT EXISTS (
         SELECT 1 FROM offers o WHERE o.application_id = a.id AND o.status IN ('draft', 'sent', 'accepted')
     )
     ORDER BY a.applied_at DESC
-", [$userId], "i");
+", [$userId]);
+if (!is_array($eligibleApplicants)) $eligibleApplicants = [];
 
 // =============================================
-// AJAX HANDLER WITH AI FEATURES
+// Get sidebar counts - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = 0;
+$archivedTables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($archivedTables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
+    }
+}
+
+// =============================================
+// AJAX HANDLER - PostgreSQL syntax
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
@@ -469,169 +402,111 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-// ========== CREATE OFFER ==========
-if ($action === 'create_offer') {
-    $applicationId = isset($_POST['application_id']) ? (int)$_POST['application_id'] : 0;
-    $offerDate = $_POST['offer_date'] ?? date('Y-m-d');
-    $startDate = $_POST['start_date'] ?? null;
-    $salaryOffered = $_POST['salary_offered'] ?? null;
-    $benefits = trim($_POST['benefits'] ?? '');
-    // Notes column doesn't exist - remove it
-    // $notes = trim($_POST['notes'] ?? '');
-    
-    // Debug log
-    error_log("=== CREATE OFFER DEBUG ===");
-    error_log("Application ID: " . $applicationId);
-    error_log("Offer Date: " . $offerDate);
-    error_log("Start Date: " . $startDate);
-    error_log("Salary Offered (raw): " . $salaryOffered);
-    error_log("Benefits: " . $benefits);
-    error_log("User ID: " . $userId);
-    
-    if (empty($applicationId)) {
-        echo json_encode(['success' => false, 'error' => 'Please select an applicant.']);
-        exit;
-    }
-    
-    // Check if offer already exists
-    $existingSql = "SELECT id FROM offers WHERE application_id = ? AND status IN ('draft', 'sent')";
-    $existingResult = getRecord($existingSql, [$applicationId], "i");
-    if ($existingResult) {
-        echo json_encode(['success' => false, 'error' => 'This applicant already has an active offer.']);
-        exit;
-    }
-    
-    // Clean salary - remove commas, currency symbols, and convert to float
-    if (!empty($salaryOffered)) {
-        // Remove ₱, commas, spaces, and any non-numeric characters except decimal point
-        $salaryOffered = preg_replace('/[^0-9.]/', '', $salaryOffered);
-        // Convert to float
-        $salaryOffered = (float)$salaryOffered;
-    } else {
-        $salaryOffered = null;
-    }
-    
-    // Handle empty values - set to null for database
-    if (empty($startDate) || $startDate === '') {
-        $startDate = null;
-    }
-    if (empty($benefits)) {
-        $benefits = null;
-    }
-    
-    // Debug cleaned values
-    error_log("Salary after cleanup (float): " . $salaryOffered);
-    error_log("Start Date after cleanup: " . ($startDate ?? 'NULL'));
-    error_log("Benefits after cleanup: " . ($benefits ?? 'NULL'));
-    
-    // Use the exact column names that exist in your table
-    // REMOVED: notes column (doesn't exist in your table)
-    $sql = "INSERT INTO offers (
-        application_id, 
-        offer_date, 
-        start_date, 
-        salary_offered, 
-        benefits, 
-        status, 
-        created_by
-    ) VALUES (?, ?, ?, ?, ?, 'draft', ?)";
-    
-    $params = [
-        $applicationId,
-        $offerDate,
-        $startDate,
-        $salaryOffered,
-        $benefits,
-        $userId
-    ];
-    
-    // Types: i=integer, s=string, s=string, s=string (decimal as string), s=string, i=integer
-    $types = "issssi";
-    
-    error_log("SQL: " . $sql);
-    error_log("Params: " . json_encode($params));
-    error_log("Types: " . $types);
-    
-    $result = insertRecord($sql, $params, $types);
-    
-    error_log("Insert result: " . ($result ? $result : 'FAILED'));
-    
-    if ($result) {
-        logActivity($userId, 'Offer Created', 'offers', $result, 'Created offer for application #' . $applicationId);
-        echo json_encode(['success' => true, 'message' => 'Offer created successfully!', 'id' => $result]);
-    } else {
-        global $conn;
-        $error = mysqli_error($conn);
-        error_log("MySQL Error: " . $error);
-        echo json_encode(['success' => false, 'error' => 'Failed to create offer: ' . $error]);
-    }
-    exit;
-}
-    
-    // ========== UPDATE OFFER ==========
-if ($action === 'update_offer' && $offerId > 0) {
-    $offerDate = $_POST['offer_date'] ?? date('Y-m-d');
-    $startDate = $_POST['start_date'] ?? null;
-    $salaryOffered = $_POST['salary_offered'] ?? null;
-    $benefits = trim($_POST['benefits'] ?? '');
-    // $notes = trim($_POST['notes'] ?? ''); // REMOVED - column doesn't exist
-    $status = $_POST['status'] ?? 'draft';
-    
-    // Clean salary
-    if (!empty($salaryOffered)) {
-        $salaryOffered = preg_replace('/[^0-9.]/', '', $salaryOffered);
-        $salaryOffered = (float)$salaryOffered;
-    } else {
-        $salaryOffered = null;
-    }
-    
-    if (empty($startDate) || $startDate === '') {
-        $startDate = null;
-    }
-    if (empty($benefits)) {
-        $benefits = null;
-    }
-    
-    // REMOVED: notes from UPDATE
-    $sql = "UPDATE offers SET 
-            offer_date = ?,
-            start_date = ?,
-            salary_offered = ?,
-            benefits = ?,
-            status = ?,
-            updated_at = NOW()
-            WHERE id = ?";
-    
-    $result = updateRecord($sql, [
-        $offerDate,
-        $startDate,
-        $salaryOffered,
-        $benefits,
-        $status,
-        $offerId
-    ], "sssssi");
-    
-    if ($result) {
-        if ($status === 'sent') {
-            $offer = getRecord("SELECT application_id FROM offers WHERE id = ?", [$offerId], "i");
-            if ($offer) {
-                updateRecord("UPDATE applications SET status = 'offered' WHERE id = ?", [$offer['application_id']], "i");
-            }
+    // ========== CREATE OFFER - PostgreSQL ==========
+    if ($action === 'create_offer') {
+        $applicationId = isset($_POST['application_id']) ? (int)$_POST['application_id'] : 0;
+        $offerDate = $_POST['offer_date'] ?? date('Y-m-d');
+        $startDate = $_POST['start_date'] ?? null;
+        $salaryOffered = $_POST['salary_offered'] ?? null;
+        $benefits = trim($_POST['benefits'] ?? '');
+        
+        if (empty($applicationId)) {
+            echo json_encode(['success' => false, 'error' => 'Please select an applicant.']);
+            exit;
         }
         
-        logActivity($userId, 'Offer Updated', 'offers', $offerId, 'Updated offer #' . $offerId);
-        echo json_encode(['success' => true, 'message' => 'Offer updated successfully!']);
-    } else {
-        global $conn;
-        $error = mysqli_error($conn);
-        error_log("MySQL Error on update: " . $error);
-        echo json_encode(['success' => false, 'error' => 'Failed to update offer: ' . $error]);
+        $existing = @getRecord("SELECT id FROM offers WHERE application_id = $1 AND status IN ('draft', 'sent')", [$applicationId]);
+        if ($existing) {
+            echo json_encode(['success' => false, 'error' => 'This applicant already has an active offer.']);
+            exit;
+        }
+        
+        if (!empty($salaryOffered)) {
+            $salaryOffered = (float)preg_replace('/[^0-9.]/', '', $salaryOffered);
+        } else {
+            $salaryOffered = null;
+        }
+        
+        if (empty($startDate)) $startDate = null;
+        if (empty($benefits)) $benefits = null;
+        
+        $sql = "INSERT INTO offers (
+            application_id, offer_date, start_date, salary_offered, benefits, 
+            status, created_by, created_at
+        ) VALUES ($1, $2, $3, $4, $5, 'draft', $6, NOW())
+        RETURNING id";
+        
+        $result = @insertRecord($sql, [
+            $applicationId,
+            $offerDate,
+            $startDate,
+            $salaryOffered,
+            $benefits,
+            $userId
+        ]);
+        
+        if ($result) {
+            @logActivity($userId, 'Offer Created', 'offers', $result, 'Created offer for application #' . $applicationId);
+            echo json_encode(['success' => true, 'message' => 'Offer created successfully!', 'id' => $result]);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to create offer.']);
+        }
+        exit;
     }
-    exit;
-}
-    // ========== GET OFFER ==========
+    
+    // ========== UPDATE OFFER - PostgreSQL ==========
+    if ($action === 'update_offer' && $offerId > 0) {
+        $offerDate = $_POST['offer_date'] ?? date('Y-m-d');
+        $startDate = $_POST['start_date'] ?? null;
+        $salaryOffered = $_POST['salary_offered'] ?? null;
+        $benefits = trim($_POST['benefits'] ?? '');
+        $status = $_POST['status'] ?? 'draft';
+        
+        if (!empty($salaryOffered)) {
+            $salaryOffered = (float)preg_replace('/[^0-9.]/', '', $salaryOffered);
+        } else {
+            $salaryOffered = null;
+        }
+        
+        if (empty($startDate)) $startDate = null;
+        if (empty($benefits)) $benefits = null;
+        
+        $sql = "UPDATE offers SET 
+                offer_date = $1,
+                start_date = $2,
+                salary_offered = $3,
+                benefits = $4,
+                status = $5,
+                updated_at = NOW()
+                WHERE id = $6";
+        
+        $result = @updateRecord($sql, [
+            $offerDate,
+            $startDate,
+            $salaryOffered,
+            $benefits,
+            $status,
+            $offerId
+        ]);
+        
+        if ($result) {
+            if ($status === 'sent') {
+                $offer = @getRecord("SELECT application_id FROM offers WHERE id = $1", [$offerId]);
+                if ($offer) {
+                    @updateRecord("UPDATE applications SET status = 'offered' WHERE id = $1", [$offer['application_id']]);
+                }
+            }
+            @logActivity($userId, 'Offer Updated', 'offers', $offerId, 'Updated offer #' . $offerId);
+            echo json_encode(['success' => true, 'message' => 'Offer updated successfully!']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to update offer.']);
+        }
+        exit;
+    }
+    
+    // ========== GET OFFER - PostgreSQL ==========
     if ($action === 'get_offer' && $offerId > 0) {
-        $offer = getRecord("
+        $offer = @getRecord("
             SELECT o.*, 
                    u.first_name, u.last_name, u.email,
                    jo.title as job_title, c.company_name,
@@ -643,8 +518,8 @@ if ($action === 'update_offer' && $offerId > 0) {
             JOIN users u ON ap.user_id = u.id
             JOIN job_orders jo ON a.job_order_id = jo.id
             JOIN clients c ON jo.client_id = c.id
-            WHERE o.id = ? AND jo.created_by = ?
-        ", [$offerId, $userId], "ii");
+            WHERE o.id = $1 AND jo.created_by = $2
+        ", [$offerId, $userId]);
         
         if ($offer) {
             echo json_encode(['success' => true, 'offer' => $offer]);
@@ -654,53 +529,44 @@ if ($action === 'update_offer' && $offerId > 0) {
         exit;
     }
     
-  // ========== SEND OFFER ==========
-if ($action === 'send_offer' && $offerId > 0) {
-    $sql = "UPDATE offers SET status = 'sent', sent_at = NOW(), updated_at = NOW() WHERE id = ?";
-    $result = updateRecord($sql, [$offerId], "i");
-    
-    if ($result) {
-        $offer = getRecord("
-            SELECT o.*, u.first_name, u.last_name, u.email,
-                   jo.title as job_title, c.company_name
-            FROM offers o
-            JOIN applications a ON o.application_id = a.id
-            JOIN applicants ap ON a.applicant_id = ap.id
-            JOIN users u ON ap.user_id = u.id
-            JOIN job_orders jo ON a.job_order_id = jo.id
-            JOIN clients c ON jo.client_id = c.id
-            WHERE o.id = ?
-        ", [$offerId], "i");
+    // ========== SEND OFFER - PostgreSQL ==========
+    if ($action === 'send_offer' && $offerId > 0) {
+        $result = @updateRecord("UPDATE offers SET status = 'sent', sent_at = NOW(), updated_at = NOW() WHERE id = $1", [$offerId]);
         
-        if ($offer) {
-            // Update application status
-            updateRecord("UPDATE applications SET status = 'offered' WHERE id = ?", [$offer['application_id']], "i");
+        if ($result) {
+            $offer = @getRecord("
+                SELECT o.*, u.first_name, u.last_name, u.email,
+                       jo.title as job_title, c.company_name
+                FROM offers o
+                JOIN applications a ON o.application_id = a.id
+                JOIN applicants ap ON a.applicant_id = ap.id
+                JOIN users u ON ap.user_id = u.id
+                JOIN job_orders jo ON a.job_order_id = jo.id
+                JOIN clients c ON jo.client_id = c.id
+                WHERE o.id = $1
+            ", [$offerId]);
             
-            // Log the activity
-            logActivity($userId, 'Offer Sent', 'offers', $offerId, 'Sent offer #' . $offerId . ' to ' . $offer['first_name'] . ' ' . $offer['last_name']);
-            
-            // Try to send email if function exists, but don't fail if it doesn't
-            if (function_exists('sendOfferEmail')) {
-                try {
-                    sendOfferEmail($offerId);
-                } catch (Exception $e) {
-                    error_log("Email sending failed: " . $e->getMessage());
-                    // Still return success since the offer was sent in the system
+            if ($offer) {
+                @updateRecord("UPDATE applications SET status = 'offered' WHERE id = $1", [$offer['application_id']]);
+                @logActivity($userId, 'Offer Sent', 'offers', $offerId, 'Sent offer #' . $offerId . ' to ' . $offer['first_name'] . ' ' . $offer['last_name']);
+                
+                // Try to send email if function exists
+                if (function_exists('sendOfferEmail')) {
+                    try {
+                        @sendOfferEmail($offerId);
+                    } catch (Exception $e) {
+                        @error_log("Email sending failed: " . $e->getMessage());
+                    }
                 }
+                echo json_encode(['success' => true, 'message' => 'Offer sent successfully!']);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'Offer details not found.']);
             }
-            
-            echo json_encode(['success' => true, 'message' => 'Offer sent successfully!']);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Offer details not found.']);
+            echo json_encode(['success' => false, 'error' => 'Failed to send offer.']);
         }
-    } else {
-        global $conn;
-        $error = mysqli_error($conn);
-        error_log("MySQL Error on send offer: " . $error);
-        echo json_encode(['success' => false, 'error' => 'Failed to send offer: ' . $error]);
+        exit;
     }
-    exit;
-}
 }
 ?>
 <!DOCTYPE html>
@@ -819,7 +685,7 @@ if ($action === 'send_offer' && $offerId > 0) {
         }
 
         /* =============================================
-           REST OF STYLES (same as before)
+           REST OF STYLES
            ============================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -835,256 +701,181 @@ if ($action === 'send_offer' && $offerId > 0) {
         }
         a { text-decoration: none; color: inherit; }
 
-    /* =============================================
-   SIDEBAR - STANDARDIZED
-   ============================================= */
-.dashboard-sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 50;
-    background: var(--bg-surface);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    width: var(--sidebar-width);
-    border-right: 1px solid var(--slate-200);
-    transition: width 0.3s ease, transform 0.3s ease;
-    overflow: hidden;
-    box-shadow: var(--shadow-xl);
-    flex-shrink: 0;
-}
+        /* =============================================
+           SIDEBAR - STANDARDIZED
+           ============================================= */
+        .dashboard-sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 50;
+            background: var(--bg-surface);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: var(--sidebar-width);
+            border-right: 1px solid var(--slate-200);
+            transition: width 0.3s ease, transform 0.3s ease;
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed {
-    width: var(--sidebar-collapsed);
-}
+        .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
+        .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
 
-.dashboard-sidebar.mobile-hidden {
-    transform: translateX(-100%);
-}
+        .dashboard-sidebar .sidebar-brand-text,
+        .dashboard-sidebar .sidebar-brand-category,
+        .dashboard-sidebar .sidebar-nav .nav-label,
+        .dashboard-sidebar .sidebar-nav .nav-text,
+        .dashboard-sidebar .sidebar-nav .nav-badge,
+        .dashboard-sidebar .sidebar-footer .user-info {
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
+        }
 
-.dashboard-sidebar.mobile-open {
-    transform: translateX(0);
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-text,
+        .dashboard-sidebar.collapsed .sidebar-brand-category,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
 
-/* Hide text when collapsed */
-.dashboard-sidebar .sidebar-brand-text,
-.dashboard-sidebar .sidebar-brand-category,
-.dashboard-sidebar .sidebar-nav .nav-label,
-.dashboard-sidebar .sidebar-nav .nav-text,
-.dashboard-sidebar .sidebar-nav .nav-badge,
-.dashboard-sidebar .sidebar-footer .user-info {
-    opacity: 1;
-    transition: opacity 0.3s ease;
-    overflow: hidden;
-    white-space: nowrap;
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-nav { padding: 0.5rem 0.25rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: center; padding: 0.75rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: center; padding: 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar { width: 2.5rem; height: 2.5rem; font-size: 0.875rem; }
 
-.dashboard-sidebar.collapsed .sidebar-brand-text,
-.dashboard-sidebar.collapsed .sidebar-brand-category,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-.dashboard-sidebar.collapsed .sidebar-footer .user-info {
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-}
+        .sidebar-brand-card {
+            border-radius: 2rem;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 0.75rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-brand-card {
-    padding: 1rem 0.5rem;
-}
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background: var(--slate-100);
+            color: var(--primary);
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-nav {
-    padding: 0.5rem 0.25rem;
-}
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 0.875rem; font-weight: 600; color: var(--slate-900); }
+        .sidebar-brand-category { font-size: 0.75rem; color: var(--slate-500); margin-top: 0.25rem; }
 
-.dashboard-sidebar.collapsed .sidebar-main-link {
-    justify-content: center;
-    padding: 0.75rem 0.5rem;
-}
+        .sidebar-nav {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 1.25rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-nav .nav-label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--slate-500);
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card {
-    justify-content: center;
-    padding: 0.5rem;
-}
+        .sidebar-main-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-label);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    font-size: 0.875rem;
-}
+        .sidebar-main-link:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .sidebar-main-link.active { background: var(--bg-surface-container-high); color: var(--primary); }
+        .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; flex-shrink: 0; }
+        .sidebar-main-link .nav-text { transition: opacity 0.3s ease; }
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 50px;
+            transition: opacity 0.3s ease;
+        }
 
-/* Sidebar Brand */
-.sidebar-brand-card {
-    border-radius: 2rem;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 0.75rem;
-}
+        .sidebar-footer {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
+        }
 
-.sidebar-brand-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 1.75rem;
-    background: var(--slate-100);
-    color: var(--primary);
-    font-size: 1.5rem;
-    flex-shrink: 0;
-}
+        .sidebar-footer .user-card {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 1rem;
+            background: var(--bg-surface-low);
+        }
 
-.sidebar-brand-icon .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
 
-.sidebar-brand-text {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--slate-900);
-}
+        .sidebar-footer .user-card .user-info .user-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .sidebar-footer .user-card .user-info .user-email { font-size: 0.75rem; color: var(--text-on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.sidebar-brand-category {
-    font-size: 0.75rem;
-    color: var(--slate-500);
-    margin-top: 0.25rem;
-}
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
 
-/* Sidebar Navigation */
-.sidebar-nav {
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem 1.25rem;
-}
-
-.sidebar-nav .nav-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--slate-500);
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.5rem;
-}
-
-.sidebar-main-link {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    color: var(--text-on-surface-variant);
-    transition: all var(--transition-fast);
-    margin-bottom: 0.25rem;
-    font-family: var(--font-label);
-    font-weight: 500;
-    font-size: 0.875rem;
-}
-
-.sidebar-main-link:hover {
-    background: var(--bg-surface-low);
-    color: var(--text-on-surface);
-}
-
-.sidebar-main-link.active {
-    background: var(--bg-surface-container-high);
-    color: var(--primary);
-}
-
-.sidebar-main-link .material-symbols-outlined {
-    font-size: 1.25rem;
-    flex-shrink: 0;
-}
-
-.sidebar-main-link .nav-text {
-    transition: opacity 0.3s ease;
-}
-
-.sidebar-main-link .nav-badge {
-    margin-left: auto;
-    background: var(--primary);
-    color: white;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 0.125rem 0.5rem;
-    border-radius: 50px;
-    transition: opacity 0.3s ease;
-}
-
-/* Sidebar Footer */
-.sidebar-footer {
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--slate-200);
-}
-
-.sidebar-footer .user-card {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 1rem;
-    background: var(--bg-surface-low);
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.875rem;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .user-info .user-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
-
-.sidebar-footer .user-card .user-info .user-email {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Sidebar Backdrop */
-.sidebar-backdrop {
-    display: none;
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: rgba(17, 24, 39, 0.5);
-    backdrop-filter: blur(8px);
-    z-index: 40;
-    transition: opacity 0.3s ease;
-    opacity: 0;
-}
-
-.sidebar-backdrop.active {
-    display: block;
-    opacity: 1;
-}
+        .sidebar-backdrop.active { display: block; opacity: 1; }
 
         .main-wrapper {
             flex: 1;
@@ -1191,14 +982,7 @@ if ($action === 'send_offer' && $offerId > 0) {
             transform-origin: top right;
         }
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
-        .profile-dropdown-menu .dropdown-header {
-            padding: 0.25rem 0.75rem 0.25rem;
-            font-size: 0.6rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-on-surface-variant);
-        }
+        .profile-dropdown-menu .dropdown-header { padding: 0.25rem 0.75rem 0.25rem; font-size: 0.6rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-on-surface-variant); }
         .profile-dropdown-menu .dropdown-item {
             display: flex;
             align-items: center;
@@ -1763,12 +1547,27 @@ if ($action === 'send_offer' && $offerId > 0) {
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
     </style>
 </head>
 <body>
 
 <!-- =============================================
-MODERN AI LOADING OVERLAY
+AI LOADING OVERLAY
 ============================================= -->
 <div class="ai-loading-overlay" id="aiLoadingOverlay" style="display:none; position:fixed; inset:0; background:rgba(10,14,26,0.6); backdrop-filter:blur(8px); z-index:9999; justify-content:center; align-items:center; flex-direction:column;">
     <div class="ai-loading-box" style="background:var(--bg-surface); border-radius:var(--radius-2xl); padding:2.5rem 3rem; max-width:400px; width:90%; text-align:center; box-shadow:var(--shadow-xl); animation:modalSlideUp 0.3s ease-out;">
@@ -1846,15 +1645,37 @@ MODERN AI LOADING OVERLAY
         visibility: visible;
         transform: translateX(-50%) scale(1);
     }
-</style>
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
+    </style>
+</head>
+<body>
 
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">description</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1874,15 +1695,7 @@ MODERN AI LOADING OVERLAY
         <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
-            <span class="nav-badge"><?php 
-                // Get pending applications count
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
-                echo $pendingApps; 
-            ?></span>
-        </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
+            <span class="nav-badge"><?php echo $pendingAppsCount; ?></span>
         </a>
         <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">calendar_month</span>
@@ -1895,19 +1708,7 @@ MODERN AI LOADING OVERLAY
         <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">archive</span>
             <span class="nav-text">Archive</span>
-            <span class="nav-badge"><?php 
-                // Get total archive count
-                $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                echo $totalArchived;
-            ?></span>
+            <span class="nav-badge"><?php echo $totalArchived; ?></span>
         </a>
         <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">apartment</span>
@@ -1931,27 +1732,25 @@ MODERN AI LOADING OVERLAY
 
 <!-- ===== MAIN CONTENT ===== -->
 <div class="main-wrapper" id="mainWrapper">
-    <!-- ===== TOP HEADER ===== -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                <span class="material-symbols-outlined">menu</span>
-            </button>
-            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                <?php 
-                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                    echo ucwords(str_replace('_', ' ', $pageTitle));
-                ?>
-            </span>
-            <span class="ai-badge" style="margin-left:0.5rem;">
-                <span class="material-symbols-outlined">auto_awesome</span>
-                AI Powered
-            </span>
-        </div>
+   <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
         <div class="profile-dropdown-wrapper">
             <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                 <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -2090,13 +1889,7 @@ MODERN AI LOADING OVERLAY
                         <div class="empty-state">
                             <span class="material-symbols-outlined">description</span>
                             <h4>No Offers Found</h4>
-                            <p>
-                                <?php if ($statusFilter !== 'all'): ?>
-                                    You don't have any <?php echo $statusFilter; ?> offers.
-                                <?php else: ?>
-                                    No offers have been created yet.
-                                <?php endif; ?>
-                            </p>
+                            <p>No offers have been created yet.</p>
                             <button class="btn btn-ai" onclick="openCreateModal()" style="margin-top:0.75rem;">
                                 <span class="material-symbols-outlined">add</span>
                                 Create First Offer
@@ -2270,8 +2063,6 @@ MODAL: Create/Edit Offer with AI
                     <label for="benefits">Benefits</label>
                     <textarea id="benefits" name="benefits" class="form-control" placeholder="List any benefits included..." rows="2"></textarea>
                 </div>
-                
-              
 
                 <!-- AI Optimization Tips -->
                 <div id="aiTipsContainer" style="display:none; margin-top:0.5rem;">
@@ -2533,12 +2324,10 @@ function updateAIFields() {
     const aiTipsContainer = document.getElementById('aiTipsContainer');
     
     if (selectedOption && selectedOption.value) {
-        // Show AI sections
         if (aiSalaryResult) aiSalaryResult.style.display = 'block';
         if (aiPredictionContainer) aiPredictionContainer.style.display = 'block';
         if (aiTipsContainer) aiTipsContainer.style.display = 'block';
         
-        // Get AI recommendation
         getAISalaryForForm();
         getAIPredictionForForm();
         getAITipsForForm();
@@ -2597,7 +2386,6 @@ function getAISalaryForForm() {
             if (providerDisplay) providerDisplay.textContent = rec.provider || 'Groq';
             if (resultBox) resultBox.style.display = 'block';
             
-            // Update prediction
             getAIPredictionForForm();
         } else {
             showToast('Failed to get salary recommendation.', 'error');
@@ -2735,7 +2523,6 @@ function editOffer(id) {
             const startDate = document.getElementById('startDate');
             const salaryOffered = document.getElementById('salaryOffered');
             const benefits = document.getElementById('benefits');
-            const offerNotes = document.getElementById('offerNotes');
             const editStatus = document.getElementById('editStatus');
             
             if (appSelect) appSelect.value = offer.application_id;
@@ -2743,7 +2530,6 @@ function editOffer(id) {
             if (startDate) startDate.value = offer.start_date || '';
             if (salaryOffered) salaryOffered.value = offer.salary_offered || '';
             if (benefits) benefits.value = offer.benefits || '';
-            if (offerNotes) offerNotes.value = offer.notes || '';
             if (editStatus) editStatus.value = offer.status;
             openModal('offerModal');
         } else {
@@ -2877,12 +2663,6 @@ function viewOffer(id) {
                             <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(o.benefits)}</div>
                         </div>
                         ` : ''}
-                        ${o.notes ? `
-                        <div style="grid-column:1/-1;">
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Notes</div>
-                            <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(o.notes)}</div>
-                        </div>
-                        ` : ''}
                     </div>
                 `;
             }
@@ -2948,7 +2728,6 @@ function sendOffer(id) {
 // 15. GET AI SALARY SUGGESTION (from table)
 // =============================================
 function getAISalarySuggestion(offerId) {
-    // First get the offer details
     const formData = new FormData();
     formData.append('action', 'get_offer');
     formData.append('offer_id', offerId);
@@ -3051,6 +2830,266 @@ function escapeHtml(text) {
 }
 
 // =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+// =============================================
 // 19. RESPONSIVE HANDLING
 // =============================================
 let resizeTimer;
@@ -3077,6 +3116,6 @@ window.addEventListener('resize', function() {
 console.log('📄 ISMERS Offers Management with AI Integration loaded successfully!');
 console.log('🤖 AI Features: Salary Recommendations, Acceptance Prediction, Offer Tips');
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

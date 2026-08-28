@@ -2,8 +2,9 @@
 // portals/admin/roles.php - Role Management
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Check if user is logged in and is admin
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     header('Location: ../../login.php');
@@ -15,86 +16,53 @@ $fullName = $_SESSION['full_name'] ?? 'Admin User';
 $firstName = $_SESSION['first_name'] ?? 'Admin';
 $email = $_SESSION['email'] ?? '';
 
-// Database helper function (if not already in config.php)
-if (!function_exists('getRecord')) {
-    function getRecord($sql, $params = [], $types = "") {
-        global $conn; // Assuming $conn is your database connection
-        $stmt = $conn->prepare($sql);
-        if ($stmt === false) {
-            return ['count' => 0];
+// ✅ FETCH ROLES FROM SUPABASE DATABASE
+$roleList = getRecords("SELECT * FROM roles ORDER BY id ASC");
+
+// Define default colors/icons just for the UI
+$ui_meta = [
+    'admin' => ['icon' => 'admin_panel_settings', 'color' => '#d97706'],
+    'hr_manager' => ['icon' => 'business_center', 'color' => '#2563eb'],
+    'recruiter' => ['icon' => 'search', 'color' => '#059669'],
+    'client' => ['icon' => 'business', 'color' => '#4f46e5'],
+    'applicant' => ['icon' => 'person_search', 'color' => '#db2777'],
+    'employee' => ['icon' => 'badge', 'color' => '#0891b2'],
+    'supervisor' => ['icon' => 'people', 'color' => '#7c3aed']
+];
+
+// Build the $roles array dynamically from the database
+$roles = [];
+if ($roleList) {
+    foreach ($roleList as $row) {
+        $key = $row['role_name'];
+        
+        // ✅ SAFE JSON DECODE: Ensure we don't crash if $row['permissions'] is null
+        $perms = $row['permissions'] ?? '[]';
+        if (is_string($perms)) {
+            $perms = json_decode($perms, true);
         }
-        if (!empty($params)) {
-            $stmt->bind_param($types, ...$params);
+        if (!is_array($perms)) {
+            $perms = [];
         }
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        $stmt->close();
-        return $row ?? ['count' => 0];
+        
+        $roles[$key] = [
+            'label' => ucwords(str_replace('_', ' ', $key)),
+            'icon' => $ui_meta[$key]['icon'] ?? 'shield',
+            'color' => $ui_meta[$key]['color'] ?? '#64748b',
+            'description' => 'Manage ' . ucwords(str_replace('_', ' ', $key)) . ' role permissions.',
+            'permissions' => $perms
+        ];
     }
 }
 
-// Role definitions with descriptions, icons, and permissions
-$roles = [
-    'admin' => [
-        'label' => 'Administrator',
-        'icon' => 'admin_panel_settings',
-        'color' => '#d97706',
-        'description' => 'Full system access. Can manage users, roles, and all system settings.',
-        'permissions' => ['all']
-    ],
-    'hr_manager' => [
-        'label' => 'HR Manager',
-        'icon' => 'business_center',
-        'color' => '#2563eb',
-        'description' => 'Manage job postings, applications, and HR operations.',
-        'permissions' => ['manage_jobs', 'manage_applications', 'view_reports']
-    ],
-    'recruiter' => [
-        'label' => 'Recruiter',
-        'icon' => 'search',
-        'color' => '#059669',
-        'description' => 'Post jobs, review applications, and manage candidates.',
-        'permissions' => ['post_jobs', 'review_applications', 'shortlist_candidates']
-    ],
-    'client' => [
-        'label' => 'Client',
-        'icon' => 'business',
-        'color' => '#4f46e5',
-        'description' => 'View job orders, track applications, and manage company profile.',
-        'permissions' => ['view_jobs', 'track_applications', 'manage_company']
-    ],
-    'applicant' => [
-        'label' => 'Applicant',
-        'icon' => 'person_search',
-        'color' => '#db2777',
-        'description' => 'Search jobs, apply, and manage personal profile.',
-        'permissions' => ['search_jobs', 'apply_jobs', 'manage_profile']
-    ],
-    'employee' => [
-        'label' => 'Employee',
-        'icon' => 'badge',
-        'color' => '#0891b2',
-        'description' => 'Check attendance, view schedule, and manage profile.',
-        'permissions' => ['view_schedule', 'check_attendance', 'manage_profile']
-    ],
-    'supervisor' => [
-        'label' => 'Supervisor',
-        'icon' => 'people',
-        'color' => '#7c3aed',
-        'description' => 'Manage team attendance, approve requests, and view reports.',
-        'permissions' => ['manage_team', 'approve_requests', 'view_team_reports']
-    ]
-];
-
-// Get role counts
+// ✅ Get role counts
 $roleCounts = [];
 foreach ($roles as $key => $role) {
-    $count = getRecord("SELECT COUNT(*) as count FROM users WHERE role = ?", [$key], "s")['count'] ?? 0;
+    $count = getRecord("SELECT COUNT(*) as count FROM users WHERE role = $1", [$key])['count'] ?? 0;
     $roleCounts[$key] = $count;
 }
 
-// Get total users for badge
+// ✅ FIXED: Total users
 $totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
 
 // Get user profile data for sidebar
@@ -104,33 +72,71 @@ $userProfile = getUserProfileData($userId);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $roleKey = $_POST['role'] ?? '';
-    $permissions = $_POST['permissions'] ?? [];
-
-    // Validate role exists
-    if (!isset($roles[$roleKey])) {
-        echo json_encode(['success' => false, 'error' => 'Invalid role specified.']);
-        exit;
-    }
 
     if ($action === 'update_permissions') {
-        // In a real system, you'd update a permissions table or a JSON column
-        // For demonstration, we'll just return success
-        // Implement your actual permission update logic here
+        $permissions = $_POST['permissions'] ?? [];
+        // ✅ Ensure it's an array before encoding
+        if (!is_array($permissions)) {
+            $permissions = [];
+        }
+        $permissionsJson = json_encode($permissions);
         
-        // Example: Update permissions in a permissions table
-        // $updateStmt = $conn->prepare("UPDATE role_permissions SET permissions = ? WHERE role_key = ?");
-        // $permissionsJson = json_encode($permissions);
-        // $updateStmt->bind_param("ss", $permissionsJson, $roleKey);
-        // $updateStmt->execute();
+        $updateSuccess = updateRecord("UPDATE roles SET permissions = $1, updated_at = NOW() WHERE role_name = $2", [$permissionsJson, $roleKey]);
         
-        echo json_encode(['success' => true, 'message' => 'Permissions updated successfully!']);
+        if ($updateSuccess) {
+            echo json_encode(['success' => true, 'message' => 'Permissions updated successfully!']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Database update failed.']);
+        }
         exit;
     }
     
     if ($action === 'get_permissions') {
-        // Return current permissions for a role
         $currentPermissions = $roles[$roleKey]['permissions'] ?? [];
         echo json_encode(['success' => true, 'permissions' => $currentPermissions]);
+        exit;
+    }
+    
+    if ($action === 'add_role') {
+        $newRoleKey = trim($_POST['role_key'] ?? '');
+        $newRoleLabel = trim($_POST['role_label'] ?? '');
+        
+        if (empty($newRoleKey) || empty($newRoleLabel)) {
+            echo json_encode(['success' => false, 'error' => 'Role key and label are required.']);
+            exit;
+        }
+        
+        $exists = getRecord("SELECT 1 FROM roles WHERE role_name = $1", [$newRoleKey]);
+        if ($exists) {
+            echo json_encode(['success' => false, 'error' => 'Role key already exists.']);
+            exit;
+        }
+        
+        // ✅ FIXED: Use executeQuery() instead of insertRecord() 
+        // insertRecord() calls LASTVAL() which throws a 500 error if the table ID is not serialized.
+        $insertSuccess = executeQuery("INSERT INTO roles (role_name, permissions, created_at, updated_at) VALUES ($1, $2, NOW(), NOW())", [$newRoleKey, '[]']);
+        
+        if ($insertSuccess) {
+            echo json_encode(['success' => true, 'message' => 'Role "' . $newRoleLabel . '" created successfully!']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to add role.']);
+        }
+        exit;
+    }
+    
+    if ($action === 'delete_role') {
+        if ($roleKey === 'admin') {
+            echo json_encode(['success' => false, 'error' => 'Cannot delete the Admin role.']);
+            exit;
+        }
+        
+        $deleteSuccess = deleteRecord("DELETE FROM roles WHERE role_name = $1", [$roleKey]);
+        
+        if ($deleteSuccess) {
+            echo json_encode(['success' => true, 'message' => 'Role deleted successfully.']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Failed to delete role. It might be assigned to users.']);
+        }
         exit;
     }
 }
@@ -144,9 +150,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - ROLE MANAGEMENT
-           ========================================================================== */
+        /* ========================================================================== */
+        /* ALL EXISTING CSS STYLES REMAIN THE SAME */
+        /* ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
             --bg-surface: #ffffff;
@@ -1473,7 +1479,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <?php echo htmlspecialchars($role['description']); ?>
                                 </div>
                                 <div class="permissions">
-                                    <?php if (in_array('all', $role['permissions'])): ?>
+                                    <?php if ($key === 'admin'): ?>
+                                        <span class="perm-tag all">🔑 Full Access</span>
+                                    <?php elseif (in_array('all', $role['permissions'])): ?>
                                         <span class="perm-tag all">🔑 Full Access</span>
                                     <?php else: ?>
                                         <?php foreach ($role['permissions'] as $perm): ?>
@@ -1677,11 +1685,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // 5. EDIT PERMISSIONS
         // =============================================
         const allPermissions = [
-            'manage_users', 'manage_roles', 'manage_jobs', 'manage_applications',
-            'view_reports', 'post_jobs', 'review_applications', 'shortlist_candidates',
-            'view_jobs', 'track_applications', 'manage_company', 'search_jobs',
-            'apply_jobs', 'manage_profile', 'view_schedule', 'check_attendance',
-            'manage_team', 'approve_requests', 'view_team_reports'
+            // Admin
+            'change_roles', 'change_passwords', 'enroll_faces', 'add_clients',
+            // HR
+            'post_job', 'approve_job_request', 'manage_jobs', 'manage_application', 'view_job_details', 'view_schedule_interviews', 'edit_interviews', 'manage_companies',
+            // Applicant
+            'apply_jobs', 'view_jobs', 'search_jobs', 'track_own_application',
+            // Client
+            'request_job', 'manage_job', 'track_application',
+            // Common
+            'view_reports'
         ];
 
         function editPermissions(roleKey) {
@@ -1809,20 +1822,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             e.preventDefault();
 
             const formData = new FormData(this);
-            // In a real system, you'd send this to the server to add the role
-            // For demonstration, we'll show a success message
+            const roleKey = formData.get('role_key');
 
             // Validate role key (no spaces, lowercase)
-            const roleKey = formData.get('role_key');
             if (!/^[a-z_]+$/.test(roleKey)) {
                 showToast('Role key must be lowercase letters and underscores only.', 'error');
                 return;
             }
 
-            showToast('Role "' + formData.get('role_label') + '" created successfully!', 'success');
-            closeModal('addRoleModal');
-            // In production, you'd reload or redirect
-            // setTimeout(() => location.reload(), 1000);
+            fetch('roles.php', {
+                method: 'POST',
+                body: new URLSearchParams(formData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message || 'Role created successfully!', 'success');
+                    closeModal('addRoleModal');
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    showToast(data.error || 'Failed to create role.', 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Error creating role.', 'error');
+            });
         });
 
         // =============================================
@@ -1841,7 +1865,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast('Role deleted successfully.', 'success');
+                    showToast(data.message || 'Role deleted successfully.', 'success');
                     setTimeout(() => location.reload(), 1000);
                 } else {
                     showToast(data.error || 'Failed to delete role.', 'error');
@@ -1897,6 +1921,140 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         });
 
         // =============================================
+        // SESSION ACTIVITY MONITOR
+        // =============================================
+        let sessionTimer = null;
+        let warningShown = false;
+        const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+        const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+        function updateSessionTimer() {
+            fetch('check_session.php')
+                .then(response => response.json())
+                .then(data => {
+                    const remaining = data.remaining;
+                    const minutes = Math.floor(remaining / 60);
+                    const seconds = remaining % 60;
+                    
+                    const timerEl = document.getElementById('sessionTimer');
+                    if (timerEl) {
+                        timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                        if (remaining < 60) {
+                            timerEl.style.color = '#dc2626';
+                            timerEl.style.fontWeight = 'bold';
+                        } else if (remaining < 120) {
+                            timerEl.style.color = '#f59e0b';
+                        } else {
+                            timerEl.style.color = '';
+                        }
+                    }
+                    
+                    if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                        warningShown = true;
+                        showSessionWarning(remaining);
+                    }
+                    
+                    if (remaining <= 0) {
+                        window.location.href = '../../login.php?timeout=1';
+                    }
+                })
+                .catch(error => {
+                    console.log('Session check error:', error);
+                });
+        }
+
+        function showSessionWarning(remaining) {
+            let modal = document.getElementById('sessionWarningModal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'sessionWarningModal';
+                modal.style.cssText = `
+                    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(0,0,0,0.6); backdrop-filter: blur(8px);
+                    z-index: 99999; display: none; justify-content: center; align-items: center; padding: 1rem;
+                `;
+                modal.innerHTML = `
+                    <div style="background: white; border-radius: 1.5rem; max-width: 440px; width: 100%; padding: 2rem; box-shadow: 0 20px 60px rgba(0,0,0,0.3); animation: slideUp 0.3s ease; text-align: center;">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                        <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds. Please click "Stay Logged In" to continue.</p>
+                        <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                            <button onclick="extendSession()" style="padding: 0.625rem 1.5rem; background: #4f46e5; color: white; border: none; border-radius: 0.75rem; font-weight: 600; font-size: 0.875rem; cursor: pointer;">Stay Logged In</button>
+                            <button onclick="logoutNow()" style="padding: 0.625rem 1.5rem; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 0.75rem; font-weight: 600; font-size: 0.875rem; cursor: pointer;">Logout</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            }
+            
+            modal.style.display = 'flex';
+            const warningTimer = document.getElementById('warningTimer');
+            if (warningTimer) {
+                let countdown = remaining;
+                const interval = setInterval(() => {
+                    countdown--;
+                    warningTimer.textContent = countdown;
+                    if (countdown <= 0) {
+                        clearInterval(interval);
+                        window.location.href = '../../login.php?timeout=1';
+                    }
+                }, 1000);
+                modal.dataset.interval = interval;
+            }
+        }
+
+        function extendSession() {
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal && modal.dataset.interval) {
+                clearInterval(parseInt(modal.dataset.interval));
+            }
+            
+            fetch('extend_session.php', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    warningShown = false;
+                    if (modal) modal.style.display = 'none';
+                    showToast('Session extended!', 'success');
+                }
+            })
+            .catch(error => console.log('Extend session error:', error));
+        }
+
+        function logoutNow() {
+            window.location.href = '../../logout.php';
+        }
+
+        // =============================================
+        // TRACK USER ACTIVITY
+        // =============================================
+        function resetActivityTimer() {
+            fetch('extend_session.php', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reset' })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    warningShown = false;
+                    const modal = document.getElementById('sessionWarningModal');
+                    if (modal) modal.style.display = 'none';
+                }
+            })
+            .catch(error => console.log('Reset timer error:', error));
+        }
+
+        const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+        activityEvents.forEach(event => {
+            document.addEventListener(event, () => resetActivityTimer());
+        });
+
+        // =============================================
+        // START SESSION TIMER
+        // =============================================
+        sessionTimer = setInterval(updateSessionTimer, 10000);
+        updateSessionTimer();
+
+        // =============================================
         // 11. KEYBOARD ACCESSIBILITY
         // =============================================
         document.addEventListener('keydown', function(e) {
@@ -1911,6 +2069,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         console.log('🔑 ISMERS Role Management loaded successfully!');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

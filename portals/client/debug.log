@@ -139,3 +139,126 @@ Stack trace:
   "summary": "GymShark currently has a minimal hiring pipeline with only one open position and two applications, resulting in no hires to date. The lack of active employees indicates a nascent or st
 [19-Aug-2026 17:04:34 Asia/Manila] ✅ JSON parsed successfully!
 [19-Aug-2026 17:04:34 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[22-Aug-2026 15:47:51 Asia/Manila] permissions.php loaded successfully
+[22-Aug-2026 15:47:51 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[22-Aug-2026 15:47:51 Asia/Manila] 🔍 Groq Enabled: true
+[22-Aug-2026 15:47:51 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:51 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:51 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:51 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[22-Aug-2026 15:47:51 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:51 Asia/Manila] 📡 Prompt length: 523
+[22-Aug-2026 15:47:53 Asia/Manila] 📡 Groq API Response: HTTP 200
+[22-Aug-2026 15:47:53 Asia/Manila] 📡 Content received, length: 1375
+[22-Aug-2026 15:47:53 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. currently has a modest hiring pipeline with 7 open positions, 6 applications, and a single hire, resulting in a conversion rate of 17%. The limited applicant pool a
+[22-Aug-2026 15:47:53 Asia/Manila] ✅ JSON parsed successfully!
+[22-Aug-2026 15:47:53 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[22-Aug-2026 15:47:53 Asia/Manila] permissions.php loaded successfully
+[22-Aug-2026 15:47:53 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[22-Aug-2026 15:47:53 Asia/Manila] 🔍 Groq Enabled: true
+[22-Aug-2026 15:47:53 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:53 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:53 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:53 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[22-Aug-2026 15:47:53 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[22-Aug-2026 15:47:53 Asia/Manila] 📡 Prompt length: 523
+[22-Aug-2026 15:47:55 Asia/Manila] 📡 Groq API Response: HTTP 200
+[22-Aug-2026 15:47:55 Asia/Manila] 📡 Content received, length: 1171
+[22-Aug-2026 15:47:55 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. posted 7 job openings and received 6 applications, resulting in a single hire and one active employee. The conversion rate stands at 17%, indicating limited success
+[22-Aug-2026 15:47:55 Asia/Manila] ✅ JSON parsed successfully!
+[22-Aug-2026 15:47:55 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[22-Aug-2026 15:48:03 Asia/Manila] permissions.php loaded successfully
+[22-Aug-2026 15:48:03 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[22-Aug-2026 15:48:03 Asia/Manila] 🔍 Groq Enabled: true
+[22-Aug-2026 15:48:03 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:03 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:03 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:04 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[22-Aug-2026 15:48:04 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:04 Asia/Manila] 📡 Prompt length: 523
+[22-Aug-2026 15:48:05 Asia/Manila] 📡 Groq API Response: HTTP 200
+[22-Aug-2026 15:48:05 Asia/Manila] 📡 Content received, length: 1221
+[22-Aug-2026 15:48:05 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. currently has a modest hiring pipeline with 7 open positions, 6 applications, and 1 hire, resulting in a 17% conversion rate. The limited applicant pool and low con
+[22-Aug-2026 15:48:05 Asia/Manila] ✅ JSON parsed successfully!
+[22-Aug-2026 15:48:05 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[22-Aug-2026 15:48:10 Asia/Manila] permissions.php loaded successfully
+[22-Aug-2026 15:48:10 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[22-Aug-2026 15:48:10 Asia/Manila] 🔍 Groq Enabled: true
+[22-Aug-2026 15:48:10 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:10 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:10 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:11 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[22-Aug-2026 15:48:11 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[22-Aug-2026 15:48:11 Asia/Manila] 📡 Prompt length: 523
+[22-Aug-2026 15:48:12 Asia/Manila] 📡 Groq API Response: HTTP 200
+[22-Aug-2026 15:48:12 Asia/Manila] 📡 Content received, length: 1302
+[22-Aug-2026 15:48:12 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. has a modest hiring pipeline with 7 open positions, 6 applications received, and a single hire to date, resulting in a 17% conversion rate. The current workforce co
+[22-Aug-2026 15:48:12 Asia/Manila] ✅ JSON parsed successfully!
+[22-Aug-2026 15:48:12 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[22-Aug-2026 15:52:48 Asia/Manila] permissions.php loaded successfully
+[22-Aug-2026 16:02:15 Asia/Manila] permissions.php loaded successfully
+[24-Aug-2026 19:14:06 Asia/Manila] permissions.php loaded successfully
+[24-Aug-2026 19:14:06 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[24-Aug-2026 19:14:06 Asia/Manila] 🔍 Groq Enabled: true
+[24-Aug-2026 19:14:06 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:06 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:06 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:06 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[24-Aug-2026 19:14:06 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:06 Asia/Manila] 📡 Prompt length: 523
+[24-Aug-2026 19:14:07 Asia/Manila] 📡 Groq API Response: HTTP 200
+[24-Aug-2026 19:14:07 Asia/Manila] 📡 Content received, length: 1330
+[24-Aug-2026 19:14:07 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. currently has a modest hiring pipeline with 7 open positions, 6 applications, and a single hire, resulting in a conversion rate of 17%. The limited applicant pool a
+[24-Aug-2026 19:14:07 Asia/Manila] ✅ JSON parsed successfully!
+[24-Aug-2026 19:14:07 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[24-Aug-2026 19:14:14 Asia/Manila] permissions.php loaded successfully
+[24-Aug-2026 19:14:14 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[24-Aug-2026 19:14:14 Asia/Manila] 🔍 Groq Enabled: true
+[24-Aug-2026 19:14:14 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:14 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:14 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:15 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[24-Aug-2026 19:14:15 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:15 Asia/Manila] 📡 Prompt length: 523
+[24-Aug-2026 19:14:16 Asia/Manila] 📡 Groq API Response: HTTP 200
+[24-Aug-2026 19:14:16 Asia/Manila] 📡 Content received, length: 1373
+[24-Aug-2026 19:14:16 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. has a modest hiring pipeline with 7 open positions, 6 applications received, and 1 hire made, resulting in a 17% conversion rate. The current workforce consists of 
+[24-Aug-2026 19:14:16 Asia/Manila] ✅ JSON parsed successfully!
+[24-Aug-2026 19:14:16 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[24-Aug-2026 19:14:35 Asia/Manila] permissions.php loaded successfully
+[24-Aug-2026 19:14:35 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[24-Aug-2026 19:14:35 Asia/Manila] 🔍 Groq Enabled: true
+[24-Aug-2026 19:14:35 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:35 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:35 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:36 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[24-Aug-2026 19:14:36 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:36 Asia/Manila] 📡 Prompt length: 523
+[24-Aug-2026 19:14:37 Asia/Manila] 📡 Groq API Response: HTTP 200
+[24-Aug-2026 19:14:37 Asia/Manila] 📡 Content received, length: 1214
+[24-Aug-2026 19:14:37 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. has a modest hiring pipeline with 7 open positions, 6 applications, and a single hire, resulting in a 17% conversion rate. The current workforce consists of only on
+[24-Aug-2026 19:14:37 Asia/Manila] ✅ JSON parsed successfully!
+[24-Aug-2026 19:14:37 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[24-Aug-2026 19:14:58 Asia/Manila] permissions.php loaded successfully
+[24-Aug-2026 19:14:58 Asia/Manila] 🔍 Groq API Key: gsk_JX5V1036BNN...
+[24-Aug-2026 19:14:58 Asia/Manila] 🔍 Groq Enabled: true
+[24-Aug-2026 19:14:58 Asia/Manila] 🔍 Groq Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:58 Asia/Manila] ✅ Groq AI enabled with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:58 Asia/Manila] 🚀 Using AI Provider: groq | Model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:58 Asia/Manila] 📝 groqExecutiveSummary for: Tech Solutions Inc.
+[24-Aug-2026 19:14:58 Asia/Manila] 📡 Calling Groq API with model: openai/gpt-oss-120b
+[24-Aug-2026 19:14:58 Asia/Manila] 📡 Prompt length: 523
+[24-Aug-2026 19:14:59 Asia/Manila] 📡 Groq API Response: HTTP 200
+[24-Aug-2026 19:14:59 Asia/Manila] 📡 Content received, length: 1237
+[24-Aug-2026 19:14:59 Asia/Manila] 📡 Cleaned content preview: {
+  "summary": "Tech Solutions Inc. currently has a modest hiring pipeline with 7 open positions, 6 applications, and a single hire, resulting in a 17% conversion rate. The limited applicant pool and 
+[24-Aug-2026 19:14:59 Asia/Manila] ✅ JSON parsed successfully!
+[24-Aug-2026 19:14:59 Asia/Manila] ✅ groqExecutiveSummary returned successfully
+[25-Aug-2026 23:32:22 Asia/Manila] permissions.php loaded successfully

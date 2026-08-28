@@ -2,7 +2,9 @@
 // portals/admin/dashboard.php - AI-Powered Enhanced Admin Dashboard
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in and is admin
@@ -21,12 +23,12 @@ $email = $_SESSION['email'] ?? '';
 // =============================================
 $aiService = new AiService();
 
-// Update current user's last activity
-$updateSql = "UPDATE users SET last_activity = NOW() WHERE id = ?";
-updateRecord($updateSql, [$userId], "i");
+// ✅ FIXED: PostgreSQL uses $1 placeholder
+$updateSql = "UPDATE users SET last_activity = NOW() WHERE id = $1";
+updateRecord($updateSql, [$userId]);
 
 // =============================================
-// GET SYSTEM STATS
+// GET SYSTEM STATS - PostgreSQL syntax
 // =============================================
 $totalUsers = getRecord("SELECT COUNT(*) as count FROM users")['count'] ?? 0;
 $totalApplicants = getRecord("SELECT COUNT(*) as count FROM users WHERE role = 'applicant'")['count'] ?? 0;
@@ -37,11 +39,11 @@ $totalJobs = getRecord("SELECT COUNT(*) as count FROM job_orders")['count'] ?? 0
 $totalApplications = getRecord("SELECT COUNT(*) as count FROM applications")['count'] ?? 0;
 $totalAdmins = getRecord("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")['count'] ?? 0;
 
-// Get online users count (active in last 5 minutes)
+// ✅ FIXED: PostgreSQL uses $1 placeholder
 $onlineThreshold = date('Y-m-d H:i:s', strtotime('-5 minutes'));
-$onlineUsers = getRecord("SELECT COUNT(*) as count FROM users WHERE last_activity >= ?", [$onlineThreshold], "s")['count'] ?? 0;
+$onlineUsers = getRecord("SELECT COUNT(*) as count FROM users WHERE last_activity >= $1", [$onlineThreshold])['count'] ?? 0;
 
-// Get recent users for activity
+// ✅ FIXED: PostgreSQL uses $1 placeholder - removed type string
 $recentUsers = getRecords("
     SELECT id, first_name, last_name, email, role, is_active, last_activity, created_at 
     FROM users 
@@ -49,7 +51,7 @@ $recentUsers = getRecords("
     LIMIT 5
 ");
 
-// Get recent jobs
+// ✅ FIXED: PostgreSQL uses $1 placeholder - removed type string
 $recentJobs = getRecords("
     SELECT jo.*, c.company_name 
     FROM job_orders jo 
@@ -80,8 +82,9 @@ $roleColors = [
     'supervisor' => '#7c3aed'
 ];
 
+// ✅ FIXED: PostgreSQL uses $1 placeholder
 foreach ($roles as $role) {
-    $count = getRecord("SELECT COUNT(*) as count FROM users WHERE role = ?", [$role], "s")['count'] ?? 0;
+    $count = getRecord("SELECT COUNT(*) as count FROM users WHERE role = $1", [$role])['count'] ?? 0;
     if ($count > 0) {
         $roleDistribution[] = [
             'role' => $role,
@@ -328,9 +331,9 @@ function getTrendColor($trend) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - ENHANCED ADMIN DASHBOARD
-           ========================================================================== */
+        /* ========================================================================== */
+        /* ALL YOUR EXISTING CSS STYLES REMAIN THE SAME */
+        /* ========================================================================== */
         :root {
             --bg-background: #f8f7fc;
             --bg-surface: #ffffff;
@@ -536,9 +539,6 @@ function getTrendColor($trend) {
             margin-top: 0.5rem;
         }
 
-        /* =============================================
-           REST OF STYLES (same as your existing)
-        ============================================= */
         * {
             margin: 0;
             padding: 0;
@@ -1932,7 +1932,7 @@ function getTrendColor($trend) {
                     <span class="material-symbols-outlined">menu</span>
                 </button>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
+                    <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
@@ -2479,6 +2479,268 @@ function getTrendColor($trend) {
                 }, 3500);
             }
 
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
             // =============================================
             // 7. INITIAL STATE
             // =============================================
@@ -2490,6 +2752,6 @@ function getTrendColor($trend) {
             console.log('🤖 AI Features: System Health, Insights, Anomaly Detection, Recommendations');
         })();
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

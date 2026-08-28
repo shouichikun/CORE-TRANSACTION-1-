@@ -64,7 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'City is required.';
     }
 
-    // Check if email already exists
+    // ✅ Check if email already exists - PostgreSQL compatible
     if (empty($errors)) {
         $existingUser = getUserByEmail($formData['email']);
         if ($existingUser) {
@@ -99,10 +99,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'city' => $formData['city']
         ];
 
-        // Begin transaction
+        // ✅ Begin transaction - PostgreSQL compatible
         beginTransaction();
 
-        // Insert user into database
+        // ✅ Insert user into database - PostgreSQL compatible
         $userId = createUser($userData);
 
         if ($userId) {
@@ -114,10 +114,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'experience' => '',
                 'education' => ''
             ];
+            // ✅ PostgreSQL compatible
             $applicantId = createApplicant($userId, $applicantData);
 
             if ($applicantId) {
-                // Commit transaction
+                // ✅ Commit transaction - PostgreSQL compatible
                 commitTransaction();
 
                 // Set session for the new user
@@ -128,8 +129,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['applicant_id'] = $applicantId;
                 $_SESSION['registration_step'] = 1;
 
-                // Log the registration
-                logFaceScan($userId, 'registration', 0, 'success');
+                // ✅ Log the registration - PostgreSQL compatible
+                logActivity($userId, 'Registration', 'users', $userId, 'User registered as applicant');
 
                 // Redirect to step 2
                 header('Location: register_step2.php');
@@ -161,6 +162,7 @@ if (isset($_SESSION['register_form_data'])) {
     unset($_SESSION['register_form_data']);
 }
 ?>
+<!-- HTML CONTENT REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>

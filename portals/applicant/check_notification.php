@@ -2,8 +2,9 @@
 // portals/applicant/check_notifications.php - Check for new notifications
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'applicant') {
     echo json_encode(['success' => false, 'error' => 'Unauthorized']);
@@ -19,12 +20,12 @@ $latest = getRecord("
     WHERE user_id = ? AND is_read = 0
     ORDER BY created_at DESC
     LIMIT 1
-", [$userId], "i");
+", [$userId]);
 
 $unreadCount = getRecord("
     SELECT COUNT(*) as count FROM notifications
     WHERE user_id = ? AND is_read = 0
-", [$userId], "i");
+", [$userId]);
 
 // Get job title if it's an interview notification
 if ($latest && $latest['type'] === 'interview_scheduled') {

@@ -1,53 +1,99 @@
 <?php
 // portals/client/agency_applications.php - Client Agency Application Management
-// IMPROVED UI/UX - With Confirmation Modal - FIXED
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
+// =============================================
+// DEBUG: Enable error logging
+// =============================================
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('log_errors', 1);
+ini_set('error_log', 'C:/xampp1/php/logs/php_error_log');
+
+// Add after require_once - Check database connection
+global $conn;
+if (!$conn) {
+    die("Database connection failed!");
+}
+
+// =============================================
+// DEBUG FUNCTION: Log to file
+// =============================================
+function debugLog($message, $data = null) {
+    $logEntry = date('Y-m-d H:i:s') . " - " . $message;
+    if ($data !== null) {
+        $logEntry .= " - " . print_r($data, true);
+    }
+    error_log($logEntry);
+    file_put_contents('C:/xampp1/htdocs/CT1/debug_agency.log', $logEntry . PHP_EOL, FILE_APPEND);
+}
+
+debugLog("=== SCRIPT STARTED ===");
+debugLog("Session user_id: " . ($_SESSION['user_id'] ?? 'NOT SET'));
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
+    debugLog("User not logged in, redirecting to login");
     header('Location: ../../login.php');
     exit;
 }
 
 // Check if user has client role
 if ($_SESSION['role'] !== 'client') {
+    debugLog("User role is not client: " . $_SESSION['role']);
     header('Location: ../../login.php');
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
+debugLog("User ID: $userId, Role: $role");
+
+// =============================================
+// Define $userProfile properly
+// =============================================
+$userProfile = [
+    'first_name' => $firstName,
+    'last_name' => $_SESSION['last_name'] ?? '',
+    'email' => $email,
+    'profile_picture' => $_SESSION['profile_picture'] ?? null,
+    'initials' => strtoupper(substr($firstName, 0, 1)) . strtoupper(substr($_SESSION['last_name'] ?? '', 0, 1))
+];
+
 // Get client profile
+debugLog("Getting client profile for user_id: $userId");
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
+    debugLog("No client profile found, using defaults");
     $client = ['company_name' => 'Your Company', 'id' => 0];
+} else {
+    debugLog("Client found: ID={$client['id']}, Company={$client['company_name']}");
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = $client['id'] ?? 0;
+$clientId = (int)($client['id'] ?? 0);
 
-// =============================================
-// GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
-// =============================================
+// Get pending agency applications for sidebar badge
 $pendingAgencyCount = 0;
-$pendingAgencies = getRecords("
-    SELECT COUNT(*) as count FROM agency_applications 
-    WHERE client_id = ? AND status = 'pending'
-", [$clientId], "i");
-
-if (!empty($pendingAgencies)) {
-    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+if ($clientId > 0) {
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
+    debugLog("Pending agency count: $pendingAgencyCount");
 }
 
 $message = '';
@@ -55,141 +101,245 @@ $messageType = '';
 
 // Handle approval/rejection
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    debugLog("POST request received. Action: " . $_POST['action']);
+    debugLog("POST data: " . print_r($_POST, true));
+    
     $applicationId = isset($_POST['application_id']) ? (int)$_POST['application_id'] : 0;
+    debugLog("Application ID: $applicationId, Client ID: $clientId");
     
     if ($_POST['action'] === 'approve_agency' && $applicationId > 0) {
+        debugLog("Processing APPROVE action for application ID: $applicationId");
+        
+        // Get the application
         $application = getRecord("
             SELECT a.*, u.first_name, u.last_name, u.email as user_email
             FROM agency_applications a
             JOIN users u ON a.user_id = u.id
-            WHERE a.id = ? AND a.client_id = ?
-        ", [$applicationId, $clientId], "ii");
+            WHERE a.id = $1 AND a.client_id = $2
+        ", [$applicationId, $clientId]);
+        
+        debugLog("Application data: " . print_r($application, true));
         
         if ($application) {
-            beginTransaction();
+            debugLog("Application found, checking if agency already exists for this client");
             
-            try {
-                $existing = getRecord("
-                    SELECT id FROM recruitment_agencies 
-                    WHERE agency_code = ? AND client_id = ?
-                ", [$application['agency_code'], $clientId], "si");
+            // Check if agency already exists for THIS client only (composite key)
+            $existing = getRecord("
+                SELECT id FROM recruitment_agencies 
+                WHERE agency_code = $1 AND client_id = $2
+            ", [$application['agency_code'], $clientId]);
+            
+            if ($existing) {
+                debugLog("Agency already exists for this client with code: " . $application['agency_code']);
+                $message = 'This agency code is already approved for your company.';
+                $messageType = 'error';
+            } else {
+                // Check if this agency is already approved for other clients (just for info)
+                $otherClients = getRecord("
+                    SELECT COUNT(*) as count FROM recruitment_agencies 
+                    WHERE agency_code = $1 AND client_id != $2
+                ", [$application['agency_code'], $clientId]);
                 
-                if ($existing) {
-                    throw new Exception('An agency with this code already exists for your company.');
+                if ($otherClients && $otherClients['count'] > 0) {
+                    debugLog("Agency already exists for " . $otherClients['count'] . " other client(s) - this is allowed");
                 }
                 
-                // =============================================
-                // FIXED: Correct number of placeholders and bind values
-                // =============================================
-                $insertSql = "INSERT INTO recruitment_agencies (
-                    user_id, client_id, agency_name, agency_code, contact_person, contact_email,
-                    contact_phone, address, website, is_active, application_status, approved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'approved', NOW())";
+                debugLog("No existing agency found for this client, proceeding with INSERT");
                 
-                $stmt = mysqli_prepare($conn, $insertSql);
-                // 9 values, type string: i i s s s s s s s
-                mysqli_stmt_bind_param($stmt, 'iisssssss', 
-                    $application['user_id'],
-                    $clientId,
-                    $application['agency_name'],
-                    $application['agency_code'],
-                    $application['contact_person'],
-                    $application['contact_email'],
-                    $application['contact_phone'],
-                    $application['address'],
-                    $application['website']
-                );
+                beginTransaction();
+                debugLog("Transaction started");
                 
-                if (mysqli_stmt_execute($stmt)) {
-                    $agencyId = mysqli_insert_id($conn);
+                try {
+                    global $conn;
                     
-                    $updateSql = "UPDATE agency_applications SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE id = ?";
-                    $stmt2 = mysqli_prepare($conn, $updateSql);
-                    mysqli_stmt_bind_param($stmt2, 'ii', $userId, $applicationId);
-                    mysqli_stmt_execute($stmt2);
-                    mysqli_stmt_close($stmt2);
+                    $statusValue = 'approved';
+                    debugLog("Status value: " . $statusValue);
                     
-                    commitTransaction();
+                    // Build the INSERT query
+                    $insertSql = "INSERT INTO recruitment_agencies (
+                        user_id, client_id, agency_name, agency_code, contact_person, 
+                        contact_email, contact_phone, address, website, is_active, 
+                        application_status, approved_at, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::agency_status, $12, NOW(), NOW()) RETURNING id";
                     
-                    $message = 'Agency approved successfully! They can now handle your job postings.';
-                    $messageType = 'success';
+                    // Build parameters
+                    $params = [
+                        (int)$application['user_id'],
+                        (int)$clientId,
+                        (string)$application['agency_name'],
+                        (string)$application['agency_code'],
+                        (string)$application['contact_person'],
+                        (string)$application['contact_email'],
+                        (string)($application['contact_phone'] ?? ''),
+                        (string)($application['address'] ?? ''),
+                        (string)($application['website'] ?? ''),
+                        true,  // is_active as boolean
+                        $statusValue,
+                        date('Y-m-d H:i:s')
+                    ];
                     
-                    logActivity($userId, 'Approved Recruitment Agency', 'recruitment_agencies', $agencyId, 
-                        'Approved agency: ' . $application['agency_name']);
+                    // =============================================
+                    // DEBUG: Log everything before execution
+                    // =============================================
+                    debugLog("=== SQL DEBUG ===");
+                    debugLog("SQL: " . $insertSql);
+                    debugLog("PARAMETERS:");
+                    debugLog("  user_id: " . $params[0] . " (type: " . gettype($params[0]) . ")");
+                    debugLog("  client_id: " . $params[1] . " (type: " . gettype($params[1]) . ")");
+                    debugLog("  agency_name: " . $params[2] . " (type: " . gettype($params[2]) . ")");
+                    debugLog("  agency_code: " . $params[3] . " (type: " . gettype($params[3]) . ")");
+                    debugLog("  contact_person: " . $params[4] . " (type: " . gettype($params[4]) . ")");
+                    debugLog("  contact_email: " . $params[5] . " (type: " . gettype($params[5]) . ")");
+                    debugLog("  contact_phone: " . $params[6] . " (type: " . gettype($params[6]) . ")");
+                    debugLog("  address: " . $params[7] . " (type: " . gettype($params[7]) . ")");
+                    debugLog("  website: " . $params[8] . " (type: " . gettype($params[8]) . ")");
+                    debugLog("  is_active: " . ($params[9] ? 'true' : 'false') . " (type: " . gettype($params[9]) . ")");
+                    debugLog("  application_status: " . $params[10] . " (type: " . gettype($params[10]) . ")");
+                    debugLog("  approved_at: " . $params[11] . " (type: " . gettype($params[11]) . ")");
+                    debugLog("=== END DEBUG ===");
                     
-                } else {
+                    // Use the shared database helper so this page does not depend on raw pg_* calls.
+                    debugLog("Executing agency insert...");
+                    $agencyId = insertRecord($insertSql, $params);
+
+                    if ($agencyId !== false) {
+                        debugLog("Agency insert succeeded. ID: " . $agencyId);
+                        
+                        if ($agencyId) {
+                            debugLog("Updating application status to approved...");
+                            $updateSql = "UPDATE agency_applications SET status = 'approved', reviewed_by = $1, reviewed_at = NOW() WHERE id = $2";
+                            $updateResult = updateRecord($updateSql, [(int)$userId, (int)$applicationId]);
+                            
+                            commitTransaction();
+                            debugLog("Transaction committed successfully");
+                            
+                            $message = 'Agency approved successfully! They can now handle your job postings.';
+                            $messageType = 'success';
+                            
+                            if (function_exists('logActivity')) {
+                                logActivity($userId, 'Approved Recruitment Agency', 'recruitment_agencies', $agencyId, 
+                                    'Approved agency: ' . $application['agency_name']);
+                                debugLog("Activity logged");
+                            }
+                        } else {
+                            rollbackTransaction();
+                            debugLog("ERROR: No agency ID returned from INSERT");
+                            $message = 'Error creating agency: Could not get agency ID.';
+                            $messageType = 'error';
+                        }
+                    } else {
+                        debugLog("Agency insert failed.");
+                        $message = 'Error creating agency. Please check the application details and try again.';
+                        $messageType = 'error';
+                        
+                        rollbackTransaction();
+                        debugLog("Transaction rolled back");
+                    }
+                } catch (Exception $e) {
                     rollbackTransaction();
-                    $message = 'Error creating agency: ' . mysqli_error($conn);
+                    debugLog("EXCEPTION CAUGHT: " . $e->getMessage());
+                    debugLog("Exception trace: " . $e->getTraceAsString());
+                    $message = 'Error: ' . $e->getMessage();
                     $messageType = 'error';
                 }
-                mysqli_stmt_close($stmt);
-            } catch (Exception $e) {
-                rollbackTransaction();
-                $message = 'Error: ' . $e->getMessage();
-                $messageType = 'error';
             }
         } else {
+            debugLog("Application not found for ID: $applicationId and client_id: $clientId");
             $message = 'Application not found or does not belong to your company.';
             $messageType = 'error';
         }
     }
     
     if ($_POST['action'] === 'reject_agency' && $applicationId > 0) {
+        debugLog("Processing REJECT action for application ID: $applicationId");
+        
         $rejectionReason = trim($_POST['rejection_reason'] ?? 'No reason provided');
+        debugLog("Rejection reason: " . $rejectionReason);
         
-        $updateSql = "UPDATE agency_applications SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ? WHERE id = ? AND client_id = ?";
-        $stmt = mysqli_prepare($conn, $updateSql);
-        mysqli_stmt_bind_param($stmt, 'isii', $userId, $rejectionReason, $applicationId, $clientId);
+        $updateSql = "UPDATE agency_applications SET status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), rejection_reason = $2 WHERE id = $3 AND client_id = $4";
+        $updateResult = updateRecord($updateSql, [(int)$userId, (string)$rejectionReason, (int)$applicationId, (int)$clientId]);
         
-        if (mysqli_stmt_execute($stmt)) {
+        if ($updateResult) {
+            debugLog("Application rejected successfully");
             $message = 'Application rejected successfully.';
             $messageType = 'success';
             
-            logActivity($userId, 'Rejected Recruitment Agency', 'agency_applications', $applicationId, 
-                'Rejected agency application');
+            if (function_exists('logActivity')) {
+                logActivity($userId, 'Rejected Recruitment Agency', 'agency_applications', $applicationId, 
+                    'Rejected agency application');
+            }
         } else {
-            $message = 'Error rejecting application: ' . mysqli_error($conn);
+            debugLog("Failed to reject application");
+            $message = 'Error rejecting application. Please try again.';
             $messageType = 'error';
         }
-        mysqli_stmt_close($stmt);
     }
 }
 
-// Get pending applications for this client
-$pendingApplications = getRecords("
-    SELECT a.*, 
-           CONCAT(u.first_name, ' ', u.last_name) as applicant_name,
-           u.email as applicant_email,
-           u.profile_picture
-    FROM agency_applications a
-    JOIN users u ON a.user_id = u.id
-    WHERE a.client_id = ? AND a.status = 'pending'
-    ORDER BY a.created_at ASC
-", [$clientId], "i");
+// Get pending applications
+$pendingApplications = [];
+if ($clientId > 0) {
+    debugLog("Fetching pending applications for client_id: $clientId");
+    $pendingApplications = getRecords("
+        SELECT a.*, 
+               u.first_name || ' ' || u.last_name as applicant_name,
+               u.email as applicant_email,
+               u.profile_picture
+        FROM agency_applications a
+        JOIN users u ON a.user_id = u.id
+        WHERE a.client_id = $1 AND a.status = 'pending'
+        ORDER BY a.created_at ASC
+    ", [$clientId]);
+    debugLog("Found " . count($pendingApplications) . " pending applications");
+}
 
-// Get approved agencies for this client
-$approvedAgencies = getRecords("
-    SELECT ra.*, 
-           CONCAT(u.first_name, ' ', u.last_name) as owner_name,
-           u.email as owner_email,
-           (SELECT COUNT(*) FROM job_orders WHERE agency_id = ra.id) as job_count
-    FROM recruitment_agencies ra
-    JOIN users u ON ra.user_id = u.id
-    WHERE ra.client_id = ? AND ra.is_active = 1 AND ra.application_status = 'approved'
-    ORDER BY ra.agency_name ASC
-", [$clientId], "i");
+// Get approved agencies
+$approvedAgencies = [];
+if ($clientId > 0) {
+    debugLog("Fetching approved agencies for client_id: $clientId");
+    $approvedAgencies = getRecords("
+        SELECT ra.*, 
+               u.first_name || ' ' || u.last_name as owner_name,
+               u.email as owner_email,
+               (SELECT COUNT(*) FROM job_orders WHERE agency_id = ra.id) as job_count
+        FROM recruitment_agencies ra
+        JOIN users u ON ra.user_id = u.id
+        WHERE ra.client_id = $1 AND ra.is_active = true AND ra.application_status = 'approved'
+        ORDER BY ra.agency_name ASC
+    ", [$clientId]);
+    debugLog("Found " . count($approvedAgencies) . " approved agencies");
+}
 
 // Get rejected applications
-$rejectedApplications = getRecords("
-    SELECT a.*, 
-           CONCAT(u.first_name, ' ', u.last_name) as applicant_name,
-           u.email as applicant_email
-    FROM agency_applications a
-    JOIN users u ON a.user_id = u.id
-    WHERE a.client_id = ? AND a.status = 'rejected'
-    ORDER BY a.updated_at DESC
-    LIMIT 20
-", [$clientId], "i");
+$rejectedApplications = [];
+if ($clientId > 0) {
+    debugLog("Fetching rejected applications for client_id: $clientId");
+    $rejectedApplications = getRecords("
+        SELECT a.*, 
+               u.first_name || ' ' || u.last_name as applicant_name,
+               u.email as applicant_email
+        FROM agency_applications a
+        JOIN users u ON a.user_id = u.id
+        WHERE a.client_id = $1 AND a.status = 'rejected'
+        ORDER BY a.updated_at DESC
+        LIMIT 20
+    ", [$clientId]);
+    debugLog("Found " . count($rejectedApplications) . " rejected applications");
+}
+
+// Helper to safely get user profile for display
+function getSafeUserProfile($userId, $firstName, $email) {
+    return [
+        'first_name' => $firstName,
+        'last_name' => $_SESSION['last_name'] ?? '',
+        'email' => $email,
+        'initials' => strtoupper(substr($firstName, 0, 1)) . strtoupper(substr($_SESSION['last_name'] ?? '', 0, 1)),
+        'avatar_url' => '../../assets/default-avatar.png'
+    ];
+}
+
+$safeUserProfile = getSafeUserProfile($userId, $firstName, $email);
+debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -200,36 +350,24 @@ $rejectedApplications = getRecords("
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           CLEAN UI/UX - CLIENT AGENCY MANAGEMENT
-           ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
             --bg-surface-low: #f8f9fc;
-            --bg-surface-container-low: #f5f6fa;
-            --bg-surface-container-high: #eef0f5;
             --text-on-surface: #0a0e1a;
             --text-on-surface-variant: #4a5168;
-            --outline-variant: #d0d5dd;
             --primary: #4f46e5;
             --primary-container: #eef0ff;
-            --on-primary: #ffffff;
             --on-primary-fixed-variant: #4338ca;
-            --slate-50: #f8fafc;
-            --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
             --slate-300: #cbd5e1;
             --slate-400: #94a3b8;
             --slate-500: #64748b;
-            --slate-600: #475569;
-            --slate-700: #334155;
-            --slate-800: #1e293b;
-            --slate-900: #0f172a;
-            --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
-            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+            --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08);
+            --shadow-xl: 0 20px 25px -5px rgba(0,0,0,0.1);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -258,9 +396,6 @@ $rejectedApplications = getRecords("
         }
         a { text-decoration: none; color: inherit; }
 
-        /* =============================================
-           SIDEBAR
-        ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -332,8 +467,7 @@ $rejectedApplications = getRecords("
             font-size: 1.5rem;
             flex-shrink: 0;
         }
-        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
-        .sidebar-brand-text { font-size: 1rem; font-weight: 700; color: var(--slate-900); letter-spacing: -0.025em; }
+        .sidebar-brand-text { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); }
         .sidebar-brand-category { font-size: 0.7rem; font-weight: 500; color: var(--slate-500); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.1rem; }
         .sidebar-nav { flex: 1; overflow-y: auto; padding: 1rem 0.75rem; }
         .sidebar-nav .nav-label {
@@ -404,7 +538,7 @@ $rejectedApplications = getRecords("
             bottom: 0;
             left: 0;
             right: 0;
-            background: rgba(0, 0, 0, 0.3);
+            background: rgba(0,0,0,0.3);
             backdrop-filter: blur(4px);
             z-index: 40;
             opacity: 0;
@@ -423,7 +557,7 @@ $rejectedApplications = getRecords("
         .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
 
         .top-header {
-            background: rgba(255, 255, 255, 0.85);
+            background: rgba(255,255,255,0.85);
             backdrop-filter: blur(12px);
             border-bottom: 1px solid var(--slate-200);
             display: flex;
@@ -517,7 +651,7 @@ $rejectedApplications = getRecords("
         }
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
         .profile-dropdown-menu .dropdown-header {
-            padding: 0.25rem 0.75rem 0.25rem;
+            padding: 0.25rem 0.75rem;
             font-size: 0.6rem;
             font-weight: 600;
             text-transform: uppercase;
@@ -542,19 +676,13 @@ $rejectedApplications = getRecords("
             font-family: var(--font-sans);
         }
         .profile-dropdown-menu .dropdown-item:hover { background: var(--bg-surface-low); color: var(--primary); }
-        .profile-dropdown-menu .dropdown-item .material-symbols-outlined { font-size: 1.125rem; color: var(--text-on-surface-variant); }
-        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined { color: var(--primary); }
         .profile-dropdown-menu .dropdown-item.danger { color: #dc2626; }
         .profile-dropdown-menu .dropdown-item.danger:hover { background: #fef2f2; color: #dc2626; }
-        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined { color: #dc2626; }
         .profile-dropdown-menu .dropdown-divider { height: 1px; background: var(--slate-200); margin: 0.25rem 0.5rem; }
 
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* =============================================
-           BREADCRUMB
-        ============================================= */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -580,39 +708,20 @@ $rejectedApplications = getRecords("
             font-size: 0.75rem;
             font-weight: 600;
         }
-        .breadcrumb-view .material-symbols-outlined { font-size: 1rem; }
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
-        /* =============================================
-           PAGE HEADER
-        ============================================= */
         .page-header {
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.25rem;
         }
         @media (min-width: 640px) {
             .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
         }
-        .page-header h1 {
-            font-size: 1.75rem;
-            font-weight: 800;
-            color: var(--text-on-surface);
-            letter-spacing: -0.025em;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .page-header h1 .material-symbols-outlined {
-            font-size: 2rem;
-            color: var(--primary);
-        }
+        .page-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); letter-spacing: -0.025em; }
         .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
 
-        /* =============================================
-           BUTTONS
-        ============================================= */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -627,7 +736,7 @@ $rejectedApplications = getRecords("
             font-family: var(--font-sans);
             text-decoration: none;
         }
-        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79, 70, 229, 0.15); }
+        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79,70,229,0.15); }
         .btn-primary:hover { background: var(--on-primary-fixed-variant); transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
         .btn-outline:hover { background: var(--primary-container); }
@@ -641,9 +750,6 @@ $rejectedApplications = getRecords("
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* =============================================
-           TOAST
-        ============================================= */
         .toast {
             position: fixed;
             top: 1rem;
@@ -661,7 +767,6 @@ $rejectedApplications = getRecords("
             align-items: center;
             gap: 0.75rem;
         }
-        .toast .material-symbols-outlined { font-size: 1.25rem; }
         .toast.success { background: #059669; }
         .toast.error { background: #dc2626; }
         @keyframes slideDown {
@@ -669,9 +774,6 @@ $rejectedApplications = getRecords("
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* =============================================
-           CARDS
-        ============================================= */
         .card {
             background: var(--bg-surface);
             border-radius: var(--radius-2xl);
@@ -697,10 +799,7 @@ $rejectedApplications = getRecords("
             align-items: center;
             gap: 0.5rem;
         }
-        .card-header h3 .material-symbols-outlined {
-            font-size: 1.125rem;
-            color: var(--primary);
-        }
+        .card-header h3 .material-symbols-outlined { font-size: 1.125rem; color: var(--primary); }
         .card-header .count-badge {
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
@@ -711,9 +810,6 @@ $rejectedApplications = getRecords("
         }
         .card-body { padding: 1.5rem; }
 
-        /* =============================================
-           BADGES
-        ============================================= */
         .badge {
             display: inline-block;
             padding: 0.125rem 0.75rem;
@@ -727,21 +823,15 @@ $rejectedApplications = getRecords("
         .badge-approved { background: #d1fae5; color: #065f46; }
         .badge-rejected { background: #fecaca; color: #991b1b; }
 
-        /* =============================================
-           APPLICATION CARD - CLEAN VERSION
-        ============================================= */
         .application-card {
             background: var(--bg-surface);
             border-radius: var(--radius-lg);
             border: 1px solid var(--slate-200);
-            padding: 1.25rem 1.5rem;
+            padding: 1rem 1.25rem;
             margin-bottom: 0.75rem;
             transition: all var(--transition-fast);
         }
-        .application-card:hover {
-            box-shadow: var(--shadow-sm);
-            border-color: var(--slate-300);
-        }
+        .application-card:hover { box-shadow: var(--shadow-sm); border-color: var(--slate-300); }
         .application-card:last-child { margin-bottom: 0; }
 
         .app-row {
@@ -750,10 +840,7 @@ $rejectedApplications = getRecords("
             align-items: flex-start;
             gap: 0.75rem;
         }
-        .app-row .app-main {
-            flex: 1;
-            min-width: 200px;
-        }
+        .app-row .app-main { flex: 1; min-width: 200px; }
         .app-row .app-main .app-name {
             display: flex;
             align-items: center;
@@ -814,10 +901,7 @@ $rejectedApplications = getRecords("
             gap: 0.25rem;
             border: 1px solid var(--slate-200);
         }
-        .app-specialization .material-symbols-outlined {
-            font-size: 0.875rem;
-            color: var(--primary);
-        }
+        .app-specialization .material-symbols-outlined { font-size: 0.875rem; color: var(--primary); }
 
         .app-actions {
             display: flex;
@@ -828,9 +912,6 @@ $rejectedApplications = getRecords("
             flex-wrap: wrap;
         }
 
-        /* =============================================
-           AGENCY CARD - CLEAN VERSION
-        ============================================= */
         .agency-card {
             background: var(--bg-surface);
             border-radius: var(--radius-lg);
@@ -843,10 +924,7 @@ $rejectedApplications = getRecords("
             flex-wrap: wrap;
             transition: all var(--transition-fast);
         }
-        .agency-card:hover {
-            box-shadow: var(--shadow-sm);
-            border-color: var(--slate-300);
-        }
+        .agency-card:hover { box-shadow: var(--shadow-sm); border-color: var(--slate-300); }
         .agency-card:last-child { margin-bottom: 0; }
 
         .agency-card .agency-icon {
@@ -891,9 +969,6 @@ $rejectedApplications = getRecords("
             border-radius: var(--radius-full);
         }
 
-        /* =============================================
-           REJECTED ITEMS
-        ============================================= */
         .rejected-item {
             display: flex;
             justify-content: space-between;
@@ -909,18 +984,9 @@ $rejectedApplications = getRecords("
             flex-wrap: wrap;
         }
         .rejected-item .rejected-info .agency-name { font-weight: 600; font-size: 0.875rem; }
-        .rejected-item .rejected-info .agency-code {
-            font-size: 0.6875rem;
-            color: var(--text-on-surface-variant);
-        }
-        .rejected-item .rejected-info .rejected-meta {
-            font-size: 0.6875rem;
-            color: var(--text-on-surface-variant);
-        }
+        .rejected-item .rejected-info .agency-code { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
+        .rejected-item .rejected-info .rejected-meta { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
 
-        /* =============================================
-           EMPTY STATE
-        ============================================= */
         .empty-state {
             text-align: center;
             padding: 2.5rem 1.5rem;
@@ -935,14 +1001,11 @@ $rejectedApplications = getRecords("
         .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); }
         .empty-state p { font-size: 0.875rem; }
 
-        /* =============================================
-           MODALS
-        ============================================= */
         .modal-overlay {
             display: none;
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.5);
+            background: rgba(0,0,0,0.5);
             backdrop-filter: blur(4px);
             z-index: 1000;
             justify-content: center;
@@ -1004,7 +1067,6 @@ $rejectedApplications = getRecords("
             flex-wrap: wrap;
         }
 
-        /* Confirmation Modal */
         .modal-confirm-icon {
             width: 3.5rem;
             height: 3.5rem;
@@ -1043,13 +1105,10 @@ $rejectedApplications = getRecords("
         .form-control:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+            box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
         }
         textarea.form-control { resize: vertical; min-height: 60px; }
 
-        /* =============================================
-           RESPONSIVE
-        ============================================= */
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
             .mobile-menu-btn { display: none !important; }
@@ -1076,9 +1135,8 @@ $rejectedApplications = getRecords("
             .main-scroll { padding: 0.75rem; }
             .breadcrumb-bar { padding: 0.625rem 0.875rem; }
             .page-header h1 { font-size: 1.25rem; }
-            .page-header h1 .material-symbols-outlined { font-size: 1.5rem; }
             .app-grid { grid-template-columns: 1fr; gap: 0.25rem; }
-            .application-card { padding: 1rem; }
+            .application-card { padding: 0.75rem; }
             .agency-card { flex-direction: column; align-items: stretch; text-align: center; }
             .agency-card .agency-stats { justify-content: center; }
             .app-row .app-main .app-name { flex-direction: column; align-items: flex-start; }
@@ -1093,157 +1151,78 @@ $rejectedApplications = getRecords("
 </head>
 <body>
 
-    <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">business</span>
-            </span>
+            <span class="sidebar-brand-icon"><span class="material-symbols-outlined">business</span></span>
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-       <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
-
-        <!-- =============================================
-        SIDEBAR FOOTER
-        ============================================= -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
+        <nav class="sidebar-nav">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link"><span class="material-symbols-outlined">dashboard</span><span class="nav-text">Dashboard</span></a>
+            <a href="jobs.php" class="sidebar-main-link"><span class="material-symbols-outlined">work</span><span class="nav-text">My Jobs</span></a>
+            <a href="agency_application.php" class="sidebar-main-link active"><span class="material-symbols-outlined">apartment</span><span class="nav-text">Agencies</span><?php if ($pendingAgencyCount > 0): ?><span class="nav-badge"><?php echo $pendingAgencyCount; ?></span><?php endif; ?></a>
+            <a href="employees.php" class="sidebar-main-link"><span class="material-symbols-outlined">people</span><span class="nav-text">Employees</span></a>
+            <a href="applicants.php" class="sidebar-main-link"><span class="material-symbols-outlined">person_search</span><span class="nav-text">Applicants</span></a>
+            <a href="invoices.php" class="sidebar-main-link"><span class="material-symbols-outlined">receipt</span><span class="nav-text">Invoices</span></a>
+            <a href="support.php" class="sidebar-main-link"><span class="material-symbols-outlined">support_agent</span><span class="nav-text">Support</span></a>
+            <a href="reports.php" class="sidebar-main-link"><span class="material-symbols-outlined">analytics</span><span class="nav-text">Reports</span></a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link"><span class="material-symbols-outlined">person</span><span class="nav-text">Profile</span></a>
+            <a href="settings.php" class="sidebar-main-link"><span class="material-symbols-outlined">settings</span><span class="nav-text">Settings</span></a>
+        </nav>
         <div class="sidebar-footer">
             <div class="user-card">
-                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                         class="avatar">
-                <?php else: ?>
-                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
-                <?php endif; ?>
+                <span class="avatar"><?php echo htmlspecialchars($safeUserProfile['initials']); ?></span>
                 <div class="user-info">
-                    <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
-                    <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
+                    <div class="user-name"><?php echo htmlspecialchars($safeUserProfile['first_name']); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($safeUserProfile['email']); ?></div>
                 </div>
             </div>
         </div>
     </aside>
 
-    <!-- ===== MAIN CONTENT ===== -->
     <div class="main-wrapper" id="mainWrapper">
         <header class="top-header">
             <div class="top-header-left">
-                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                    <span class="material-symbols-outlined">menu</span>
-                </button>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
-                </button>
+                <button class="mobile-menu-btn" id="mobileMenuBtn"><span class="material-symbols-outlined">menu</span></button>
+                <button class="sidebar-toggle-btn" id="sidebarToggleBtn"><span class="material-symbols-outlined">chevron_left</span></button>
                 <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                    Agencies
-                </span>
+                <span style="font-weight:600; font-size:0.875rem;">Agencies</span>
             </div>
-            <?php
-            $userProfile = getUserProfileData($userId);
-            ?>
             <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
-                    <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
-                        <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
-                             alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
-                             class="avatar-small">
-                    <?php else: ?>
-                        <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
-                    <?php endif; ?>
-                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
+                <button class="profile-dropdown-toggle" id="profileToggle">
+                    <span class="avatar-small"><?php echo htmlspecialchars($safeUserProfile['initials']); ?></span>
+                    <span class="profile-name"><?php echo htmlspecialchars($safeUserProfile['first_name']); ?></span>
                     <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
                     <span class="material-symbols-outlined">expand_more</span>
                 </button>
                 <div class="profile-dropdown-menu" id="profileMenu">
                     <div class="dropdown-header">Account</div>
                     <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
-                        <span class="material-symbols-outlined">logout</span> Logout
-                    </button>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'"><span class="material-symbols-outlined">logout</span>Logout</button>
                 </div>
             </div>
         </header>
 
         <main class="main-scroll">
             <div class="container">
-                <!-- Toast Messages -->
                 <?php if ($message): ?>
                     <div class="toast <?php echo $messageType; ?>" id="toastMessage">
-                        <span class="material-symbols-outlined">
-                            <?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?>
-                        </span>
+                        <span class="material-symbols-outlined"><?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?></span>
                         <?php echo htmlspecialchars($message); ?>
                     </div>
-                    <script>
-                        setTimeout(() => {
-                            const toast = document.getElementById('toastMessage');
-                            if (toast) toast.remove();
-                        }, 5000);
-                    </script>
+                    <script>setTimeout(() => { const toast = document.getElementById('toastMessage'); if (toast) toast.remove(); }, 5000);</script>
                 <?php endif; ?>
 
-                <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
                         <span class="material-symbols-outlined">apartment</span>
                         <span>Recruitment Agencies</span>
                         <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
-                            <?php echo htmlspecialchars($companyName); ?>
-                        </span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);"><?php echo htmlspecialchars($companyName); ?></span>
                     </div>
                     <span class="breadcrumb-meta">
                         <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">pending</span>
@@ -1253,13 +1232,9 @@ $rejectedApplications = getRecords("
                     </span>
                 </div>
 
-                <!-- Page Header -->
                 <div class="page-header">
                     <div>
-                        <h1>
-                            <span class="material-symbols-outlined">apartment</span>
-                            Recruitment Agencies
-                        </h1>
+                        <h1><span class="material-symbols-outlined">apartment</span> Recruitment Agencies</h1>
                         <p>Review and manage agency applications for your company</p>
                     </div>
                 </div>
@@ -1267,13 +1242,8 @@ $rejectedApplications = getRecords("
                 <!-- Pending Applications -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">pending</span>
-                            Pending Applications
-                        </h3>
-                        <span class="count-badge">
-                            <?php echo count($pendingApplications); ?> pending
-                        </span>
+                        <h3><span class="material-symbols-outlined">pending</span> Pending Applications</h3>
+                        <span class="count-badge"><?php echo count($pendingApplications); ?> pending</span>
                     </div>
                     <div class="card-body">
                         <?php if (empty($pendingApplications)): ?>
@@ -1300,53 +1270,30 @@ $rejectedApplications = getRecords("
                                     </div>
 
                                     <div class="app-grid">
-                                        <div class="grid-item">
-                                            <span class="material-symbols-outlined">person</span>
-                                            <?php echo htmlspecialchars($app['contact_person']); ?>
-                                        </div>
-                                        <div class="grid-item">
-                                            <span class="material-symbols-outlined">email</span>
-                                            <?php echo htmlspecialchars($app['contact_email']); ?>
-                                        </div>
+                                        <div class="grid-item"><span class="material-symbols-outlined">person</span><?php echo htmlspecialchars($app['contact_person']); ?></div>
+                                        <div class="grid-item"><span class="material-symbols-outlined">email</span><?php echo htmlspecialchars($app['contact_email']); ?></div>
                                         <?php if ($app['contact_phone']): ?>
-                                            <div class="grid-item">
-                                                <span class="material-symbols-outlined">phone</span>
-                                                <?php echo htmlspecialchars($app['contact_phone']); ?>
-                                            </div>
+                                            <div class="grid-item"><span class="material-symbols-outlined">phone</span><?php echo htmlspecialchars($app['contact_phone']); ?></div>
                                         <?php endif; ?>
                                         <?php if ($app['years_experience']): ?>
-                                            <div class="grid-item">
-                                                <span class="material-symbols-outlined">work_history</span>
-                                                <?php echo htmlspecialchars($app['years_experience']); ?>
-                                            </div>
+                                            <div class="grid-item"><span class="material-symbols-outlined">work_history</span><?php echo htmlspecialchars($app['years_experience']); ?></div>
                                         <?php endif; ?>
                                         <?php if ($app['team_size']): ?>
-                                            <div class="grid-item">
-                                                <span class="material-symbols-outlined">group</span>
-                                                <?php echo htmlspecialchars($app['team_size']); ?>
-                                            </div>
+                                            <div class="grid-item"><span class="material-symbols-outlined">group</span><?php echo htmlspecialchars($app['team_size']); ?></div>
                                         <?php endif; ?>
-                                        <div class="grid-item">
-                                            <span class="material-symbols-outlined">calendar_today</span>
-                                            <?php echo date('M d, Y', strtotime($app['created_at'])); ?>
-                                        </div>
+                                        <div class="grid-item"><span class="material-symbols-outlined">calendar_today</span><?php echo date('M d, Y', strtotime($app['created_at'])); ?></div>
                                     </div>
 
                                     <?php if ($app['specialization']): ?>
-                                        <div class="app-specialization">
-                                            <span class="material-symbols-outlined">sell</span>
-                                            <?php echo htmlspecialchars($app['specialization']); ?>
-                                        </div>
+                                        <div class="app-specialization"><span class="material-symbols-outlined">sell</span><?php echo htmlspecialchars($app['specialization']); ?></div>
                                     <?php endif; ?>
 
                                     <div class="app-actions">
                                         <button class="btn btn-success btn-sm" onclick="openApproveModal(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['agency_name']); ?>')">
-                                            <span class="material-symbols-outlined">check</span>
-                                            Approve
+                                            <span class="material-symbols-outlined">check</span> Approve
                                         </button>
                                         <button class="btn btn-danger btn-sm" onclick="rejectAgency(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['agency_name']); ?>')">
-                                            <span class="material-symbols-outlined">close</span>
-                                            Reject
+                                            <span class="material-symbols-outlined">close</span> Reject
                                         </button>
                                     </div>
                                 </div>
@@ -1358,10 +1305,7 @@ $rejectedApplications = getRecords("
                 <!-- Approved Agencies -->
                 <div class="card">
                     <div class="card-header">
-                        <h3>
-                            <span class="material-symbols-outlined">check_circle</span>
-                            Approved Agencies
-                        </h3>
+                        <h3><span class="material-symbols-outlined">check_circle</span> Approved Agencies</h3>
                         <span class="count-badge"><?php echo count($approvedAgencies); ?> agencies</span>
                     </div>
                     <div class="card-body">
@@ -1376,8 +1320,7 @@ $rejectedApplications = getRecords("
                                 <div class="agency-card">
                                     <div class="agency-icon">
                                         <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
-                                            <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" 
-                                                 alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
+                                            <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
                                         <?php else: ?>
                                             <?php echo substr($agency['agency_name'], 0, 1); ?>
                                         <?php endif; ?>
@@ -1393,14 +1336,8 @@ $rejectedApplications = getRecords("
                                         </div>
                                     </div>
                                     <div class="agency-stats">
-                                        <span>
-                                            <span class="material-symbols-outlined">work</span>
-                                            <?php echo $agency['job_count'] ?? 0; ?>
-                                        </span>
-                                        <span>
-                                            <span class="material-symbols-outlined">check_circle</span>
-                                            Active
-                                        </span>
+                                        <span><span class="material-symbols-outlined">work</span><?php echo $agency['job_count'] ?? 0; ?></span>
+                                        <span><span class="material-symbols-outlined">check_circle</span>Active</span>
                                     </div>
                                 </div>
                             <?php endforeach; ?>
@@ -1412,10 +1349,7 @@ $rejectedApplications = getRecords("
                 <?php if (!empty($rejectedApplications)): ?>
                     <div class="card">
                         <div class="card-header">
-                            <h3>
-                                <span class="material-symbols-outlined">cancel</span>
-                                Rejected Applications
-                            </h3>
+                            <h3><span class="material-symbols-outlined">cancel</span> Rejected Applications</h3>
                             <span class="count-badge"><?php echo count($rejectedApplications); ?></span>
                         </div>
                         <div class="card-body">
@@ -1437,181 +1371,103 @@ $rejectedApplications = getRecords("
         </main>
     </div>
 
-    <!-- =============================================
-    APPROVE CONFIRMATION MODAL
-    ============================================= -->
+    <!-- Approve Modal -->
     <div class="modal-overlay" id="approveModal">
         <div class="modal">
             <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">check_circle</span>
-                    Confirm Approval
-                </h2>
-                <button class="modal-close" onclick="closeModal('approveModal')">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
+                <h2><span class="material-symbols-outlined">check_circle</span> Confirm Approval</h2>
+                <button class="modal-close" onclick="closeModal('approveModal')"><span class="material-symbols-outlined">close</span></button>
             </div>
             <div class="modal-body">
-                <div class="modal-confirm-icon success">
-                    <span class="material-symbols-outlined">check_circle</span>
-                </div>
+                <div class="modal-confirm-icon success"><span class="material-symbols-outlined">check_circle</span></div>
                 <p style="font-size:0.875rem; text-align:center; color:var(--text-on-surface-variant); margin-bottom:1rem;">
                     You are about to approve <strong id="approveAgencyName" style="color:var(--text-on-surface);"></strong> as a recruitment agency for your company.
                 </p>
                 <div style="background:#f0fdf4; padding:0.75rem 1rem; border-radius:0.5rem; border:1px solid #bbf7d0; text-align:center;">
-                    <span style="font-size:0.8125rem; color:#065f46;">
-                        ✅ This agency will be able to handle your job postings immediately.
-                    </span>
+                    <span style="font-size:0.8125rem; color:#065f46;">✅ This agency will be able to handle your job postings immediately.</span>
                 </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-ghost" onclick="closeModal('approveModal')">Cancel</button>
-                <button type="button" class="btn btn-success" id="confirmApproveBtn">
-                    <span class="material-symbols-outlined">check</span>
-                    Yes, Approve Agency
-                </button>
+                <button type="button" class="btn btn-success" id="confirmApproveBtn"><span class="material-symbols-outlined">check</span> Yes, Approve Agency</button>
             </div>
         </div>
     </div>
 
-    <!-- =============================================
-    REJECT MODAL
-    ============================================= -->
+    <!-- Reject Modal -->
     <div class="modal-overlay" id="rejectModal">
         <div class="modal">
             <div class="modal-header">
-                <h2>
-                    <span class="material-symbols-outlined">cancel</span>
-                    Reject Application
-                </h2>
-                <button class="modal-close" onclick="closeModal('rejectModal')">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
+                <h2><span class="material-symbols-outlined">cancel</span> Reject Application</h2>
+                <button class="modal-close" onclick="closeModal('rejectModal')"><span class="material-symbols-outlined">close</span></button>
             </div>
             <form method="POST" action="" id="rejectForm">
                 <input type="hidden" name="action" value="reject_agency">
                 <input type="hidden" name="application_id" id="rejectApplicationId" value="">
                 <div class="modal-body">
-                    <div class="modal-confirm-icon danger">
-                        <span class="material-symbols-outlined">cancel</span>
-                    </div>
+                    <div class="modal-confirm-icon danger"><span class="material-symbols-outlined">cancel</span></div>
                     <p style="font-size:0.875rem; text-align:center; color:var(--text-on-surface-variant); margin-bottom:1rem;">
                         You are about to reject <strong id="rejectAgencyName" style="color:var(--text-on-surface);"></strong>'s application.
                     </p>
                     <div class="form-group">
-                        <label>Reason for Rejection <span class="required">*</span></label>
-                        <textarea name="rejection_reason" class="form-control" placeholder="Please provide a reason for rejecting this application..." rows="4" required></textarea>
+                        <label for="rejection_reason">Reason for Rejection <span class="required">*</span></label>
+                        <textarea id="rejection_reason" name="rejection_reason" class="form-control" placeholder="Please provide a reason for rejecting this application..." rows="4" required></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" onclick="closeModal('rejectModal')">Cancel</button>
-                    <button type="submit" class="btn btn-danger">
-                        <span class="material-symbols-outlined">cancel</span>
-                        Reject Application
-                    </button>
+                    <button type="submit" class="btn btn-danger"><span class="material-symbols-outlined">cancel</span> Reject Application</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- =============================================
-    JAVASCRIPT
-    ============================================= -->
     <script>
-        // =============================================
-        // 1. SIDEBAR TOGGLE
-        // =============================================
+        // Sidebar toggle
         const sidebar = document.getElementById('appSidebar');
         const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-        const isMobile = window.innerWidth <= 768;
         const savedState = localStorage.getItem('sidebarCollapsed');
-
-        if (savedState === 'true' && !isMobile) {
+        if (savedState === 'true' && window.innerWidth > 768) {
             sidebar.classList.add('collapsed');
             const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
             if (icon) icon.textContent = 'chevron_right';
         }
-
         sidebarToggleBtn.addEventListener('click', function() {
             if (window.innerWidth <= 768) return;
             sidebar.classList.toggle('collapsed');
             const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            }
+            if (icon) icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
             localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
         });
 
-        // =============================================
-        // 2. MOBILE SIDEBAR
-        // =============================================
+        // Mobile sidebar
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+        function openMobileSidebar() { sidebar.classList.add('mobile-open'); sidebarBackdrop.classList.add('active'); document.body.style.overflow = 'hidden'; }
+        function closeMobileSidebar() { sidebar.classList.remove('mobile-open'); sidebarBackdrop.classList.remove('active'); document.body.style.overflow = ''; }
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
 
-        function openMobileSidebar() {
-            sidebar.classList.add('mobile-open');
-            sidebarBackdrop.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeMobileSidebar() {
-            sidebar.classList.remove('mobile-open');
-            sidebarBackdrop.classList.remove('active');
-            document.body.style.overflow = '';
-        }
-
-        if (mobileMenuBtn) {
-            mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        }
-        if (sidebarBackdrop) {
-            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-        }
-
-        // =============================================
-        // 3. PROFILE DROPDOWN
-        // =============================================
+        // Profile dropdown
         const profileToggle = document.getElementById('profileToggle');
         const profileMenu = document.getElementById('profileMenu');
+        profileToggle.addEventListener('click', function(e) { e.stopPropagation(); this.classList.toggle('open'); profileMenu.classList.toggle('open'); });
+        document.addEventListener('click', function(e) { if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) { profileToggle.classList.remove('open'); profileMenu.classList.remove('open'); } });
 
-        if (profileToggle && profileMenu) {
-            profileToggle.addEventListener('click', function(e) {
-                e.stopPropagation();
-                this.classList.toggle('open');
-                profileMenu.classList.toggle('open');
-            });
-
-            document.addEventListener('click', function(e) {
-                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                    profileToggle.classList.remove('open');
-                    profileMenu.classList.remove('open');
-                }
-            });
-        }
-
-        // =============================================
-        // 4. MODAL FUNCTIONS
-        // =============================================
+        // Modal functions
         function openModal(id) {
             const modal = document.getElementById(id);
-            if (modal) {
-                modal.classList.add('active');
-                document.body.style.overflow = 'hidden';
-            }
+            if (modal) { modal.classList.add('active'); document.body.style.overflow = 'hidden'; }
         }
 
         function closeModal(id) {
             const modal = document.getElementById(id);
-            if (modal) {
-                modal.classList.remove('active');
-                document.body.style.overflow = '';
-            }
+            if (modal) { modal.classList.remove('active'); document.body.style.overflow = ''; }
         }
 
         document.querySelectorAll('.modal-overlay').forEach(overlay => {
             overlay.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    closeModal(this.id);
-                }
+                if (e.target === this) { closeModal(this.id); }
             });
         });
 
@@ -1625,11 +1481,7 @@ $rejectedApplications = getRecords("
             }
         });
 
-        // =============================================
-        // 5. AGENCY ACTIONS - WITH CONFIRMATION MODAL
-        // =============================================
-        
-        // Approve Agency - Show confirmation modal
+        // Agency actions
         let approveApplicationId = null;
         
         function openApproveModal(id, name) {
@@ -1638,11 +1490,8 @@ $rejectedApplications = getRecords("
             openModal('approveModal');
         }
 
-        // Confirm approve
         document.getElementById('confirmApproveBtn').addEventListener('click', function() {
             if (!approveApplicationId) return;
-            
-            // Create and submit form
             const form = document.createElement('form');
             form.method = 'POST';
             form.style.display = 'none';
@@ -1651,24 +1500,281 @@ $rejectedApplications = getRecords("
                 <input type="hidden" name="application_id" value="${approveApplicationId}">
             `;
             document.body.appendChild(form);
-            
-            // Close modal first
             closeModal('approveModal');
-            
-            // Submit form
             form.submit();
         });
 
-        // Reject Agency - Open reject modal
         function rejectAgency(id, name) {
             document.getElementById('rejectApplicationId').value = id;
             document.getElementById('rejectAgencyName').textContent = name;
             openModal('rejectModal');
         }
 
-        // =============================================
-        // 6. RESPONSIVE HANDLING
-        // =============================================
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
+
+
+        // Responsive handling
         let resizeTimer;
         window.addEventListener('resize', function() {
             clearTimeout(resizeTimer);
@@ -1690,8 +1796,8 @@ $rejectedApplications = getRecords("
             }, 250);
         });
 
-        console.log('🏢 ISMERS Agency Management (Clean UI) loaded successfully!');
+        console.log('🏢 ISMERS Agency Management loaded successfully!');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

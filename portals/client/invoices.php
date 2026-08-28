@@ -10,8 +10,9 @@ ini_set('display_errors', 1);
 ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/debug.log');
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -24,47 +25,54 @@ if ($_SESSION['role'] !== 'client') {
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
-// Get client profile
+// Get client profile - PostgreSQL version
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = ['company_name' => 'Your Company', 'id' => 0];
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = $client['id'] ?? 0;
+$clientId = (int)($client['id'] ?? 0);
 
 // =============================================
 // GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
 // =============================================
 $pendingAgencyCount = 0;
-$pendingAgencies = getRecords("
-    SELECT COUNT(*) as count FROM agency_applications 
-    WHERE client_id = ? AND status = 'pending'
-", [$clientId], "i");
-
-if (!empty($pendingAgencies)) {
-    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+if ($clientId > 0) {
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    if ($pendingAgencies) {
+        $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
+    }
 }
 
 // =============================================
-// GET INVOICES
+// GET FILTER PARAMETERS
+// =============================================
+$statusFilter = $_GET['status'] ?? 'all';
+$searchQuery = trim($_GET['search'] ?? '');
+
+// =============================================
+// GET INVOICES - PostgreSQL version
 // =============================================
 $invoices = getRecords("
     SELECT * FROM invoices 
-    WHERE client_id = ? 
-    ORDER BY invoice_date DESC
-", [$clientId], "i");
+    WHERE client_id = $1
+    ORDER BY created_at DESC
+", [$clientId]);
 
 // =============================================
 // CALCULATE SUMMARY STATS
@@ -73,79 +81,59 @@ $totalInvoices = count($invoices);
 $totalPaid = 0;
 $totalPending = 0;
 $totalOverdue = 0;
-$totalAmount = 0;
-$totalPaidAmount = 0;
 
 foreach ($invoices as $invoice) {
-    $totalAmount += $invoice['amount'] ?? 0;
-    
-    if ($invoice['status'] === 'paid') {
-        $totalPaid++;
-        $totalPaidAmount += $invoice['amount'] ?? 0;
-    } elseif ($invoice['status'] === 'overdue') {
-        $totalOverdue++;
-    } else {
-        $totalPending++;
+    switch ($invoice['status'] ?? 'pending') {
+        case 'paid':
+            $totalPaid++;
+            break;
+        case 'pending':
+            $totalPending++;
+            break;
+        case 'overdue':
+            $totalOverdue++;
+            break;
     }
 }
 
 // =============================================
-// GET FILTER PARAMETERS
+// FILTER INVOICES
 // =============================================
-$statusFilter = $_GET['status'] ?? 'all';
-$searchQuery = $_GET['search'] ?? '';
-
-// Apply filters
 $filteredInvoices = $invoices;
 
+// Filter by status
 if ($statusFilter !== 'all') {
-    $filteredInvoices = array_filter($filteredInvoices, function($inv) use ($statusFilter) {
-        return ($inv['status'] ?? '') === $statusFilter;
+    $filteredInvoices = array_filter($filteredInvoices, function($invoice) use ($statusFilter) {
+        return ($invoice['status'] ?? 'pending') === $statusFilter;
     });
 }
 
+// Filter by search
 if (!empty($searchQuery)) {
     $searchLower = strtolower($searchQuery);
-    $filteredInvoices = array_filter($filteredInvoices, function($inv) use ($searchLower) {
-        return strpos(strtolower($inv['invoice_number'] ?? ''), $searchLower) !== false ||
-               strpos(strtolower($inv['description'] ?? ''), $searchLower) !== false;
+    $filteredInvoices = array_filter($filteredInvoices, function($invoice) use ($searchLower) {
+        $invoiceNumber = strtolower($invoice['invoice_number'] ?? '');
+        $description = strtolower($invoice['description'] ?? '');
+        return strpos($invoiceNumber, $searchLower) !== false || 
+               strpos($description, $searchLower) !== false;
     });
 }
 
-// Status badge mapping
-$statusBadges = [
-    'paid' => 'badge-paid',
-    'pending' => 'badge-pending',
-    'overdue' => 'badge-overdue'
-];
-
+// Status labels and badges
 $statusLabels = [
     'paid' => 'Paid',
     'pending' => 'Pending',
     'overdue' => 'Overdue'
 ];
 
-// Get greeting
-$currentHour = date('H');
-$greeting = 'Good Evening';
-if ($currentHour < 12) {
-    $greeting = 'Good Morning';
-} elseif ($currentHour < 18) {
-    $greeting = 'Good Afternoon';
-}
+$statusBadges = [
+    'paid' => 'badge-paid',
+    'pending' => 'badge-pending',
+    'overdue' => 'badge-overdue'
+];
 
-// =============================================
-// HANDLE INVOICE VIEW (MODAL)
-// =============================================
-$viewInvoiceId = isset($_GET['view']) ? (int)$_GET['view'] : 0;
-$viewInvoice = null;
-
-if ($viewInvoiceId > 0) {
-    $viewInvoice = getRecord("
-        SELECT * FROM invoices 
-        WHERE id = ? AND client_id = ?
-    ", [$viewInvoiceId, $clientId], "ii");
-}
+// Get user profile for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -350,6 +338,13 @@ if ($viewInvoiceId > 0) {
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .sidebar-footer .user-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
@@ -450,6 +445,13 @@ if ($viewInvoiceId > 0) {
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .profile-dropdown-toggle .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
@@ -1010,60 +1012,57 @@ if ($viewInvoiceId > 0) {
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-       <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
+        <nav class="sidebar-nav">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
 
         <!-- =============================================
         SIDEBAR FOOTER
         ============================================= -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1094,9 +1093,6 @@ if ($viewInvoiceId > 0) {
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Invoices</span>
             </div>
-            <?php
-            $userProfile = getUserProfileData($userId);
-            ?>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1472,6 +1468,269 @@ if ($viewInvoiceId > 0) {
             }
         }
 
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
+
         // =============================================
         // 7. RESPONSIVE HANDLING
         // =============================================
@@ -1498,5 +1757,6 @@ if ($viewInvoiceId > 0) {
 
         console.log('📄 Invoices loaded successfully!');
     </script>
+    <script src="/CT1/session_guard.js"></script>
 </body>
 </html>

@@ -2,7 +2,9 @@
 // portals/client/applicants.php - AI-Powered Client Applicant Management
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
@@ -11,13 +13,14 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     exit;
 }
 
+
 // Check if user has client role
 if ($_SESSION['role'] !== 'client') {
     header('Location: ../../login.php');
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
@@ -27,41 +30,40 @@ $role = $_SESSION['role'] ?? 'client';
 // =============================================
 $aiService = new AiService();
 
-// Get client profile
+// Get client profile - PostgreSQL
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = ['company_name' => 'Your Company', 'id' => 0];
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = $client['id'] ?? 0;
+$clientId = (int)($client['id'] ?? 0);
 
 // =============================================
 // GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
 // =============================================
 $pendingAgencyCount = 0;
-$pendingAgencies = getRecords("
-    SELECT COUNT(*) as count FROM agency_applications 
-    WHERE client_id = ? AND status = 'pending'
-", [$clientId], "i");
-
-if (!empty($pendingAgencies)) {
-    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+if ($clientId > 0) {
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
 }
+
+
+
 
 // =============================================
 // AI HELPER FUNCTIONS
 // =============================================
 
-/**
- * Calculate AI match score for an applicant against their job
- */
 function calculateApplicantMatchScore($job, $applicant) {
     global $aiService;
     
@@ -85,7 +87,7 @@ function calculateApplicantMatchScore($job, $applicant) {
             }
         }
         
-        // Clean up skills - remove empty values
+        // Clean up skills
         $jobSkills = array_filter($jobSkills);
         $applicantSkills = array_filter($applicantSkills);
         
@@ -132,11 +134,11 @@ function calculateApplicantMatchScore($job, $applicant) {
             $applicantSkills = ['Communication', 'Teamwork'];
         }
         
-        // Convert skills arrays to comma-separated strings for the AI service
+        // Convert skills arrays to comma-separated strings
         $jobSkillsString = is_array($jobSkills) ? implode(', ', $jobSkills) : $jobSkills;
         $applicantSkillsString = is_array($applicantSkills) ? implode(', ', $applicantSkills) : $applicantSkills;
         
-        // Build job data with correct keys for AiService::calculateMatchScore
+        // Build job data
         $jobData = [
             'title' => $job['title'] ?? 'Unknown Position',
             'skills_required' => $jobSkillsString,
@@ -144,7 +146,7 @@ function calculateApplicantMatchScore($job, $applicant) {
             'experience_level' => $job['experience_level'] ?? 'Mid'
         ];
         
-        // Build applicant data with correct keys for AiService::calculateMatchScore
+        // Build applicant data
         $applicantData = [
             'skills' => $applicantSkillsString,
             'experience' => $applicant['experience'] ?? '',
@@ -152,11 +154,9 @@ function calculateApplicantMatchScore($job, $applicant) {
             'cover_letter' => $applicant['cover_letter'] ?? ''
         ];
         
-        // Call the AI service with the correct parameter format
         $result = $aiService->calculateMatchScore($jobData, $applicantData);
         
         if ($result && !isset($result['error'])) {
-            // Map the response to our expected format
             return [
                 'success' => true,
                 'score' => $result['score'] ?? 0,
@@ -170,7 +170,6 @@ function calculateApplicantMatchScore($job, $applicant) {
         error_log("AI Match Score Error: " . $e->getMessage());
     }
     
-    // Return a fallback mock score
     return [
         'success' => true,
         'score' => rand(40, 85),
@@ -181,9 +180,6 @@ function calculateApplicantMatchScore($job, $applicant) {
     ];
 }
 
-/**
- * Parse resume with AI
- */
 function parseResumeWithAI($filePath) {
     global $aiService;
     
@@ -222,9 +218,6 @@ function parseResumeWithAI($filePath) {
     return ['success' => false, 'error' => 'Could not parse resume'];
 }
 
-// =============================================
-// RESUME PATH CONFIGURATION
-// =============================================
 function getResumeUrl($filename) {
     if (empty($filename)) {
         return ['url' => null];
@@ -283,9 +276,6 @@ function getResumeUrl($filename) {
 // HANDLE AJAX REQUESTS
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    // =============================================
-    // GET AI MATCH SCORE (AJAX) - FIXED
-    // =============================================
     if ($_POST['action'] === 'get_ai_match') {
         header('Content-Type: application/json');
         $applicationId = intval($_POST['application_id'] ?? 0);
@@ -295,27 +285,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             exit;
         }
         
-        // Get application details with job and applicant info
         $sql = "SELECT a.*, 
                        jo.id as job_id, jo.title as job_title, jo.skills_required as job_skills, jo.experience_level,
                        ap.skills as applicant_skills, ap.experience as applicant_experience, ap.education as applicant_education
                 FROM applications a
                 JOIN job_orders jo ON a.job_order_id = jo.id
                 JOIN applicants ap ON a.applicant_id = ap.id
-                WHERE a.id = ? AND jo.client_id = ?";
-        $stmt = mysqli_prepare($conn, $sql);
-        mysqli_stmt_bind_param($stmt, 'ii', $applicationId, $clientId);
-        mysqli_stmt_execute($stmt);
-        $result = mysqli_stmt_get_result($stmt);
-        $data = mysqli_fetch_assoc($result);
-        mysqli_stmt_close($stmt);
+                WHERE a.id = $1 AND jo.client_id = $2";
+        
+        $data = getRecord($sql, [$applicationId, $clientId]);
         
         if (!$data) {
             echo json_encode(['success' => false, 'error' => 'Application not found']);
             exit;
         }
         
-        // Build job and applicant data
         $job = [
             'title' => $data['job_title'],
             'skills_required' => $data['job_skills'],
@@ -330,9 +314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         
         $result = calculateApplicantMatchScore($job, $applicant);
         
-        // Store the match score in the applications table
         if ($result['success']) {
-            // Escape the match details for SQL
             $matchDetails = json_encode([
                 'strengths' => $result['strengths'],
                 'gaps' => $result['gaps'],
@@ -340,27 +322,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'provider' => $result['provider']
             ]);
             
-            $matchDetailsEscaped = mysqli_real_escape_string($conn, $matchDetails);
             $score = intval($result['score']);
             
-            // Update with match_updated_at
-            $updateSql = "UPDATE applications SET match_score = ?, match_details = ?, match_updated_at = NOW() WHERE id = ?";
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'isi', $score, $matchDetailsEscaped, $applicationId);
-            
-            if ($stmt) {
-                mysqli_stmt_execute($stmt);
-                mysqli_stmt_close($stmt);
-            }
+            $updateSql = "UPDATE applications SET match_score = $1, match_details = $2, match_updated_at = NOW() WHERE id = $3";
+            updateRecord($updateSql, [$score, $matchDetails, $applicationId]);
         }
         
         echo json_encode($result);
         exit;
     }
     
-    // =============================================
-    // PARSE RESUME (AJAX)
-    // =============================================
     if ($_POST['action'] === 'parse_resume') {
         header('Content-Type: application/json');
         $resumePath = $_POST['resume_path'] ?? '';
@@ -393,29 +364,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $applicationId = intval($_POST['application_id'] ?? 0);
         $newStatus = $_POST['new_status'] ?? 'pending';
         
-        if ($applicationId > 0) {
+        if ($applicationId > 0 && $clientId > 0) {
             $verifySql = "SELECT a.id FROM applications a
                         JOIN job_orders jo ON a.job_order_id = jo.id
-                        WHERE a.id = ? AND jo.client_id = ?";
-            $stmt = mysqli_prepare($conn, $verifySql);
-            mysqli_stmt_bind_param($stmt, 'ii', $applicationId, $clientId);
-            mysqli_stmt_execute($stmt);
-            $verifyResult = mysqli_stmt_get_result($stmt);
+                        WHERE a.id = $1 AND jo.client_id = $2";
+            $verifyResult = getRecord($verifySql, [$applicationId, $clientId]);
             
-            if (mysqli_fetch_assoc($verifyResult)) {
-                $updateSql = "UPDATE applications SET status = ?, updated_at = NOW() 
-                            WHERE id = ?";
-                $stmt = mysqli_prepare($conn, $updateSql);
-                mysqli_stmt_bind_param($stmt, 'si', $newStatus, $applicationId);
+            if ($verifyResult) {
+                $updateSql = "UPDATE applications SET status = $1, updated_at = NOW() 
+                            WHERE id = $2";
+                $updateResult = updateRecord($updateSql, [$newStatus, $applicationId]);
                 
-                if (mysqli_stmt_execute($stmt)) {
+                if ($updateResult) {
                     $message = 'Applicant status updated successfully!';
                     $messageType = 'success';
                 } else {
                     $message = 'Error updating applicant status.';
                     $messageType = 'error';
                 }
-                mysqli_stmt_close($stmt);
             } else {
                 $message = 'You do not have permission to update this applicant.';
                 $messageType = 'error';
@@ -427,33 +393,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $applicationIds = $_POST['application_ids'] ?? [];
         $bulkStatus = $_POST['bulk_status'] ?? '';
         
-        if (!empty($applicationIds) && !empty($bulkStatus)) {
+        if (!empty($applicationIds) && !empty($bulkStatus) && $clientId > 0) {
             $ids = array_map('intval', $applicationIds);
-            $idsString = implode(',', $ids);
+            
+            $placeholders = [];
+            $params = [];
+            $counter = 1;
+            foreach ($ids as $id) {
+                $placeholders[] = '$' . $counter++;
+                $params[] = $id;
+            }
+            $params[] = $clientId;
+            
+            $idsString = implode(',', $placeholders);
             
             $verifySql = "SELECT COUNT(*) as count FROM applications a
                         JOIN job_orders jo ON a.job_order_id = jo.id
-                        WHERE a.id IN ($idsString) AND jo.client_id = ?";
-            $stmt = mysqli_prepare($conn, $verifySql);
-            mysqli_stmt_bind_param($stmt, 'i', $clientId);
-            mysqli_stmt_execute($stmt);
-            $verifyResult = mysqli_stmt_get_result($stmt);
-            $verifyRow = mysqli_fetch_assoc($verifyResult);
+                        WHERE a.id IN ($idsString) AND jo.client_id = $" . $counter;
             
-            if ($verifyRow['count'] == count($ids)) {
-                $updateSql = "UPDATE applications SET status = ?, updated_at = NOW() 
+            $verifyParams = array_merge($ids, [$clientId]);
+            $verifyResult = getRecord($verifySql, $verifyParams);
+            
+            if ($verifyResult && isset($verifyResult['count']) && $verifyResult['count'] == count($ids)) {
+                $updateSql = "UPDATE applications SET status = $" . ($counter + 1) . ", updated_at = NOW() 
                             WHERE id IN ($idsString)";
-                $stmt = mysqli_prepare($conn, $updateSql);
-                mysqli_stmt_bind_param($stmt, 's', $bulkStatus);
+                $updateParams = array_merge($ids, [$bulkStatus]);
+                $updateResult = updateRecord($updateSql, $updateParams);
                 
-                if (mysqli_stmt_execute($stmt)) {
+                if ($updateResult) {
                     $message = count($ids) . ' applicants updated successfully!';
                     $messageType = 'success';
                 } else {
                     $message = 'Error updating applicants.';
                     $messageType = 'error';
                 }
-                mysqli_stmt_close($stmt);
             } else {
                 $message = 'Some applications do not belong to you.';
                 $messageType = 'error';
@@ -463,44 +436,107 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // =============================================
-// GET ALL APPLICANTS - WITH match_score AND match_details
+// ✅ FIXED: GET APPLICANTS FOR THIS CLIENT ONLY
 // =============================================
-$applicantsSql = "SELECT a.*, 
-                a.match_score, a.match_details,
-                ap.id as applicant_profile_id, ap.phone, ap.address, 
-                ap.resume_path as applicant_resume_path, ap.skills as applicant_skills,
-                ap.experience as applicant_experience, ap.education as applicant_education,
-                a.resume_path as application_resume_path,
-                u.id as user_id, u.first_name, u.last_name, u.email,
-                jo.id as job_id, jo.title as job_title, jo.location as job_location,
-                jo.job_type as job_type, jo.skills_required as job_skills,
-                (SELECT COUNT(*) FROM applications 
-                WHERE applicant_id = a.applicant_id AND status IN ('shortlisted', 'hired')) as other_applications
-                FROM applications a
-                JOIN applicants ap ON a.applicant_id = ap.id
-                JOIN users u ON ap.user_id = u.id
-                JOIN job_orders jo ON a.job_order_id = jo.id
-                WHERE jo.client_id = ?
-                ORDER BY 
-                    CASE a.status 
-                    WHEN 'pending' THEN 1
-                    WHEN 'reviewed' THEN 2
-                    WHEN 'shortlisted' THEN 3
-                    WHEN 'hired' THEN 4
-                    WHEN 'rejected' THEN 5
-                    ELSE 6
-                    END,
-                    a.applied_at DESC";
-
-$stmt = mysqli_prepare($conn, $applicantsSql);
-mysqli_stmt_bind_param($stmt, 'i', $clientId);
-mysqli_stmt_execute($stmt);
-$applicantsResult = mysqli_stmt_get_result($stmt);
 $allApplicants = [];
-while ($row = mysqli_fetch_assoc($applicantsResult)) {
-    $allApplicants[] = $row;
+
+// ✅ FIXED: First verify we have a valid client ID
+if ($clientId > 0) {
+    // Get all job IDs for this client
+    $clientJobs = getRecords("SELECT id, title FROM job_orders WHERE client_id = $1 AND status != 'closed'", [$clientId]);
+    
+    if (!empty($clientJobs)) {
+        $jobIds = array_column($clientJobs, 'id');
+        $jobIdPlaceholders = [];
+        $params = [];
+        $counter = 1;
+        
+        foreach ($jobIds as $jid) {
+            $jobIdPlaceholders[] = '$' . $counter++;
+            $params[] = $jid;
+        }
+        $jobIdsString = implode(',', $jobIdPlaceholders);
+        
+        // ✅ FIXED: Query applicants for jobs belonging to this client
+        $applicantsSql = "
+            SELECT 
+                a.*,
+                a.match_score,
+                a.match_details,
+                a.resume_path as application_resume_path,
+                ap.id as applicant_profile_id,
+                ap.phone,
+                ap.address,
+                ap.resume_path as applicant_resume_path,
+                ap.skills as applicant_skills,
+                ap.experience as applicant_experience,
+                ap.education as applicant_education,
+                u.id as user_id,
+                u.first_name,
+                u.last_name,
+                u.email,
+                jo.id as job_id,
+                jo.title as job_title,
+                jo.location as job_location,
+                jo.job_type as job_type,
+                jo.skills_required as job_skills,
+                0 as other_applications
+            FROM applications a
+            JOIN applicants ap ON a.applicant_id = ap.id
+            JOIN users u ON ap.user_id = u.id
+            JOIN job_orders jo ON a.job_order_id = jo.id
+            WHERE a.job_order_id IN ($jobIdsString)
+            ORDER BY a.applied_at DESC
+        ";
+        
+        $allApplicants = getRecords($applicantsSql, $params);
+        
+        // Calculate other applications count for each applicant
+        foreach ($allApplicants as $key => $app) {
+            if (!empty($app['applicant_profile_id'])) {
+                $otherCount = getRecord("
+                    SELECT COUNT(*) as count FROM applications 
+                    WHERE applicant_id = $1 AND id != $2
+                ", [$app['applicant_profile_id'], $app['id']]);
+                $allApplicants[$key]['other_applications'] = (int)($otherCount['count'] ?? 0);
+            }
+        }
+    }
 }
-mysqli_stmt_close($stmt);
+
+// If still no applicants, try a simpler approach
+if (empty($allApplicants) && $clientId > 0) {
+    $sql = "
+        SELECT a.*, 
+               a.match_score,
+               a.match_details,
+               a.resume_path as application_resume_path,
+               ap.id as applicant_profile_id,
+               ap.phone,
+               ap.address,
+               ap.resume_path as applicant_resume_path,
+               ap.skills as applicant_skills,
+               ap.experience as applicant_experience,
+               ap.education as applicant_education,
+               u.id as user_id,
+               u.first_name,
+               u.last_name,
+               u.email,
+               jo.id as job_id,
+               jo.title as job_title,
+               jo.location as job_location,
+               jo.job_type as job_type,
+               jo.skills_required as job_skills,
+               0 as other_applications
+        FROM applications a
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE jo.client_id = $1
+        ORDER BY a.applied_at DESC
+    ";
+    $allApplicants = getRecords($sql, [$clientId]);
+}
 
 // Get status counts
 $statusCounts = [
@@ -562,7 +598,7 @@ if (!empty($search)) {
     });
 }
 
-// Apply sorting by match score if selected
+// Apply sorting
 if ($sortBy === 'match_high') {
     usort($filteredApplicants, function($a, $b) {
         $aScore = $a['match_score'] ?? 0;
@@ -585,12 +621,8 @@ $totalPages = ceil($totalApplicants / $perPage);
 $offset = ($page - 1) * $perPage;
 $paginatedApplicants = array_slice($filteredApplicants, $offset, $perPage);
 
-if (isset($_SESSION['toast_message'])) {
-    $message = $_SESSION['toast_message'];
-    $messageType = $_SESSION['toast_type'] ?? 'info';
-    unset($_SESSION['toast_message']);
-    unset($_SESSION['toast_type']);
-}
+// Get user profile for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -601,36 +633,24 @@ if (isset($_SESSION['toast_message'])) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - CLIENT APPLICANTS
-           ========================================================================== */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
             --bg-surface-low: #f8f9fc;
-            --bg-surface-container-low: #f5f6fa;
-            --bg-surface-container-high: #eef0f5;
             --text-on-surface: #0a0e1a;
             --text-on-surface-variant: #4a5168;
-            --outline-variant: #d0d5dd;
             --primary: #4f46e5;
             --primary-container: #eef0ff;
-            --on-primary: #ffffff;
             --on-primary-fixed-variant: #4338ca;
-            --slate-50: #f8fafc;
-            --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
             --slate-300: #cbd5e1;
             --slate-400: #94a3b8;
             --slate-500: #64748b;
-            --slate-600: #475569;
-            --slate-700: #334155;
-            --slate-800: #1e293b;
-            --slate-900: #0f172a;
-            --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
-            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+            --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08);
+            --shadow-xl: 0 20px 25px -5px rgba(0,0,0,0.1);
             --radius-sm: 0.5rem;
             --radius-md: 0.75rem;
             --radius-lg: 1rem;
@@ -645,7 +665,6 @@ if (isset($_SESSION['toast_message'])) {
             --sidebar-collapsed: 72px;
         }
 
-        /* AI Badge */
         .ai-badge {
             display: inline-flex;
             align-items: center;
@@ -659,9 +678,7 @@ if (isset($_SESSION['toast_message'])) {
             text-transform: uppercase;
             letter-spacing: 0.03em;
         }
-        .ai-badge .material-symbols-outlined {
-            font-size: 0.7rem;
-        }
+        .ai-badge .material-symbols-outlined { font-size: 0.7rem; }
 
         .btn-ai {
             background: linear-gradient(135deg, #7c3aed, #4f46e5);
@@ -673,16 +690,8 @@ if (isset($_SESSION['toast_message'])) {
             transform: translateY(-2px);
             box-shadow: var(--shadow-lg);
         }
-        .btn-ai .material-symbols-outlined {
-            font-size: 1rem;
-        }
-        .btn-ai:disabled {
-            opacity: 0.7;
-            cursor: not-allowed;
-            transform: none;
-        }
+        .btn-ai:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
 
-        /* Match Score Badge */
         .match-score {
             display: inline-flex;
             align-items: center;
@@ -698,7 +707,6 @@ if (isset($_SESSION['toast_message'])) {
         .match-score.low { background: #fee2e2; color: #b91c1c; }
         .match-score .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* Match Details Popup */
         .match-details-popup {
             display: none;
             position: fixed;
@@ -706,21 +714,15 @@ if (isset($_SESSION['toast_message'])) {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
+            background: rgba(0,0,0,0.5);
             backdrop-filter: blur(4px);
             z-index: 9999;
             align-items: center;
             justify-content: center;
             padding: 1.5rem;
         }
-        .match-details-popup.active {
-            display: flex;
-            animation: fadeIn 0.3s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
+        .match-details-popup.active { display: flex; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
         .match-details-card {
             background: var(--bg-surface);
@@ -746,10 +748,7 @@ if (isset($_SESSION['toast_message'])) {
             padding-bottom: 0.75rem;
             border-bottom: 1px solid var(--slate-200);
         }
-        .match-details-card .popup-header h3 {
-            font-size: 1rem;
-            font-weight: 700;
-        }
+        .match-details-card .popup-header h3 { font-size: 1rem; font-weight: 700; }
         .match-details-card .popup-close {
             background: none;
             border: none;
@@ -758,14 +757,9 @@ if (isset($_SESSION['toast_message'])) {
             color: var(--text-on-surface-variant);
             padding: 0.25rem;
             border-radius: 0.375rem;
-            transition: all var(--transition-fast);
         }
-        .match-details-card .popup-close:hover {
-            background: var(--bg-surface-low);
-        }
-        .match-details-card .popup-section {
-            margin-bottom: 1rem;
-        }
+        .match-details-card .popup-close:hover { background: var(--bg-surface-low); }
+        .match-details-card .popup-section { margin-bottom: 1rem; }
         .match-details-card .popup-section .section-label {
             font-size: 0.65rem;
             font-weight: 700;
@@ -774,24 +768,16 @@ if (isset($_SESSION['toast_message'])) {
             color: var(--text-on-surface-variant);
             margin-bottom: 0.25rem;
         }
-        .match-details-card .popup-section .section-content {
-            font-size: 0.8125rem;
-            color: var(--text-on-surface);
-            line-height: 1.6;
-        }
+        .match-details-card .popup-section .section-content { font-size: 0.8125rem; color: var(--text-on-surface); line-height: 1.6; }
         .match-details-card .popup-section .section-content .item {
             padding: 0.125rem 0;
             display: flex;
             align-items: flex-start;
             gap: 0.5rem;
         }
-        .match-details-card .popup-section .section-content .item .icon {
-            font-size: 1rem;
-            margin-top: 0.0625rem;
-        }
+        .match-details-card .popup-section .section-content .item .icon { font-size: 1rem; margin-top: 0.0625rem; }
         .match-details-card .popup-section .section-content .item .icon.strength { color: #047857; }
         .match-details-card .popup-section .section-content .item .icon.gap { color: #b91c1c; }
-
         .match-details-card .popup-recommendation {
             background: var(--primary-container);
             padding: 0.75rem 1rem;
@@ -801,7 +787,6 @@ if (isset($_SESSION['toast_message'])) {
             margin-top: 0.5rem;
         }
 
-        /* AI Loading Dots (small) */
         .ai-dots-loading-sm {
             display: flex;
             align-items: center;
@@ -823,9 +808,6 @@ if (isset($_SESSION['toast_message'])) {
             40% { transform: scale(1); opacity: 1; }
         }
 
-        /* =============================================
-           REST OF STYLES (same as your existing)
-        ============================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -840,9 +822,7 @@ if (isset($_SESSION['toast_message'])) {
         }
         a { text-decoration: none; color: inherit; }
 
-        /* =============================================
-           SIDEBAR
-        ============================================= */
+        /* ===== SIDEBAR ===== */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -863,7 +843,6 @@ if (isset($_SESSION['toast_message'])) {
         .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
         .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
         .dashboard-sidebar.mobile-open { transform: translateX(0); }
-
         .dashboard-sidebar .sidebar-brand-text,
         .dashboard-sidebar .sidebar-brand-category,
         .dashboard-sidebar .sidebar-nav .nav-label,
@@ -975,6 +954,13 @@ if (isset($_SESSION['toast_message'])) {
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .sidebar-footer .user-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
@@ -1075,6 +1061,13 @@ if (isset($_SESSION['toast_message'])) {
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .profile-dropdown-toggle .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
@@ -1134,7 +1127,7 @@ if (isset($_SESSION['toast_message'])) {
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* Breadcrumb */
+        /* ===== BREADCRUMB ===== */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -1169,9 +1162,7 @@ if (isset($_SESSION['toast_message'])) {
             gap: 0.75rem;
             margin-bottom: 1.25rem;
         }
-        @media (min-width: 640px) {
-            .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
-        }
+        @media (min-width: 640px) { .page-header { flex-direction: row; align-items: center; justify-content: space-between; } }
         .page-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); letter-spacing: -0.025em; }
         .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
 
@@ -1440,35 +1431,6 @@ if (isset($_SESSION['toast_message'])) {
         .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
         .empty-state p { font-size: 0.8125rem; }
 
-        .avatar-img {
-            width: 2.25rem;
-            height: 2.25rem;
-            border-radius: 50%;
-            object-fit: cover;
-            flex-shrink: 0;
-            background: var(--primary-container);
-        }
-        .avatar-small {
-            width: 2rem;
-            height: 2rem;
-            border-radius: 50%;
-            background: var(--primary);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 0.75rem;
-            flex-shrink: 0;
-            object-fit: cover;
-        }
-        .avatar-small img {
-            width: 100%;
-            height: 100%;
-            border-radius: 50%;
-            object-fit: cover;
-        }
-
         .btn-with-tooltip {
             position: relative;
             display: inline-flex;
@@ -1576,7 +1538,7 @@ if (isset($_SESSION['toast_message'])) {
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR - FIXED ===== -->
+    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -1585,60 +1547,55 @@ if (isset($_SESSION['toast_message'])) {
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-       <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
+        <nav class="sidebar-nav">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_applications.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
 
-        <!-- =============================================
-        SIDEBAR FOOTER
-        ============================================= -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
+        <!-- ===== SIDEBAR FOOTER ===== -->
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1673,9 +1630,6 @@ if (isset($_SESSION['toast_message'])) {
                     AI Powered
                 </span>
             </div>
-            <?php
-            $userProfile = getUserProfileData($userId);
-            ?>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1878,10 +1832,8 @@ if (isset($_SESSION['toast_message'])) {
                                 </thead>
                                 <tbody>
                                     <?php foreach ($paginatedApplicants as $app): 
-                                        // Check if match score exists in database
                                         $matchScore = isset($app['match_score']) && $app['match_score'] > 0 ? $app['match_score'] : null;
                                         
-                                        // Try to get resume
                                         $resumeFile = null;
                                         if (!empty($app['application_resume_path'])) {
                                             $resumeFile = $app['application_resume_path'];
@@ -1902,6 +1854,8 @@ if (isset($_SESSION['toast_message'])) {
                                             if ($matchScore >= 70) $scoreClass = 'high';
                                             elseif ($matchScore >= 40) $scoreClass = 'medium';
                                         }
+                                        
+                                        $otherApps = $app['other_applications'] ?? 0;
                                     ?>
                                         <tr>
                                             <td>
@@ -1915,9 +1869,9 @@ if (isset($_SESSION['toast_message'])) {
                                                     <div>
                                                         <div class="name"><?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name']); ?></div>
                                                         <div class="email"><?php echo htmlspecialchars($app['email']); ?></div>
-                                                        <?php if ($app['other_applications'] > 0): ?>
+                                                        <?php if ($otherApps > 0): ?>
                                                             <span style="font-size:0.5625rem; color:var(--primary);">
-                                                                <?php echo $app['other_applications']; ?> other app(s)
+                                                                <?php echo $otherApps; ?> other app(s)
                                                             </span>
                                                         <?php endif; ?>
                                                     </div>
@@ -2048,9 +2002,7 @@ if (isset($_SESSION['toast_message'])) {
         </main>
     </div>
 
-    <!-- =============================================
-    MATCH DETAILS POPUP
-    ============================================= -->
+    <!-- ===== MATCH DETAILS POPUP ===== -->
     <div class="match-details-popup" id="matchDetailsPopup">
         <div class="match-details-card">
             <div class="popup-header">
@@ -2218,7 +2170,6 @@ if (isset($_SESSION['toast_message'])) {
             try {
                 details = JSON.parse(detailsJson);
             } catch (e) {
-                // If details is a string, try to parse it
                 try {
                     details = JSON.parse(detailsJson.replace(/\\'/g, "'"));
                 } catch (e2) {
@@ -2226,7 +2177,6 @@ if (isset($_SESSION['toast_message'])) {
                 }
             }
             
-            // If we have details, show them
             if (details && (details.strengths || details.gaps || details.recommendation)) {
                 let html = `
                     <div style="text-align:center; margin-bottom:1rem;">
@@ -2263,7 +2213,6 @@ if (isset($_SESSION['toast_message'])) {
                 
                 content.innerHTML = html;
             } else {
-                // If no details, try to fetch them
                 content.innerHTML = `
                     <div class="ai-dots-loading-sm">
                         <div class="dot"></div>
@@ -2273,7 +2222,6 @@ if (isset($_SESSION['toast_message'])) {
                     </div>
                 `;
                 
-                // Fetch match details
                 const formData = new FormData();
                 formData.append('action', 'get_ai_match');
                 formData.append('application_id', applicationId);
@@ -2301,12 +2249,10 @@ if (isset($_SESSION['toast_message'])) {
             document.getElementById('matchDetailsPopup').classList.remove('active');
         }
 
-        // Close popup on backdrop click
         document.getElementById('matchDetailsPopup').addEventListener('click', function(e) {
             if (e.target === this) closeMatchDetails();
         });
 
-        // Close popup on Escape
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 closeMatchDetails();
@@ -2338,6 +2284,270 @@ if (isset($_SESSION['toast_message'])) {
             }, 3500);
         }
 
+
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
+
         // =============================================
         // RESPONSIVE HANDLING
         // =============================================
@@ -2363,8 +2573,8 @@ if (isset($_SESSION['toast_message'])) {
         });
 
         console.log('👤 AI-Powered ISMERS Applicant Management loaded successfully!');
-        console.log('🤖 AI Features: Match Scoring, Candidate Ranking, Resume Parsing');
+        console.log('📊 Total Applicants: <?php echo count($allApplicants); ?>');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

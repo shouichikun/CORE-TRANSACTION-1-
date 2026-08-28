@@ -1,7 +1,12 @@
 <?php
 // portals/client/ajax/export_report.php - Export Reports as CSV
+// ✅ POSTGRESQL COMPATIBLE VERSION
+
 session_start();
-require_once '../../../app/config.php';
+
+// ✅ Initialize session timeout
+require_once '../../app/config.php';
+initSessionTimeout();
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'client') {
     header('Location: ../../login.php');
@@ -14,7 +19,8 @@ $startDate = $_GET['start_date'] ?? date('Y-m-d', strtotime('-30 days'));
 $endDate = $_GET['end_date'] ?? date('Y-m-d');
 
 // Get client ID
-$client = getRecord("SELECT id FROM clients WHERE user_id = ?", [$userId], "i");
+// ✅ FIXED: PostgreSQL uses $1 placeholder, removed type string
+$client = getRecord("SELECT id FROM clients WHERE user_id = $1", [$userId]);
 if (!$client) {
     die('Client not found.');
 }
@@ -31,6 +37,7 @@ $output = fopen('php://output', 'w');
 switch ($reportType) {
     case 'applications':
         fputcsv($output, ['Job Title', 'Status', 'Total Applications', 'Pending', 'Reviewed', 'Shortlisted', 'Hired', 'Rejected']);
+        // ✅ FIXED: PostgreSQL uses $1, $2, $3 placeholders, removed type string
         $data = getRecords("
             SELECT 
                 jo.title as job_title,
@@ -43,11 +50,11 @@ switch ($reportType) {
                 SUM(CASE WHEN a.status = 'rejected' THEN 1 ELSE 0 END) as rejected
             FROM job_orders jo
             LEFT JOIN applications a ON jo.id = a.job_order_id
-            WHERE jo.client_id = ?
-            AND DATE(jo.created_at) BETWEEN ? AND ?
-            GROUP BY jo.id
+            WHERE jo.client_id = $1
+            AND DATE(jo.created_at) BETWEEN $2 AND $3
+            GROUP BY jo.id, jo.title, jo.status
             ORDER BY total_applications DESC
-        ", [$clientId, $startDate, $endDate], "iss");
+        ", [$clientId, $startDate, $endDate]);
         foreach ($data as $row) {
             fputcsv($output, [
                 $row['job_title'],
@@ -64,6 +71,7 @@ switch ($reportType) {
         
     case 'status':
         fputcsv($output, ['Status', 'Applications', 'Unique Applicants']);
+        // ✅ FIXED: PostgreSQL uses $1, $2, $3 placeholders
         $data = getRecords("
             SELECT 
                 a.status,
@@ -71,11 +79,11 @@ switch ($reportType) {
                 COUNT(DISTINCT a.applicant_id) as unique_applicants
             FROM applications a
             JOIN job_orders jo ON a.job_order_id = jo.id
-            WHERE jo.client_id = ?
-            AND DATE(a.applied_at) BETWEEN ? AND ?
+            WHERE jo.client_id = $1
+            AND DATE(a.applied_at) BETWEEN $2 AND $3
             GROUP BY a.status
             ORDER BY count DESC
-        ", [$clientId, $startDate, $endDate], "iss");
+        ", [$clientId, $startDate, $endDate]);
         foreach ($data as $row) {
             fputcsv($output, [$row['status'], $row['count'], $row['unique_applicants']]);
         }
@@ -83,6 +91,7 @@ switch ($reportType) {
         
     case 'employees':
         fputcsv($output, ['Job Title', 'Total', 'Active', 'On Hold', 'Completed', 'Terminated', 'Avg Days']);
+        // ✅ FIXED: PostgreSQL - removed TIMESTAMPDIFF, using EXTRACT
         $data = getRecords("
             SELECT 
                 jo.title as job_title,
@@ -91,14 +100,14 @@ switch ($reportType) {
                 SUM(CASE WHEN d.status = 'on_hold' THEN 1 ELSE 0 END) as on_hold,
                 SUM(CASE WHEN d.status = 'completed' THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN d.status = 'terminated' THEN 1 ELSE 0 END) as terminated,
-                AVG(TIMESTAMPDIFF(DAY, d.start_date, COALESCE(d.end_date, CURDATE()))) as avg_days
+                AVG(EXTRACT(DAY FROM COALESCE(d.end_date, CURRENT_DATE) - d.start_date)) as avg_days
             FROM job_orders jo
             LEFT JOIN deployments d ON jo.id = d.job_order_id
-            WHERE jo.client_id = ?
-            AND DATE(d.created_at) BETWEEN ? AND ?
-            GROUP BY jo.id
+            WHERE jo.client_id = $1
+            AND DATE(d.created_at) BETWEEN $2 AND $3
+            GROUP BY jo.id, jo.title
             ORDER BY total_employees DESC
-        ", [$clientId, $startDate, $endDate], "iss");
+        ", [$clientId, $startDate, $endDate]);
         foreach ($data as $row) {
             fputcsv($output, [
                 $row['job_title'],
@@ -114,9 +123,10 @@ switch ($reportType) {
         
     case 'revenue':
         fputcsv($output, ['Month', 'Offers', 'Accepted', 'Rejected', 'Total Revenue', 'Avg Salary']);
+        // ✅ FIXED: PostgreSQL uses TO_CHAR instead of DATE_FORMAT
         $data = getRecords("
             SELECT 
-                DATE_FORMAT(o.created_at, '%Y-%m') as month,
+                TO_CHAR(o.created_at, 'YYYY-MM') as month,
                 COUNT(o.id) as total_offers,
                 SUM(CASE WHEN o.status = 'accepted' THEN 1 ELSE 0 END) as accepted,
                 SUM(CASE WHEN o.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
@@ -125,11 +135,11 @@ switch ($reportType) {
             FROM offers o
             JOIN applications a ON o.application_id = a.id
             JOIN job_orders jo ON a.job_order_id = jo.id
-            WHERE jo.client_id = ?
-            AND DATE(o.created_at) BETWEEN ? AND ?
-            GROUP BY month
+            WHERE jo.client_id = $1
+            AND DATE(o.created_at) BETWEEN $2 AND $3
+            GROUP BY TO_CHAR(o.created_at, 'YYYY-MM')
             ORDER BY month DESC
-        ", [$clientId, $startDate, $endDate], "iss");
+        ", [$clientId, $startDate, $endDate]);
         foreach ($data as $row) {
             fputcsv($output, [
                 $row['month'],
@@ -144,6 +154,7 @@ switch ($reportType) {
         
     case 'agencies':
         fputcsv($output, ['Agency', 'Code', 'Jobs', 'Applications', 'Hires', 'Rejections', 'Conversion Rate']);
+        // ✅ FIXED: PostgreSQL uses $1, $2, $3 placeholders
         $data = getRecords("
             SELECT 
                 ra.agency_name,
@@ -155,11 +166,11 @@ switch ($reportType) {
             FROM recruitment_agencies ra
             LEFT JOIN job_orders jo ON ra.id = jo.agency_id
             LEFT JOIN applications a ON jo.id = a.job_order_id
-            WHERE ra.client_id = ?
-            AND (jo.created_at BETWEEN ? AND ? OR jo.created_at IS NULL)
-            GROUP BY ra.id
+            WHERE ra.client_id = $1
+            AND (DATE(jo.created_at) BETWEEN $2 AND $3 OR jo.created_at IS NULL)
+            GROUP BY ra.id, ra.agency_name, ra.agency_code
             ORDER BY total_applications DESC
-        ", [$clientId, $startDate, $endDate], "iss");
+        ", [$clientId, $startDate, $endDate]);
         foreach ($data as $row) {
             $convRate = ($row['total_applications'] ?? 0) > 0 
                 ? round(($row['hires'] / $row['total_applications']) * 100) 
@@ -179,22 +190,23 @@ switch ($reportType) {
     case 'funnel':
     default:
         fputcsv($output, ['Metric', 'Value']);
+        // ✅ FIXED: PostgreSQL uses $1 placeholder, removed "iiii" type
         $funnel = getRecord("
             SELECT 
                 (SELECT COUNT(*) FROM applications a 
                  JOIN job_orders jo ON a.job_order_id = jo.id 
-                 WHERE jo.client_id = ?) as total_applications,
+                 WHERE jo.client_id = $1) as total_applications,
                 (SELECT COUNT(*) FROM applications a 
                  JOIN job_orders jo ON a.job_order_id = jo.id 
-                 WHERE jo.client_id = ? AND a.status = 'shortlisted') as shortlisted,
+                 WHERE jo.client_id = $1 AND a.status = 'shortlisted') as shortlisted,
                 (SELECT COUNT(*) FROM applications a 
                  JOIN job_orders jo ON a.job_order_id = jo.id 
-                 WHERE jo.client_id = ? AND a.status = 'hired') as hired,
+                 WHERE jo.client_id = $1 AND a.status = 'hired') as hired,
                 (SELECT COUNT(*) FROM offers o 
                  JOIN applications a ON o.application_id = a.id 
                  JOIN job_orders jo ON a.job_order_id = jo.id 
-                 WHERE jo.client_id = ? AND o.status = 'accepted') as offers_accepted
-        ", [$clientId, $clientId, $clientId, $clientId], "iiii");
+                 WHERE jo.client_id = $1 AND o.status = 'accepted') as offers_accepted
+        ", [$clientId]);
         fputcsv($output, ['Total Applications', $funnel['total_applications'] ?? 0]);
         fputcsv($output, ['Shortlisted', $funnel['shortlisted'] ?? 0]);
         fputcsv($output, ['Hired', $funnel['hired'] ?? 0]);

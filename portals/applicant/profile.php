@@ -3,8 +3,9 @@
 session_start();
 
 // Include configuration file
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -32,12 +33,13 @@ $applicantId = $applicant['id'] ?? 0;
 // =============================================
 $pendingOffers = 0;
 if ($applicantId) {
+    // ✅ FIXED: PostgreSQL uses $1 placeholder
     $offersResult = getRecord("
         SELECT COUNT(*) as count FROM offers o
         JOIN applications a ON o.application_id = a.id
-        WHERE a.applicant_id = ? AND o.status = 'sent'
-    ", [$applicantId], "i");
-    $pendingOffers = $offersResult['count'] ?? 0;
+        WHERE a.applicant_id = $1 AND o.status = 'sent'
+    ", [$applicantId]);
+    $pendingOffers = (int)($offersResult['count'] ?? 0);
 }
 
 // Get applications count for the badge
@@ -83,10 +85,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['profile_picture'])) 
             $filepath = $uploadDir . $filename;
             
             if (move_uploaded_file($file['tmp_name'], $filepath)) {
-                // Update database
+                // ✅ FIXED: Update database - PostgreSQL uses $1, $2 placeholders
                 $relativePath = 'uploads/profile_pictures/' . $filename;
-                $updateSql = "UPDATE applicants SET profile_picture = ? WHERE user_id = ?";
-                $updated = updateRecord($updateSql, [$relativePath, $userId], "si");
+                $updateSql = "UPDATE applicants SET profile_picture = $1 WHERE user_id = $2";
+                $updated = updateRecord($updateSql, [$relativePath, $userId]);
                 
                 if ($updated) {
                     $uploadMessage = 'Profile picture updated successfully!';
@@ -130,14 +132,16 @@ $profilePictureUrl = $hasProfilePicture ? '../../' . $profilePicture : '';
 
 $interviewCount = 0;
 if ($applicantId) {
+    // ✅ FIXED: PostgreSQL uses $1 placeholder
     $interviewResult = getRecord("
         SELECT COUNT(*) as count FROM applications 
-        WHERE applicant_id = ? AND interview_date IS NOT NULL
-    ", [$applicantId], "i");
-    $interviewCount = $interviewResult['count'] ?? 0;
+        WHERE applicant_id = $1 AND interview_date IS NOT NULL
+    ", [$applicantId]);
+    $interviewCount = (int)($interviewResult['count'] ?? 0);
 }
 
 ?>
+<!-- HTML CONTENT REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -490,6 +494,13 @@ if ($applicantId) {
             width: 100%;
         }
 
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
         .top-header-left {
             display: flex;
             align-items: center;
@@ -1325,6 +1336,35 @@ if ($applicantId) {
                 display: none;
             }
         }
+.sidebar-logo {
+    width: 3.5rem;
+    height: 3.5rem;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    display: block;
+    margin: 0 auto;
+}
+
+/* For collapsed sidebar */
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
+
+/* If using Option 2 - background image on icon */
+.sidebar-brand-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 1.75rem;
+    background-size: contain !important;
+    background-repeat: no-repeat !important;
+    background-position: center !important;
+    background-color: transparent !important;
+    flex-shrink: 0;
+}
     </style>
 </head>
 <body>
@@ -1333,17 +1373,13 @@ if ($applicantId) {
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <!-- =============================================
-    SIDEBAR - FIXED
+    SIDEBAR - FIXED POSITION
     ============================================= -->
-    <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">account_balance</span>
-            </span>
-            <p class="sidebar-brand-text">ISMERS</p>
-            <p class="sidebar-brand-category">Applicant Portal</p>
-        </div>
-
+   <aside class="dashboard-sidebar" id="appSidebar">
+    <div class="sidebar-brand-card">
+        <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        <p class="sidebar-brand-category">Applicant Portal</p>
+    </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main Menu</div>
 
@@ -1398,11 +1434,11 @@ if ($applicantId) {
     ============================================= -->
     <div class="main-wrapper" id="mainWrapper">
 
-        <!-- Top Header -->
+      <!-- Top Header -->
         <header class="top-header">
             <div class="top-header-left">
-                <div class="logo">I</div>
-                <span class="separator">|</span>
+<img src="logo.png" alt="ISMERS" class="logo" style="height: 2rem; width: auto;">     
+           <span class="separator">|</span>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
                     <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
                 </button>
@@ -1436,6 +1472,7 @@ if ($applicantId) {
                 </div>
             </div>
         </header>
+
 
         <!-- Main Scrollable Area -->
         <main class="main-scroll" id="mainScroll">
@@ -1769,6 +1806,269 @@ if ($applicantId) {
             console.log('ISMERS Profile Page loaded successfully.');
         })();
 
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
+
         // =============================================
         // PROFILE DROPDOWN TOGGLE
         // =============================================
@@ -1797,6 +2097,6 @@ if ($applicantId) {
             }
         });
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

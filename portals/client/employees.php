@@ -2,7 +2,9 @@
 // portals/client/employees.php - AI-Powered Client Employee Management
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
@@ -27,13 +29,13 @@ $role = $_SESSION['role'] ?? 'client';
 // =============================================
 $aiService = new AiService();
 
-// Get client profile
+// ✅ FIXED: Get client profile - PostgreSQL uses $1 placeholder
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = ['company_name' => 'Your Company', 'id' => 0];
@@ -46,13 +48,13 @@ $clientId = $client['id'] ?? 0;
 // GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
 // =============================================
 $pendingAgencyCount = 0;
-$pendingAgencies = getRecords("
-    SELECT COUNT(*) as count FROM agency_applications 
-    WHERE client_id = ? AND status = 'pending'
-", [$clientId], "i");
-
-if (!empty($pendingAgencies)) {
-    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+if ($clientId > 0) {
+    // ✅ FIXED: PostgreSQL uses $1 placeholder
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
 }
 
 // =============================================
@@ -198,17 +200,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             exit;
         }
         
-        // Get employee details from employees table
+        // ✅ FIXED: Get employee details - PostgreSQL uses $1 placeholder
         $sql = "SELECT e.*, u.first_name, u.last_name, u.email, u.phone
                 FROM employees e
                 JOIN users u ON e.user_id = u.id
-                WHERE e.id = ?";
-        $stmt = mysqli_prepare($conn, $sql);
-        mysqli_stmt_bind_param($stmt, 'i', $employeeId);
-        mysqli_stmt_execute($stmt);
-        $result = mysqli_stmt_get_result($stmt);
-        $employee = mysqli_fetch_assoc($result);
-        mysqli_stmt_close($stmt);
+                WHERE e.id = $1";
+        
+        $employee = getRecord($sql, [$employeeId]);
         
         if (!$employee) {
             echo json_encode(['success' => false, 'error' => 'Employee not found']);
@@ -231,50 +229,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $newStatus = $_POST['new_status'] ?? 'active';
         
         if ($employeeId > 0) {
-            // Update employee status in employees table
-            $updateSql = "UPDATE employees SET status = ?, updated_at = NOW() 
-                          WHERE id = ?";
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'si', $newStatus, $employeeId);
+            // ✅ FIXED: PostgreSQL uses $1, $2 placeholders
+            $updateSql = "UPDATE employees SET status = $1, updated_at = NOW() 
+                          WHERE id = $2";
+            $updateResult = updateRecord($updateSql, [$newStatus, $employeeId]);
             
-            if (mysqli_stmt_execute($stmt)) {
+            if ($updateResult) {
                 $message = 'Employee status updated successfully!';
                 $messageType = 'success';
             } else {
                 $message = 'Error updating employee status.';
                 $messageType = 'error';
             }
-            mysqli_stmt_close($stmt);
         }
     }
 }
 
-// Get all employees for this client - FIXED: Use proper join with job_orders
-$employeesSql = "SELECT e.*, 
-                 u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
-                 jo.title as job_title,
-                 jo.id as job_id,
-                 c.company_name
-                 FROM employees e
-                 JOIN users u ON e.user_id = u.id
-                 LEFT JOIN applications a ON e.application_id = a.id
-                 LEFT JOIN job_orders jo ON a.job_order_id = jo.id
-                 LEFT JOIN clients c ON jo.client_id = c.id
-                 WHERE c.id = ? OR c.user_id = ?
-                 ORDER BY e.status = 'active' DESC, e.created_at DESC";
-
-$stmt = mysqli_prepare($conn, $employeesSql);
-mysqli_stmt_bind_param($stmt, 'ii', $clientId, $userId);
-mysqli_stmt_execute($stmt);
-$employeesResult = mysqli_stmt_get_result($stmt);
+// ✅ FIXED: Get all employees for this client - PostgreSQL with proper joins
 $employees = [];
-while ($row = mysqli_fetch_assoc($employeesResult)) {
-    $employees[] = $row;
+if ($clientId > 0) {
+    $employeesSql = "SELECT e.*, 
+                     u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
+                     jo.title as job_title,
+                     jo.id as job_id,
+                     c.company_name
+                     FROM employees e
+                     JOIN users u ON e.user_id = u.id
+                     LEFT JOIN applications a ON e.application_id = a.id
+                     LEFT JOIN job_orders jo ON a.job_order_id = jo.id
+                     LEFT JOIN clients c ON jo.client_id = c.id
+                     WHERE c.id = $1 OR c.user_id = $2
+                     ORDER BY e.status = 'active' DESC, e.created_at DESC";
+    
+    $employees = getRecords($employeesSql, [$clientId, $userId]);
 }
-mysqli_stmt_close($stmt);
 
 // If no employees found via client_id, try getting all employees for this user
-if (empty($employees)) {
+if (empty($employees) && $userId > 0) {
     $employeesSql = "SELECT e.*, 
                      u.id as user_id, u.first_name, u.last_name, u.email, u.phone,
                      jo.title as job_title,
@@ -283,18 +274,10 @@ if (empty($employees)) {
                      JOIN users u ON e.user_id = u.id
                      LEFT JOIN applications a ON e.application_id = a.id
                      LEFT JOIN job_orders jo ON a.job_order_id = jo.id
-                     WHERE u.id = ? OR e.user_id = ?
+                     WHERE u.id = $1 OR e.user_id = $2
                      ORDER BY e.status = 'active' DESC, e.created_at DESC";
     
-    $stmt = mysqli_prepare($conn, $employeesSql);
-    mysqli_stmt_bind_param($stmt, 'ii', $userId, $userId);
-    mysqli_stmt_execute($stmt);
-    $employeesResult = mysqli_stmt_get_result($stmt);
-    $employees = [];
-    while ($row = mysqli_fetch_assoc($employeesResult)) {
-        $employees[] = $row;
-    }
-    mysqli_stmt_close($stmt);
+    $employees = getRecords($employeesSql, [$userId, $userId]);
 }
 
 // Get status counts for filter
@@ -363,6 +346,7 @@ foreach ($employees as $emp) {
 arsort($jobDistribution);
 $jobDistribution = array_slice($jobDistribution, 0, 5);
 ?>
+<!-- HTML CONTENT REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2029,6 +2013,267 @@ $jobDistribution = array_slice($jobDistribution, 0, 5);
         });
 
         // =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+        // =============================================
         // RESPONSIVE HANDLING
         // =============================================
         let resizeTimer;
@@ -2055,6 +2300,6 @@ $jobDistribution = array_slice($jobDistribution, 0, 5);
         console.log('👥 AI-Powered ISMERS Employee Management loaded successfully!');
         console.log('🤖 AI Features: Performance Insights, Retention Risk, Skill Gap Analysis, Recommendations');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

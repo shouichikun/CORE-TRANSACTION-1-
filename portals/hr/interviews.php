@@ -1,8 +1,18 @@
 <?php
 // portals/hr/interviews.php - Interview Management with AI Integration
+// FIXED: Default scheduled filter + Auto no-show for past interviews
+
 session_start();
 
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once 'includes/functions.php';
 require_once '../../app/ai/AiService.php';
 
@@ -12,7 +22,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     exit;
 }
 
-if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter'])) {
+if (!in_array($_SESSION['role'], ['hr_manager', 'recruiter', 'admin'])) {
     header('Location: ../../login.php');
     exit;
 }
@@ -29,62 +39,107 @@ $role = $_SESSION['role'] ?? 'hr_manager';
 $aiService = new AiService();
 
 // =============================================
-// FUNCTION: Move Interview to Archive - FIXED
+// FUNCTION: Auto-update no-show interviews
 // =============================================
+function autoUpdateNoShowInterviews() {
+    global $userId;
+    
+    // Find scheduled interviews that have passed their date
+    $pastInterviews = @getRecords("
+        SELECT i.id, i.application_id, i.interview_date, i.status,
+               u.first_name, u.last_name, u.email,
+               jo.title as job_title
+        FROM interviews i
+        JOIN applications a ON i.application_id = a.id
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE i.status = 'scheduled' 
+        AND i.interview_date < NOW()
+        AND jo.created_by = $1
+    ", [$userId]);
+    
+    if (empty($pastInterviews)) {
+        return 0;
+    }
+    
+    $updatedCount = 0;
+    
+    foreach ($pastInterviews as $interview) {
+        // Update to no_show
+        $updateResult = @updateRecord(
+            "UPDATE interviews SET status = 'no_show', 
+             notes = CONCAT(COALESCE(notes, ''), '\n[Auto] Interview passed without completion - marked as no-show.'),
+             updated_at = NOW() 
+             WHERE id = $1",
+            [$interview['id']]
+        );
+        
+        if ($updateResult) {
+            $updatedCount++;
+            
+            // Update application status back to shortlisted
+            @updateRecord(
+                "UPDATE applications SET status = 'shortlisted', updated_at = NOW() WHERE id = $1",
+                [$interview['application_id']]
+            );
+            
+            // Log activity
+            @logActivity($userId, 'Auto No-Show', 'interviews', $interview['id'], 
+                'Interview auto-marked as no-show for ' . $interview['first_name'] . ' ' . $interview['last_name']);
+        }
+    }
+    
+    return $updatedCount;
+}
+
 // =============================================
-// FUNCTION: Move Interview to Archive - COMPLETELY FIXED
+// FUNCTION: Move Interview to Archive - FIXED PostgreSQL
 // =============================================
 function moveInterviewToArchive($interviewId, $rating, $feedback, $recommendation = 'consider') {
-    global $conn, $userId;
+    global $userId;
     
-    // Get interview details with all necessary data
-    $sql = "SELECT i.*, 
-                   a.applicant_id, a.job_order_id, a.id as application_id,
-                   u.first_name, u.last_name, u.email,
-                   jo.title as job_title, jo.client_id,
-                   c.company_name,
-                   i.ai_questions
-            FROM interviews i
-            JOIN applications a ON i.application_id = a.id
-            JOIN applicants ap ON a.applicant_id = ap.id
-            JOIN users u ON ap.user_id = u.id
-            JOIN job_orders jo ON a.job_order_id = jo.id
-            JOIN clients c ON jo.client_id = c.id
-            WHERE i.id = ?";
-    
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "i", $interviewId);
-    mysqli_stmt_execute($stmt);
-    $result = mysqli_stmt_get_result($stmt);
-    $interview = mysqli_fetch_assoc($result);
+    $interview = @getRecord("
+        SELECT i.*, 
+               a.applicant_id, a.job_order_id, a.id as application_id,
+               u.first_name, u.last_name, u.email,
+               jo.title as job_title, jo.client_id,
+               c.company_name,
+               i.ai_questions
+        FROM interviews i
+        JOIN applications a ON i.application_id = a.id
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        JOIN clients c ON jo.client_id = c.id
+        WHERE i.id = $1
+    ", [$interviewId]);
     
     if (!$interview) {
         return ['success' => false, 'error' => 'Interview not found.'];
     }
     
-    // Check if already in archive
-    $checkArchive = getRecord("
+    $checkArchive = @getRecord("
         SELECT id FROM interview_evaluations 
-        WHERE interview_id = ? OR (application_id = ? AND applicant_id = ?)
-    ", [$interviewId, $interview['application_id'], $interview['applicant_id']], "iii");
+        WHERE interview_id = $1 OR (application_id = $2 AND applicant_id = $3)
+    ", [$interviewId, $interview['application_id'], $interview['applicant_id']]);
     
     if ($checkArchive) {
-        // Update existing archive record
         $updateSql = "UPDATE interview_evaluations SET 
-                      overall_rating = ?, 
-                      comments = ?,
-                      recommendation = ?,
-                      evaluator_id = ?,
+                      overall_rating = $1, 
+                      comments = $2,
+                      recommendation = $3,
+                      evaluator_id = $4,
                       evaluation_date = NOW(),
                       updated_at = NOW()
-                      WHERE id = ?";
-        $updateResult = updateRecord($updateSql, [
+                      WHERE id = $5";
+        $updateResult = @updateRecord($updateSql, [
             $rating,
             $feedback,
             $recommendation,
             $userId,
             $checkArchive['id']
-        ], "issii");
+        ]);
         
         if ($updateResult) {
             return ['success' => true, 'message' => 'Archive record updated.'];
@@ -92,55 +147,46 @@ function moveInterviewToArchive($interviewId, $rating, $feedback, $recommendatio
         return ['success' => false, 'error' => 'Failed to update archive record.'];
     }
     
-    // Insert into archive - FIXED TYPE STRING
-    // Parameters: interview_id, application_id, applicant_id, job_order_id, evaluator_id = 5 integers
-    // overall_rating = integer, recommendation = string, comments = string
-    // Total: 6 integers + 2 strings = 8 parameters
-    // Type string: "iiiiii" (6 integers) + "ss" (2 strings) = "iiiiiiss"
     $archiveSql = "INSERT INTO interview_evaluations (
         interview_id, application_id, applicant_id, job_order_id, evaluator_id,
         evaluation_date, overall_rating, recommendation, comments,
         created_at, updated_at
-    ) VALUES (
-        ?, ?, ?, ?, ?,
-        NOW(), ?, ?, ?,
-        NOW(), NOW()
-    )";
+    ) VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, NOW(), NOW())
+    RETURNING id";
     
-    $result = insertRecord($archiveSql, [
-        $interviewId,                    // i - 1
-        $interview['application_id'],    // i - 2
-        $interview['applicant_id'],      // i - 3
-        $interview['job_order_id'],      // i - 4
-        $userId,                         // i - 5
-        $rating,                         // i - 6
-        $recommendation,                 // s - 7
-        $feedback                        // s - 8
-    ], "iiiiiiss");  // 6 i's + 2 s's = 8 characters
+    $result = @insertRecord($archiveSql, [
+        $interviewId,
+        $interview['application_id'],
+        $interview['applicant_id'],
+        $interview['job_order_id'],
+        $userId,
+        $rating,
+        $recommendation,
+        $feedback
+    ]);
     
     if ($result) {
-        logActivity($userId, 'Interview Archived', 'interview_evaluations', $result, 
+        @logActivity($userId, 'Interview Archived', 'interview_evaluations', $result, 
             'Archived interview #' . $interviewId . ' for ' . $interview['first_name'] . ' ' . $interview['last_name']);
         
         return ['success' => true, 'message' => 'Interview moved to archive.'];
     }
     
-    return ['success' => false, 'error' => 'Failed to archive interview: ' . ($conn->error ?? 'Unknown error')];
+    return ['success' => false, 'error' => 'Failed to archive interview.'];
 }
 
 // =============================================
-// AI HELPER FUNCTIONS
+// AI HELPER FUNCTIONS (kept the same)
 // =============================================
 
 function generateAIQuestions($jobId, $applicantId = null) {
-    global $aiService, $conn;
+    global $aiService;
     
-    $jobSql = "SELECT title, description, skills_required, experience_level FROM job_orders WHERE id = ?";
-    $jobStmt = mysqli_prepare($conn, $jobSql);
-    mysqli_stmt_bind_param($jobStmt, "i", $jobId);
-    mysqli_stmt_execute($jobStmt);
-    $jobResult = mysqli_stmt_get_result($jobStmt);
-    $job = mysqli_fetch_assoc($jobResult);
+    $job = @getRecord("
+        SELECT title, description, skills_required, experience_level 
+        FROM job_orders 
+        WHERE id = $1
+    ", [$jobId]);
     
     if (!$job) {
         return ['error' => 'Job not found'];
@@ -148,12 +194,11 @@ function generateAIQuestions($jobId, $applicantId = null) {
     
     $applicantSkills = '';
     if ($applicantId) {
-        $appSql = "SELECT skills, experience FROM applicants WHERE id = ?";
-        $appStmt = mysqli_prepare($conn, $appSql);
-        mysqli_stmt_bind_param($appStmt, "i", $applicantId);
-        mysqli_stmt_execute($appStmt);
-        $appResult = mysqli_stmt_get_result($appStmt);
-        $applicant = mysqli_fetch_assoc($appResult);
+        $applicant = @getRecord("
+            SELECT skills, experience 
+            FROM applicants 
+            WHERE id = $1
+        ", [$applicantId]);
         if ($applicant) {
             $applicantSkills = $applicant['skills'] ?? '';
         }
@@ -216,14 +261,11 @@ function generateFallbackQuestions($job, $applicantSkills) {
 }
 
 function getInterviewTips($jobId) {
-    global $conn;
-    
-    $jobSql = "SELECT title, skills_required FROM job_orders WHERE id = ?";
-    $jobStmt = mysqli_prepare($conn, $jobSql);
-    mysqli_stmt_bind_param($jobStmt, "i", $jobId);
-    mysqli_stmt_execute($jobStmt);
-    $jobResult = mysqli_stmt_get_result($jobStmt);
-    $job = mysqli_fetch_assoc($jobResult);
+    $job = @getRecord("
+        SELECT title, skills_required 
+        FROM job_orders 
+        WHERE id = $1
+    ", [$jobId]);
     
     if (!$job) {
         return ['error' => 'Job not found'];
@@ -250,21 +292,16 @@ function getInterviewTips($jobId) {
 }
 
 function generateInterviewFeedback($interviewId) {
-    global $conn;
-    
-    $sql = "SELECT i.*, u.first_name, u.last_name, u.email, jo.title as job_title, 
-                   ap.skills, ap.experience
-            FROM interviews i
-            JOIN applications a ON i.application_id = a.id
-            JOIN applicants ap ON a.applicant_id = ap.id
-            JOIN users u ON ap.user_id = u.id
-            JOIN job_orders jo ON a.job_order_id = jo.id
-            WHERE i.id = ?";
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "i", $interviewId);
-    mysqli_stmt_execute($stmt);
-    $result = mysqli_stmt_get_result($stmt);
-    $interview = mysqli_fetch_assoc($result);
+    $interview = @getRecord("
+        SELECT i.*, u.first_name, u.last_name, u.email, jo.title as job_title, 
+               ap.skills, ap.experience
+        FROM interviews i
+        JOIN applications a ON i.application_id = a.id
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE i.id = $1
+    ", [$interviewId]);
     
     if (!$interview) {
         return ['error' => 'Interview not found'];
@@ -303,43 +340,48 @@ function generateFallbackFeedback($interview) {
 }
 
 function getInterviewDetails($interviewId) {
-    global $userId, $conn;
-    $sql = "SELECT i.*, 
-                   u.id as user_id, u.first_name, u.last_name, u.email,
-                   jo.title as job_title, jo.id as job_id, c.company_name,
-                   a.id as application_id,
-                   ap.id as applicant_id, ap.skills, ap.experience
-            FROM interviews i
-            JOIN applications a ON i.application_id = a.id
-            JOIN applicants ap ON a.applicant_id = ap.id
-            JOIN users u ON ap.user_id = u.id
-            JOIN job_orders jo ON a.job_order_id = jo.id
-            JOIN clients c ON jo.client_id = c.id
-            WHERE i.id = ? AND jo.created_by = ?";
+    global $userId;
     
-    $stmt = mysqli_prepare($conn, $sql);
-    mysqli_stmt_bind_param($stmt, "ii", $interviewId, $userId);
-    mysqli_stmt_execute($stmt);
-    $result = mysqli_stmt_get_result($stmt);
-    if ($result) {
-        return mysqli_fetch_assoc($result);
-    }
-    return null;
+    $interview = @getRecord("
+        SELECT i.*, 
+               u.id as user_id, u.first_name, u.last_name, u.email,
+               jo.title as job_title, jo.id as job_id, c.company_name,
+               a.id as application_id,
+               ap.id as applicant_id, ap.skills, ap.experience
+        FROM interviews i
+        JOIN applications a ON i.application_id = a.id
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        JOIN clients c ON jo.client_id = c.id
+        WHERE i.id = $1 AND jo.created_by = $2
+    ", [$interviewId, $userId]);
+    
+    return $interview;
 }
 
+// =============================================
+// RUN AUTO NO-SHOW ON PAGE LOAD
+// =============================================
+$noShowUpdated = autoUpdateNoShowInterviews();
+
+// =============================================
 // Get filter parameters
-$statusFilter = $_GET['status'] ?? 'all';
+// =============================================
+// ✅ FIXED: Default to 'scheduled' status
+$statusFilter = $_GET['status'] ?? 'scheduled';
 $searchQuery = $_GET['search'] ?? '';
 $jobFilter = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
 
 // =============================================
-// SIMPLIFIED: Direct SQL queries
+// Get job IDs for this user - PostgreSQL syntax
 // =============================================
-$jobIdsSql = "SELECT id FROM job_orders WHERE created_by = '$userId'";
-$jobIdsResult = mysqli_query($conn, $jobIdsSql);
+$jobIdsResult = @getRecords("SELECT id FROM job_orders WHERE created_by = $1", [$userId]);
 $jobIds = [];
-while ($row = mysqli_fetch_assoc($jobIdsResult)) {
-    $jobIds[] = $row['id'];
+if (is_array($jobIdsResult)) {
+    foreach ($jobIdsResult as $row) {
+        $jobIds[] = $row['id'];
+    }
 }
 
 if (empty($jobIds)) {
@@ -348,22 +390,35 @@ if (empty($jobIds)) {
     $upcomingCount = 0;
     $upcomingInterviews = [];
 } else {
-    $jobIdsString = implode(',', $jobIds);
+    $conditions = [];
+    $params = [];
+    $counter = 1;
     
-    $whereClause = "a.job_order_id IN ($jobIdsString)";
+    $conditions[] = "a.job_order_id = ANY($" . $counter . "::int[])";
+    $params[] = '{' . implode(',', $jobIds) . '}';
+    $counter++;
     
     if ($statusFilter !== 'all') {
-        $whereClause .= " AND i.status = '$statusFilter'";
+        $conditions[] = "i.status = $" . $counter++;
+        $params[] = $statusFilter;
     }
     
     if ($jobFilter > 0) {
-        $whereClause .= " AND a.job_order_id = $jobFilter";
+        $conditions[] = "a.job_order_id = $" . $counter++;
+        $params[] = $jobFilter;
     }
     
     if (!empty($searchQuery)) {
-        $searchParam = mysqli_real_escape_string($conn, $searchQuery);
-        $whereClause .= " AND (u.first_name LIKE '%$searchParam%' OR u.last_name LIKE '%$searchParam%' OR u.email LIKE '%$searchParam%' OR jo.title LIKE '%$searchParam%')";
+        $searchParam = "%$searchQuery%";
+        $conditions[] = "(u.first_name ILIKE $" . $counter . " OR u.last_name ILIKE $" . ($counter+1) . " OR u.email ILIKE $" . ($counter+2) . " OR jo.title ILIKE $" . ($counter+3) . ")";
+        $params[] = $searchParam;
+        $params[] = $searchParam;
+        $params[] = $searchParam;
+        $params[] = $searchParam;
+        $counter += 4;
     }
+    
+    $whereClause = "WHERE " . implode(" AND ", $conditions);
     
     $sql = "SELECT i.*, 
             u.id as user_id, u.first_name, u.last_name, u.email,
@@ -377,34 +432,31 @@ if (empty($jobIds)) {
             JOIN users u ON ap.user_id = u.id
             JOIN job_orders jo ON a.job_order_id = jo.id
             JOIN clients c ON jo.client_id = c.id
-            WHERE $whereClause
+            $whereClause
             ORDER BY i.interview_date ASC";
     
-    $result = mysqli_query($conn, $sql);
-    $interviews = [];
-    while ($row = mysqli_fetch_assoc($result)) {
-        $interviews[] = $row;
-    }
+    $interviews = @getRecords($sql, $params);
+    if (!is_array($interviews)) $interviews = [];
     
     $statusCounts = ['all' => count($interviews)];
     $statuses = ['scheduled', 'completed', 'cancelled', 'rescheduled', 'no_show'];
     foreach ($statuses as $status) {
-        $countSql = "SELECT COUNT(*) as count FROM interviews i 
-                     JOIN applications a ON i.application_id = a.id
-                     JOIN job_orders jo ON a.job_order_id = jo.id 
-                     WHERE jo.created_by = '$userId' AND i.status = '$status'";
-        $countResult = mysqli_query($conn, $countSql);
-        $countRow = mysqli_fetch_assoc($countResult);
-        $statusCounts[$status] = $countRow['count'] ?? 0;
+        $countResult = @getRecord("
+            SELECT COUNT(*) as count FROM interviews i 
+            JOIN applications a ON i.application_id = a.id
+            JOIN job_orders jo ON a.job_order_id = jo.id 
+            WHERE jo.created_by = $1 AND i.status = $2
+        ", [$userId, $status]);
+        $statusCounts[$status] = isset($countResult['count']) ? (int)$countResult['count'] : 0;
     }
     
-    $upcomingSql = "SELECT COUNT(*) as count FROM interviews i 
-                    JOIN applications a ON i.application_id = a.id
-                    JOIN job_orders jo ON a.job_order_id = jo.id 
-                    WHERE jo.created_by = '$userId' AND i.status = 'scheduled' AND i.interview_date >= NOW()";
-    $upcomingResult = mysqli_query($conn, $upcomingSql);
-    $upcomingRow = mysqli_fetch_assoc($upcomingResult);
-    $upcomingCount = $upcomingRow['count'] ?? 0;
+    $upcomingCountResult = @getRecord("
+        SELECT COUNT(*) as count FROM interviews i 
+        JOIN applications a ON i.application_id = a.id
+        JOIN job_orders jo ON a.job_order_id = jo.id 
+        WHERE jo.created_by = $1 AND i.status = 'scheduled' AND i.interview_date >= NOW()
+    ", [$userId]);
+    $upcomingCount = isset($upcomingCountResult['count']) ? (int)$upcomingCountResult['count'] : 0;
     
     $upcomingSql = "SELECT i.*, u.first_name, u.last_name, u.email, jo.title as job_title
                     FROM interviews i
@@ -412,22 +464,48 @@ if (empty($jobIds)) {
                     JOIN applicants ap ON a.applicant_id = ap.id
                     JOIN users u ON ap.user_id = u.id
                     JOIN job_orders jo ON a.job_order_id = jo.id
-                    WHERE jo.created_by = '$userId' AND i.status = 'scheduled' AND i.interview_date >= NOW()
+                    WHERE jo.created_by = $1 AND i.status = 'scheduled' AND i.interview_date >= NOW()
                     ORDER BY i.interview_date ASC
                     LIMIT 5";
-    $upcomingResult = mysqli_query($conn, $upcomingSql);
-    $upcomingInterviews = [];
-    while ($row = mysqli_fetch_assoc($upcomingResult)) {
-        $upcomingInterviews[] = $row;
+    $upcomingInterviews = @getRecords($upcomingSql, [$userId]);
+    if (!is_array($upcomingInterviews)) $upcomingInterviews = [];
+}
+
+// Get jobs for filter - PostgreSQL syntax
+$jobs = @getRecords("SELECT id, title FROM job_orders WHERE created_by = $1 ORDER BY created_at DESC", [$userId]);
+if (!is_array($jobs)) $jobs = [];
+
+// =============================================
+// Get sidebar counts - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = 0;
+$archivedTables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($archivedTables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
     }
 }
 
-$jobsSql = "SELECT id, title FROM job_orders WHERE created_by = '$userId' ORDER BY created_at DESC";
-$jobsResult = mysqli_query($conn, $jobsSql);
-$jobs = [];
-while ($row = mysqli_fetch_assoc($jobsResult)) {
-    $jobs[] = $row;
-}
+// =============================================
+// Get applicants for dropdown - FIXED PostgreSQL
+// =============================================
+$applicantsList = @getRecords("
+    SELECT a.id, u.first_name, u.last_name, u.email, jo.title as job_title, jo.id as job_id, a.applicant_id
+    FROM applications a
+    JOIN applicants ap ON a.applicant_id = ap.id
+    JOIN users u ON ap.user_id = u.id
+    JOIN job_orders jo ON a.job_order_id = jo.id
+    WHERE jo.created_by = $1 AND a.status IN ('pending', 'shortlisted')
+    ORDER BY a.applied_at DESC
+", [$userId]);
+if (!is_array($applicantsList)) $applicantsList = [];
 
 $statusBadges = [
     'scheduled' => 'badge-scheduled',
@@ -454,9 +532,10 @@ $interviewTypeLabels = [
 ];
 
 $allStatuses = ['all' => 'All'] + $statusLabels;
+$statuses = ['scheduled', 'completed', 'cancelled', 'rescheduled', 'no_show'];
 
 // =============================================
-// AJAX HANDLER
+// AJAX HANDLER - PostgreSQL syntax
 // =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
@@ -490,9 +569,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         }
         
         if ($interviewId > 0) {
-            $questionsJson = mysqli_real_escape_string($conn, json_encode($questions));
-            $updateSql = "UPDATE interviews SET ai_questions = '$questionsJson', updated_at = NOW() WHERE id = '$interviewId'";
-            mysqli_query($conn, $updateSql);
+            $questionsJson = json_encode($questions);
+            @updateRecord("UPDATE interviews SET ai_questions = $1, updated_at = NOW() WHERE id = $2", [$questionsJson, $interviewId]);
         }
         
         echo json_encode(['success' => true, 'questions' => $questions]);
@@ -539,7 +617,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // ========== SCHEDULE INTERVIEW ==========
+    // ========== SCHEDULE INTERVIEW - PostgreSQL ==========
     if ($action === 'schedule_interview') {
         $applicationId = isset($_POST['application_id']) ? (int)$_POST['application_id'] : 0;
         $interviewDate = $_POST['interview_date'] ?? '';
@@ -554,39 +632,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        $appSql = "SELECT id, status, job_order_id, applicant_id FROM applications WHERE id = '$applicationId'";
-        $appResult = mysqli_query($conn, $appSql);
-        $app = mysqli_fetch_assoc($appResult);
+        $app = @getRecord("
+            SELECT id, status, job_order_id, applicant_id 
+            FROM applications 
+            WHERE id = $1
+        ", [$applicationId]);
+        
         if (!$app) {
             echo json_encode(['success' => false, 'error' => 'Application not found.']);
             exit;
         }
         
-        $existingSql = "SELECT id, status FROM interviews WHERE application_id = '$applicationId' AND status != 'completed'";
-        $existingResult = mysqli_query($conn, $existingSql);
-        if (mysqli_num_rows($existingResult) > 0) {
+        $existing = @getRecord("
+            SELECT id, status FROM interviews 
+            WHERE application_id = $1 AND status != 'completed'
+        ", [$applicationId]);
+        
+        if ($existing) {
             echo json_encode(['success' => false, 'error' => 'This applicant already has a scheduled interview.']);
             exit;
         }
         
         $dbDateTime = date('Y-m-d H:i:s', strtotime(str_replace('T', ' ', $interviewDate)));
         
-        $sql = "INSERT INTO interviews (application_id, interview_date, interview_type, meeting_link, interviewers, notes, status, created_by) 
-                VALUES ('$applicationId', '$dbDateTime', '$interviewType', '$meetingLink', '$interviewers', '$notes', 'scheduled', '$userId')";
-        $result = mysqli_query($conn, $sql);
+        $sql = "INSERT INTO interviews (application_id, interview_date, interview_type, meeting_link, interviewers, notes, status, created_by, created_at) 
+                VALUES ($1, $2, $3, $4, $5, $6, 'scheduled', $7, NOW())
+                RETURNING id";
+        
+        $result = @insertRecord($sql, [
+            $applicationId,
+            $dbDateTime,
+            $interviewType,
+            $meetingLink,
+            $interviewers,
+            $notes,
+            $userId
+        ]);
         
         if ($result) {
-            $interviewId = mysqli_insert_id($conn);
-            mysqli_query($conn, "UPDATE applications SET status = 'scheduled' WHERE id = '$applicationId'");
-            
-            logActivity($userId, 'Interview Scheduled', 'interviews', $interviewId, 'Interview scheduled for application #' . $applicationId);
+            $interviewId = $result;
+            @updateRecord("UPDATE applications SET status = 'scheduled' WHERE id = $1", [$applicationId]);
+            @logActivity($userId, 'Interview Scheduled', 'interviews', $interviewId, 'Interview scheduled for application #' . $applicationId);
             
             $questions = null;
             if ($generateQuestions) {
                 $questions = generateAIQuestions($app['job_order_id'], $app['applicant_id']);
                 if ($questions && !isset($questions['error'])) {
-                    $questionsJson = mysqli_real_escape_string($conn, json_encode($questions));
-                    mysqli_query($conn, "UPDATE interviews SET ai_questions = '$questionsJson' WHERE id = '$interviewId'");
+                    $questionsJson = json_encode($questions);
+                    @updateRecord("UPDATE interviews SET ai_questions = $1 WHERE id = $2", [$questionsJson, $interviewId]);
                 }
             }
             
@@ -596,12 +689,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 'questions' => $questions
             ]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Failed to schedule interview: ' . mysqli_error($conn)]);
+            echo json_encode(['success' => false, 'error' => 'Failed to schedule interview.']);
         }
         exit;
     }
     
-    // ========== UPDATE INTERVIEW ==========
+    // ========== UPDATE INTERVIEW - PostgreSQL ==========
     if ($action === 'update_interview' && $interviewId > 0) {
         $interviewDate = $_POST['interview_date'] ?? '';
         $interviewType = $_POST['interview_type'] ?? 'online';
@@ -620,18 +713,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         
         $dbDateTime = date('Y-m-d H:i:s', strtotime(str_replace('T', ' ', $interviewDate)));
         
-        $updateFields = "interview_date = '$dbDateTime', interview_type = '$interviewType', meeting_link = '$meetingLink', interviewers = '$interviewers', notes = '$notes', status = '$status', feedback = '$feedback', rating = '$rating', updated_at = NOW()";
+        $updateFields = [];
+        $params = [];
+        $counter = 1;
+        
+        $updateFields[] = "interview_date = $" . $counter++;
+        $params[] = $dbDateTime;
+        $updateFields[] = "interview_type = $" . $counter++;
+        $params[] = $interviewType;
+        $updateFields[] = "meeting_link = $" . $counter++;
+        $params[] = $meetingLink;
+        $updateFields[] = "interviewers = $" . $counter++;
+        $params[] = $interviewers;
+        $updateFields[] = "notes = $" . $counter++;
+        $params[] = $notes;
+        $updateFields[] = "status = $" . $counter++;
+        $params[] = $status;
+        $updateFields[] = "feedback = $" . $counter++;
+        $params[] = $feedback;
+        $updateFields[] = "rating = $" . $counter++;
+        $params[] = $rating;
+        $updateFields[] = "updated_at = NOW()";
         
         if ($aiQuestions) {
-            $aiQuestionsEscaped = mysqli_real_escape_string($conn, $aiQuestions);
-            $updateFields .= ", ai_questions = '$aiQuestionsEscaped'";
+            $updateFields[] = "ai_questions = $" . $counter++;
+            $params[] = $aiQuestions;
         }
         
-        $sql = "UPDATE interviews SET $updateFields WHERE id = '$interviewId'";
-        $result = mysqli_query($conn, $sql);
+        $params[] = $interviewId;
+        $sql = "UPDATE interviews SET " . implode(", ", $updateFields) . " WHERE id = $" . $counter;
+        
+        $result = @updateRecord($sql, $params);
         
         if ($result) {
-            logActivity($userId, 'Interview Updated', 'interviews', $interviewId, 'Updated interview #' . $interviewId);
+            @logActivity($userId, 'Interview Updated', 'interviews', $interviewId, 'Updated interview #' . $interviewId);
             echo json_encode(['success' => true, 'message' => 'Interview updated successfully!']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to update interview.']);
@@ -639,18 +754,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // ========== CANCEL INTERVIEW ==========
+    // ========== CANCEL INTERVIEW - PostgreSQL ==========
     if ($action === 'cancel_interview' && $interviewId > 0) {
-        $sql = "UPDATE interviews SET status = 'cancelled', updated_at = NOW() WHERE id = '$interviewId'";
-        $result = mysqli_query($conn, $sql);
+        $result = @updateRecord("UPDATE interviews SET status = 'cancelled', updated_at = NOW() WHERE id = $1", [$interviewId]);
         
         if ($result) {
             $interview = getInterviewDetails($interviewId);
             if ($interview) {
-                mysqli_query($conn, "UPDATE applications SET status = 'shortlisted' WHERE id = '" . $interview['application_id'] . "'");
+                @updateRecord("UPDATE applications SET status = 'shortlisted' WHERE id = $1", [$interview['application_id']]);
             }
             
-            logActivity($userId, 'Interview Cancelled', 'interviews', $interviewId, 'Cancelled interview #' . $interviewId);
+            @logActivity($userId, 'Interview Cancelled', 'interviews', $interviewId, 'Cancelled interview #' . $interviewId);
             echo json_encode(['success' => true, 'message' => 'Interview cancelled successfully!']);
         } else {
             echo json_encode(['success' => false, 'error' => 'Failed to cancel interview.']);
@@ -658,7 +772,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // ========== COMPLETE INTERVIEW WITH ARCHIVE ==========
+    // ========== COMPLETE INTERVIEW WITH ARCHIVE - PostgreSQL ==========
     if ($action === 'complete_interview' && $interviewId > 0) {
         $rating = isset($_POST['rating']) ? (int)$_POST['rating'] : 0;
         $feedback = trim($_POST['feedback'] ?? '');
@@ -674,16 +788,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        $conn->begin_transaction();
+        @beginTransaction();
         
         try {
-            $updateSql = "UPDATE interviews SET 
-                          status = 'completed',
-                          rating = ?,
-                          feedback = ?,
-                          updated_at = NOW()
-                          WHERE id = ?";
-            $updateResult = updateRecord($updateSql, [$rating, $feedback, $interviewId], "isi");
+            $updateResult = @updateRecord("
+                UPDATE interviews SET 
+                status = 'completed',
+                rating = $1,
+                feedback = $2,
+                updated_at = NOW()
+                WHERE id = $3
+            ", [$rating, $feedback, $interviewId]);
             
             if (!$updateResult) {
                 throw new Exception('Failed to update interview status.');
@@ -697,13 +812,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             
             $interview = getInterviewDetails($interviewId);
             if ($interview) {
-                mysqli_query($conn, "UPDATE applications SET status = 'interviewed' WHERE id = '" . $interview['application_id'] . "'");
+                @updateRecord("UPDATE applications SET status = 'interviewed' WHERE id = $1", [$interview['application_id']]);
             }
             
-            logActivity($userId, 'Interview Completed', 'interviews', $interviewId, 
+            @logActivity($userId, 'Interview Completed', 'interviews', $interviewId, 
                 'Completed interview #' . $interviewId . ' with rating ' . $rating);
             
-            $conn->commit();
+            @commitTransaction();
             
             echo json_encode([
                 'success' => true, 
@@ -712,13 +827,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             ]);
             
         } catch (Exception $e) {
-            $conn->rollback();
+            @rollbackTransaction();
             echo json_encode(['success' => false, 'error' => $e->getMessage()]);
         }
         exit;
     }
     
-    // ========== GET INTERVIEW ==========
+    // ========== GET INTERVIEW - PostgreSQL ==========
     if ($action === 'get_interview' && $interviewId > 0) {
         $interview = getInterviewDetails($interviewId);
         if ($interview) {
@@ -731,8 +846,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
 }
 
-
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -795,9 +910,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             text-transform: uppercase;
             letter-spacing: 0.03em;
         }
-        .ai-badge .material-symbols-outlined {
-            font-size: 0.75rem;
-        }
+        .ai-badge .material-symbols-outlined { font-size: 0.75rem; }
 
         .ai-questions-box {
             background: var(--bg-surface-low);
@@ -1417,14 +1530,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             transform-origin: top right;
         }
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
-        .profile-dropdown-menu .dropdown-header {
-            padding: 0.25rem 0.75rem 0.25rem;
-            font-size: 0.6rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-on-surface-variant);
-        }
+        .profile-dropdown-menu .dropdown-header { padding: 0.25rem 0.75rem 0.25rem; font-size: 0.6rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-on-surface-variant); }
         .profile-dropdown-menu .dropdown-item {
             display: flex;
             align-items: center;
@@ -2002,168 +2108,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
+
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
 
-<!-- =============================================
-MODERN AI LOADING OVERLAY
-============================================= -->
-<div class="ai-loading-overlay" id="aiLoadingOverlay">
-    <div class="ai-loading-box">
-        <span class="loading-icon material-symbols-outlined">auto_awesome</span>
-        <div class="loading-title" id="loadingTitle">Generating AI Questions</div>
-        <div class="loading-subtitle" id="loadingSubtitle">Our AI is analyzing the job requirements</div>
-        <div class="dot-loader">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        </div>
-        <div class="loading-status">
-            <span class="status-text" id="loadingStatus">Preparing questions</span>
-            <span class="status-dots"></span>
-        </div>
-    </div>
-</div>
-
-<!-- =============================================
-MODAL: AI Questions Display
-============================================= -->
-<div class="modal-overlay ai-questions-modal" id="aiQuestionsModal">
-    <div class="modal">
-        <div class="modal-header">
-            <h2>
-                <span class="material-symbols-outlined">auto_awesome</span>
-                <span>AI Generated Questions</span>
-                <span class="ai-badge" style="font-size:0.55rem; margin-left:0.5rem;">
-                    <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
-                    AI
-                </span>
-            </h2>
-            <button class="modal-close" onclick="closeModal('aiQuestionsModal')" data-tooltip="Close">
-                <span class="material-symbols-outlined">close</span>
-            </button>
-        </div>
-        <div class="modal-body" id="aiQuestionsBody">
-            <div id="aiQuestionsContent">
-                <div class="loading-spinner">
-                    <div class="spinner"></div>
-                    <p style="margin-top:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">Loading questions...</p>
-                </div>
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-outline" onclick="closeModal('aiQuestionsModal')">Close</button>
-            <button class="btn btn-ai" onclick="copyQuestionsToClipboard()">
-                <span class="material-symbols-outlined">content_copy</span> Copy All
-            </button>
-            <button class="btn btn-success" onclick="printQuestions()">
-                <span class="material-symbols-outlined">print</span> Print
-            </button>
-        </div>
-    </div>
-</div>
-
-<!-- =============================================
-MODAL: Complete Interview (Modal instead of alert)
-============================================= -->
-<div class="modal-overlay complete-modal" id="completeModal">
-    <div class="modal">
-        <div class="modal-header">
-            <h2>
-                <span class="material-symbols-outlined">check_circle</span>
-                Complete Interview
-            </h2>
-            <button class="modal-close" onclick="closeModal('completeModal')" data-tooltip="Close">
-                <span class="material-symbols-outlined">close</span>
-            </button>
-        </div>
-        <div class="modal-body">
-            <form id="completeForm" onsubmit="submitComplete(event)">
-                <input type="hidden" id="completeInterviewId" name="interview_id" value="0">
-                
-                <div id="completeCandidateInfo" style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin-bottom:1rem; border:1px solid var(--slate-200);">
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
-                        <div>
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Candidate</div>
-                            <div style="font-weight:600; font-size:0.875rem;" id="completeCandidateName">Loading...</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Position</div>
-                            <div style="font-weight:600; font-size:0.875rem;" id="completePosition">Loading...</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label>Rating <span class="required">*</span></label>
-                    <div class="rating-stars-input" id="ratingStars">
-                        <button type="button" class="star-btn" data-value="1" onclick="setRating(1)">★</button>
-                        <button type="button" class="star-btn" data-value="2" onclick="setRating(2)">★</button>
-                        <button type="button" class="star-btn" data-value="3" onclick="setRating(3)">★</button>
-                        <button type="button" class="star-btn" data-value="4" onclick="setRating(4)">★</button>
-                        <button type="button" class="star-btn" data-value="5" onclick="setRating(5)">★</button>
-                    </div>
-                    <div class="rating-label" id="ratingLabel">Select a rating</div>
-                    <input type="hidden" id="selectedRating" name="rating" value="0">
-                </div>
-                
-                <div class="form-group">
-                    <label>Recommendation <span class="required">*</span></label>
-                    <div class="recommendation-options">
-                        <div class="recommendation-option" data-value="hire" onclick="selectRecommendation('hire')">
-                            <div class="rec-label" style="color:#059669;">Hire</div>
-                            <div class="rec-desc">Strong candidate, proceed with offer</div>
-                        </div>
-                        <div class="recommendation-option" data-value="consider" onclick="selectRecommendation('consider')">
-                            <div class="rec-label" style="color:#d97706;">Consider</div>
-                            <div class="rec-desc">Good potential, keep in pipeline</div>
-                        </div>
-                        <div class="recommendation-option" data-value="reject" onclick="selectRecommendation('reject')">
-                            <div class="rec-label" style="color:#dc2626;">Reject</div>
-                            <div class="rec-desc">Not a fit for the role</div>
-                        </div>
-                    </div>
-                    <input type="hidden" id="selectedRecommendation" name="recommendation" value="">
-                </div>
-                
-                <div class="form-group">
-                    <label for="completeFeedback">Feedback <span class="required">*</span></label>
-                    <textarea id="completeFeedback" name="feedback" class="form-control" placeholder="Provide detailed feedback about the candidate's performance..." rows="4" required></textarea>
-                    <div class="helper-text">
-                        <span class="material-symbols-outlined">info</span>
-                        This feedback will be saved to the archive
-                    </div>
-                </div>
-                
-                <div class="form-group" style="border-top:1px solid var(--slate-200); padding-top:0.75rem; margin-top:0.25rem;">
-                    <div style="display:flex; align-items:center; gap:0.5rem;">
-                        <span class="material-symbols-outlined" style="color:var(--primary);">auto_awesome</span>
-                        <span style="font-weight:600; font-size:0.8125rem;">AI will generate feedback suggestions</span>
-                    </div>
-                    <button type="button" class="btn btn-ai btn-sm" onclick="generateAIFeedbackForComplete()" style="margin-top:0.5rem;">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span>
-                        Generate AI Feedback Suggestions
-                    </button>
-                    <div id="aiFeedbackSuggestions" style="display:none; margin-top:0.5rem;"></div>
-                </div>
-            </form>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-outline" onclick="closeModal('completeModal')">Cancel</button>
-            <button class="btn btn-success" id="completeSubmitBtn" onclick="document.getElementById('completeForm').dispatchEvent(new Event('submit'))">
-                <span class="material-symbols-outlined">check</span>
-                Complete & Archive
-            </button>
-        </div>
-    </div>
-</div>
-
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">calendar_month</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -2183,14 +2173,7 @@ MODAL: Complete Interview (Modal instead of alert)
         <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
-            <span class="nav-badge"><?php 
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
-                echo $pendingApps; 
-            ?></span>
-        </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
+            <span class="nav-badge"><?php echo $pendingAppsCount; ?></span>
         </a>
         <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">calendar_month</span>
@@ -2203,18 +2186,7 @@ MODAL: Complete Interview (Modal instead of alert)
         <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">archive</span>
             <span class="nav-text">Archive</span>
-            <span class="nav-badge"><?php 
-                $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                echo $totalArchived;
-            ?></span>
+            <span class="nav-badge"><?php echo $totalArchived; ?></span>
         </a>
         <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
             <span class="material-symbols-outlined">apartment</span>
@@ -2238,27 +2210,25 @@ MODAL: Complete Interview (Modal instead of alert)
 
 <!-- ===== MAIN CONTENT ===== -->
 <div class="main-wrapper" id="mainWrapper">
-    <!-- ===== TOP HEADER ===== -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                <span class="material-symbols-outlined">menu</span>
-            </button>
-            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                <?php 
-                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                    echo ucwords(str_replace('_', ' ', $pageTitle));
-                ?>
-            </span>
-            <span class="ai-badge" style="margin-left:0.5rem;">
-                <span class="material-symbols-outlined">auto_awesome</span>
-                AI Powered
-            </span>
-        </div>
+   <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
         <div class="profile-dropdown-wrapper">
             <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                 <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -2530,20 +2500,11 @@ MODAL: Schedule/Edit Interview
                     <label for="applicationSelect">Select Applicant <span class="required">*</span></label>
                     <select id="applicationSelect" name="application_id" class="form-control" required>
                         <option value="">— Select an applicant —</option>
-                        <?php
-                        $applicantsSql = "SELECT a.id, u.first_name, u.last_name, u.email, jo.title as job_title, jo.id as job_id, a.applicant_id
-                            FROM applications a
-                            JOIN applicants ap ON a.applicant_id = ap.id
-                            JOIN users u ON ap.user_id = u.id
-                            JOIN job_orders jo ON a.job_order_id = jo.id
-                            WHERE jo.created_by = '$userId' AND a.status IN ('pending', 'shortlisted')
-                            ORDER BY a.applied_at DESC";
-                        $applicantsResult = mysqli_query($conn, $applicantsSql);
-                        while ($app = mysqli_fetch_assoc($applicantsResult)): ?>
+                        <?php foreach ($applicantsList as $app): ?>
                             <option value="<?php echo $app['id']; ?>" data-job-id="<?php echo $app['job_id']; ?>" data-applicant-id="<?php echo $app['applicant_id']; ?>">
                                 <?php echo htmlspecialchars($app['first_name'] . ' ' . $app['last_name'] . ' - ' . $app['job_title']); ?>
                             </option>
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
                     </select>
                     <div class="helper-text">
                         <span class="material-symbols-outlined">info</span>
@@ -2581,7 +2542,6 @@ MODAL: Schedule/Edit Interview
                     <textarea id="interviewNotes" name="notes" class="form-control" placeholder="Add any preparation notes or instructions..." rows="2"></textarea>
                 </div>
 
-                <!-- AI Features -->
                 <div class="form-group" style="border-top:1px solid var(--slate-200); padding-top:0.75rem; margin-top:0.25rem;">
                     <div class="checkbox-group">
                         <input type="checkbox" id="generateQuestions" name="generate_questions" value="1" checked>
@@ -2656,7 +2616,140 @@ MODAL: View Interview Details with AI
 </div>
 
 <!-- =============================================
-JAVASCRIPT - COMPLETE
+MODAL: AI Questions Display
+============================================= -->
+<div class="modal-overlay ai-questions-modal" id="aiQuestionsModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">auto_awesome</span>
+                <span>AI Generated Questions</span>
+                <span class="ai-badge" style="font-size:0.55rem; margin-left:0.5rem;">
+                    <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
+                    AI
+                </span>
+            </h2>
+            <button class="modal-close" onclick="closeModal('aiQuestionsModal')" data-tooltip="Close">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body" id="aiQuestionsBody">
+            <div id="aiQuestionsContent">
+                <div class="loading-spinner">
+                    <div class="spinner"></div>
+                    <p style="margin-top:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">Loading questions...</p>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('aiQuestionsModal')">Close</button>
+            <button class="btn btn-ai" onclick="copyQuestionsToClipboard()">
+                <span class="material-symbols-outlined">content_copy</span> Copy All
+            </button>
+            <button class="btn btn-success" onclick="printQuestions()">
+                <span class="material-symbols-outlined">print</span> Print
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- =============================================
+MODAL: Complete Interview
+============================================= -->
+<div class="modal-overlay complete-modal" id="completeModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>
+                <span class="material-symbols-outlined">check_circle</span>
+                Complete Interview
+            </h2>
+            <button class="modal-close" onclick="closeModal('completeModal')" data-tooltip="Close">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="modal-body">
+            <form id="completeForm" onsubmit="submitComplete(event)">
+                <input type="hidden" id="completeInterviewId" name="interview_id" value="0">
+                
+                <div id="completeCandidateInfo" style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin-bottom:1rem; border:1px solid var(--slate-200);">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+                        <div>
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Candidate</div>
+                            <div style="font-weight:600; font-size:0.875rem;" id="completeCandidateName">Loading...</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Position</div>
+                            <div style="font-weight:600; font-size:0.875rem;" id="completePosition">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Rating <span class="required">*</span></label>
+                    <div class="rating-stars-input" id="ratingStars">
+                        <button type="button" class="star-btn" data-value="1" onclick="setRating(1)">★</button>
+                        <button type="button" class="star-btn" data-value="2" onclick="setRating(2)">★</button>
+                        <button type="button" class="star-btn" data-value="3" onclick="setRating(3)">★</button>
+                        <button type="button" class="star-btn" data-value="4" onclick="setRating(4)">★</button>
+                        <button type="button" class="star-btn" data-value="5" onclick="setRating(5)">★</button>
+                    </div>
+                    <div class="rating-label" id="ratingLabel">Select a rating</div>
+                    <input type="hidden" id="selectedRating" name="rating" value="0">
+                </div>
+                
+                <div class="form-group">
+                    <label>Recommendation <span class="required">*</span></label>
+                    <div class="recommendation-options">
+                        <div class="recommendation-option" data-value="hire" onclick="selectRecommendation('hire')">
+                            <div class="rec-label" style="color:#059669;">Hire</div>
+                            <div class="rec-desc">Strong candidate, proceed with offer</div>
+                        </div>
+                        <div class="recommendation-option" data-value="consider" onclick="selectRecommendation('consider')">
+                            <div class="rec-label" style="color:#d97706;">Consider</div>
+                            <div class="rec-desc">Good potential, keep in pipeline</div>
+                        </div>
+                        <div class="recommendation-option" data-value="reject" onclick="selectRecommendation('reject')">
+                            <div class="rec-label" style="color:#dc2626;">Reject</div>
+                            <div class="rec-desc">Not a fit for the role</div>
+                        </div>
+                    </div>
+                    <input type="hidden" id="selectedRecommendation" name="recommendation" value="">
+                </div>
+                
+                <div class="form-group">
+                    <label for="completeFeedback">Feedback <span class="required">*</span></label>
+                    <textarea id="completeFeedback" name="feedback" class="form-control" placeholder="Provide detailed feedback about the candidate's performance..." rows="4" required></textarea>
+                    <div class="helper-text">
+                        <span class="material-symbols-outlined">info</span>
+                        This feedback will be saved to the archive
+                    </div>
+                </div>
+                
+                <div class="form-group" style="border-top:1px solid var(--slate-200); padding-top:0.75rem; margin-top:0.25rem;">
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        <span class="material-symbols-outlined" style="color:var(--primary);">auto_awesome</span>
+                        <span style="font-weight:600; font-size:0.8125rem;">AI will generate feedback suggestions</span>
+                    </div>
+                    <button type="button" class="btn btn-ai btn-sm" onclick="generateAIFeedbackForComplete()" style="margin-top:0.5rem;">
+                        <span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span>
+                        Generate AI Feedback Suggestions
+                    </button>
+                    <div id="aiFeedbackSuggestions" style="display:none; margin-top:0.5rem;"></div>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('completeModal')">Cancel</button>
+            <button class="btn btn-success" id="completeSubmitBtn" onclick="document.getElementById('completeForm').dispatchEvent(new Event('submit'))">
+                <span class="material-symbols-outlined">check</span>
+                Complete & Archive
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- =============================================
+JAVASCRIPT - COMPLETE FIXED
 ============================================= -->
 <script>
 // =============================================
@@ -2781,58 +2874,341 @@ document.addEventListener('keydown', function(e) {
 });
 
 // =============================================
-// 5. AI LOADING OVERLAY
+// 5. SCHEDULE INTERVIEW
 // =============================================
-const loadingOverlay = document.getElementById('aiLoadingOverlay');
-const loadingTitle = document.getElementById('loadingTitle');
-const loadingSubtitle = document.getElementById('loadingSubtitle');
-const loadingStatus = document.getElementById('loadingStatus');
-
-const loadingMessages = {
-    generating: {
-        title: 'Generating AI Questions',
-        subtitle: 'Our AI is analyzing the job requirements',
-        status: ['Analyzing job description', 'Identifying key skills', 'Creating technical questions', 'Generating behavioral questions', 'Finalizing question set']
-    },
-    feedback: {
-        title: 'Generating AI Feedback',
-        subtitle: 'AI is analyzing interview performance',
-        status: ['Reviewing interview data', 'Assessing candidate responses', 'Evaluating technical skills', 'Generating recommendations', 'Finalizing feedback']
-    },
-    tips: {
-        title: 'Loading AI Tips',
-        subtitle: 'Preparing interview recommendations',
-        status: ['Analyzing job requirements', 'Gathering best practices', 'Preparing tips']
-    }
-};
-
-function showLoading(type = 'generating') {
-    const messages = loadingMessages[type] || loadingMessages.generating;
-    loadingTitle.textContent = messages.title;
-    loadingSubtitle.textContent = messages.subtitle;
-    loadingStatus.textContent = messages.status[0] || 'Processing';
-    loadingOverlay.classList.add('active');
+function openScheduleModal() {
+    const modalTitle = document.getElementById('modalTitle');
+    const formAction = document.getElementById('formAction');
+    const interviewId = document.getElementById('interviewId');
+    const submitBtnText = document.getElementById('submitBtnText');
+    const statusField = document.getElementById('statusField');
+    const interviewForm = document.getElementById('interviewForm');
+    const interviewDate = document.getElementById('interviewDate');
+    const applicationSelect = document.getElementById('applicationSelect');
     
-    let index = 0;
-    const interval = setInterval(() => {
-        index++;
-        if (index < messages.status.length) {
-            loadingStatus.textContent = messages.status[index];
+    if (modalTitle) modalTitle.textContent = 'Schedule Interview';
+    if (formAction) formAction.value = 'schedule_interview';
+    if (interviewId) interviewId.value = '0';
+    if (submitBtnText) submitBtnText.textContent = 'Schedule Interview';
+    if (statusField) statusField.style.display = 'none';
+    if (interviewForm) interviewForm.reset();
+    if (applicationSelect) applicationSelect.disabled = false;
+    
+    const generateQuestions = document.getElementById('generateQuestions');
+    if (generateQuestions) generateQuestions.checked = true;
+    
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    if (interviewDate) interviewDate.value = tomorrow.toISOString().slice(0, 16);
+    
+    openModal('interviewModal');
+}
+
+// =============================================
+// 6. EDIT INTERVIEW
+// =============================================
+function editInterview(id) {
+    const modalTitle = document.getElementById('modalTitle');
+    const formAction = document.getElementById('formAction');
+    const interviewId = document.getElementById('interviewId');
+    const submitBtnText = document.getElementById('submitBtnText');
+    const statusField = document.getElementById('statusField');
+    const applicationSelect = document.getElementById('applicationSelect');
+    const generateQuestions = document.getElementById('generateQuestions');
+    
+    if (modalTitle) modalTitle.textContent = 'Edit Interview';
+    if (formAction) formAction.value = 'update_interview';
+    if (interviewId) interviewId.value = id;
+    if (submitBtnText) submitBtnText.textContent = 'Update Interview';
+    if (statusField) statusField.style.display = 'block';
+    if (applicationSelect) applicationSelect.disabled = true;
+    if (generateQuestions) generateQuestions.checked = false;
+
+    const formData = new FormData();
+    formData.append('action', 'get_interview');
+    formData.append('interview_id', id);
+
+    fetch('interviews.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const interview = data.interview;
+            const appSelect = document.getElementById('applicationSelect');
+            const intDate = document.getElementById('interviewDate');
+            const intType = document.getElementById('interviewType');
+            const meetingLink = document.getElementById('meetingLink');
+            const interviewers = document.getElementById('interviewers');
+            const intNotes = document.getElementById('interviewNotes');
+            const editStatus = document.getElementById('editStatus');
+            
+            if (appSelect) appSelect.value = interview.application_id;
+            if (intDate) intDate.value = interview.interview_date.replace(' ', 'T');
+            if (intType) intType.value = interview.interview_type;
+            if (meetingLink) meetingLink.value = interview.meeting_link || '';
+            if (interviewers) interviewers.value = interview.interviewers || '';
+            if (intNotes) intNotes.value = interview.notes || '';
+            if (editStatus) editStatus.value = interview.status;
+            openModal('interviewModal');
         } else {
-            clearInterval(interval);
+            showToast(data.error || 'Failed to load interview.', 'error');
         }
-    }, 2000);
-    
-    return interval;
-}
-
-function hideLoading(interval) {
-    if (interval) clearInterval(interval);
-    loadingOverlay.classList.remove('active');
+    })
+    .catch(error => {
+        console.error('Edit error:', error);
+        showToast('Error loading interview details.', 'error');
+    });
 }
 
 // =============================================
-// 6. AI QUESTIONS MODAL
+// 7. SUBMIT INTERVIEW
+// =============================================
+function submitInterview(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('interviewForm');
+    if (!form) return;
+    
+    const formData = new FormData(form);
+    
+    const date = document.getElementById('interviewDate');
+    if (!date || !date.value) {
+        showToast('Please select an interview date and time.', 'error');
+        return;
+    }
+    
+    const btn = document.getElementById('submitBtn');
+    if (!btn) return;
+    
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block; width:1rem; height:1rem; border:2px solid white; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite;"></span> Saving...';
+
+    fetch('interviews.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        
+        if (data.success) {
+            let message = data.message;
+            if (data.questions && !data.questions.error) {
+                message += ' AI questions generated!';
+            }
+            showToast(message, 'success');
+            closeModal('interviewModal');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showToast(data.error || 'Failed to save interview.', 'error');
+        }
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        showToast('Error saving interview. Please try again.', 'error');
+    });
+}
+
+// =============================================
+// 8. VIEW INTERVIEW
+// =============================================
+let currentInterviewId = null;
+let currentInterviewData = null;
+
+function viewInterview(id) {
+    currentInterviewId = id;
+    openModal('viewModal');
+    
+    const loading = document.getElementById('viewLoading');
+    const content = document.getElementById('viewContent');
+    const generateFeedbackBtn = document.getElementById('generateFeedbackBtn');
+    const completeFromViewBtn = document.getElementById('completeFromViewBtn');
+    
+    if (loading) loading.style.display = 'block';
+    if (content) content.style.display = 'none';
+    if (generateFeedbackBtn) generateFeedbackBtn.style.display = 'none';
+    if (completeFromViewBtn) completeFromViewBtn.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('action', 'get_interview');
+    formData.append('interview_id', id);
+
+    fetch('interviews.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (loading) loading.style.display = 'none';
+        if (content) content.style.display = 'block';
+
+        if (data.success) {
+            const i = data.interview;
+            currentInterviewData = i;
+            
+            if (i.status === 'scheduled') {
+                if (completeFromViewBtn) completeFromViewBtn.style.display = 'inline-flex';
+            }
+            if (i.status === 'completed') {
+                if (generateFeedbackBtn) generateFeedbackBtn.style.display = 'inline-flex';
+            }
+            
+            let questionsHtml = '';
+            if (i.ai_questions) {
+                const q = i.ai_questions;
+                questionsHtml = `
+                    <div class="ai-questions-box">
+                        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span>
+                                AI Generated Questions
+                            </span>
+                            <button class="btn btn-ai btn-sm" onclick="viewAIQuestions(${i.id})" style="margin-left:auto;">
+                                <span class="material-symbols-outlined" style="font-size:0.75rem;">open_in_full</span>
+                                View All
+                            </button>
+                        </div>
+                        ${q.technical ? `
+                            <div class="question-category">Technical</div>
+                            ${q.technical.slice(0, 2).map((qText, idx) => `
+                                <div class="question-item">
+                                    <span class="q-number">${idx + 1}.</span>
+                                    ${escapeHtml(qText)}
+                                </div>
+                            `).join('')}
+                            ${q.technical.length > 2 ? `<div style="font-size:0.75rem; color:var(--text-on-surface-variant); padding:0.25rem 0.5rem;">+ ${q.technical.length - 2} more technical questions</div>` : ''}
+                        ` : ''}
+                        <div class="ai-disclaimer">
+                            <span class="material-symbols-outlined">info</span>
+                            ${q.technical ? `${q.technical.length + (q.behavioral?.length || 0) + (q.role_specific?.length || 0)} questions generated` : 'No questions generated yet'}
+                        </div>
+                    </div>
+                `;
+            } else if (i.status === 'scheduled') {
+                questionsHtml = `
+                    <div style="display:flex; justify-content:center; padding:0.5rem;">
+                        <button class="btn btn-ai btn-sm" onclick="generateQuestionsForInterview(${i.id})" data-tooltip="Generate AI questions">
+                            <span class="material-symbols-outlined">auto_awesome</span>
+                            Generate AI Questions
+                        </button>
+                    </div>
+                `;
+            }
+            
+            let tipsHtml = '';
+            if (i.job_id) {
+                const tips = <?php echo json_encode(getInterviewTips(0)); ?>;
+                const tipItems = Array.isArray(tips) ? tips : ['Focus on key skills', 'Prepare specific examples', 'Research the company'];
+                tipsHtml = `
+                    <div class="ai-tips-box">
+                        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.25rem;">
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined" style="font-size:0.75rem;">lightbulb</span>
+                                AI Interview Tips
+                            </span>
+                        </div>
+                        ${tipItems.slice(0, 5).map(tip => `
+                            <div class="tip-item">
+                                <span class="material-symbols-outlined">check_circle</span>
+                                ${escapeHtml(tip)}
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            
+            if (content) {
+                content.innerHTML = `
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                        <div>
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Candidate</div>
+                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(i.first_name)} ${escapeHtml(i.last_name)}</div>
+                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${escapeHtml(i.email)}</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Position</div>
+                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(i.job_title)}</div>
+                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${escapeHtml(i.company_name)}</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Date & Time</div>
+                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${new Date(i.interview_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${new Date(i.interview_date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Type</div>
+                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(i.interview_type)}</div>
+                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                <span class="badge badge-${i.status}">${escapeHtml(i.status)}</span>
+                                ${i.rating && i.rating > 0 ? ` &nbsp;⭐ ${i.rating}/5` : ''}
+                            </div>
+                        </div>
+                        ${i.meeting_link ? `
+                        <div style="grid-column:1/-1;">
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Meeting Link</div>
+                            <a href="${escapeHtml(i.meeting_link)}" target="_blank" style="color:var(--primary); text-decoration:underline; word-break:break-all;">${escapeHtml(i.meeting_link)}</a>
+                        </div>
+                        ` : ''}
+                        ${i.interviewers ? `
+                        <div style="grid-column:1/-1;">
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Interviewers</div>
+                            <div>${escapeHtml(i.interviewers)}</div>
+                        </div>
+                        ` : ''}
+                        ${i.notes ? `
+                        <div style="grid-column:1/-1;">
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Notes</div>
+                            <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(i.notes)}</div>
+                        </div>
+                        ` : ''}
+                        ${i.feedback ? `
+                        <div style="grid-column:1/-1;">
+                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Feedback</div>
+                            <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(i.feedback)}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                    ${questionsHtml}
+                    ${tipsHtml}
+                    <div id="aiFeedbackContainer"></div>
+                `;
+            }
+        } else {
+            if (content) {
+                content.innerHTML = `
+                    <div style="text-align:center; padding:1rem; color:#dc2626;">
+                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                        <p style="margin-top:0.5rem;">${data.error || 'Failed to load interview details.'}</p>
+                    </div>
+                `;
+            }
+        }
+    })
+    .catch(error => {
+        if (loading) loading.style.display = 'none';
+        if (content) {
+            content.style.display = 'block';
+            content.innerHTML = `
+                <div style="text-align:center; padding:1rem; color:#dc2626;">
+                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
+                    <p style="margin-top:0.5rem;">Error loading interview details. Please try again.</p>
+                </div>
+            `;
+        }
+    });
+}
+
+// =============================================
+// 9. VIEW AI QUESTIONS
 // =============================================
 let currentQuestions = null;
 let currentQuestionsInterviewId = null;
@@ -3033,360 +3409,18 @@ function printQuestions() {
 }
 
 // =============================================
-// 7. SCHEDULE INTERVIEW
-// =============================================
-function openScheduleModal() {
-    const modalTitle = document.getElementById('modalTitle');
-    const formAction = document.getElementById('formAction');
-    const interviewId = document.getElementById('interviewId');
-    const submitBtnText = document.getElementById('submitBtnText');
-    const statusField = document.getElementById('statusField');
-    const interviewForm = document.getElementById('interviewForm');
-    const interviewDate = document.getElementById('interviewDate');
-    const applicationSelect = document.getElementById('applicationSelect');
-    
-    if (modalTitle) modalTitle.textContent = 'Schedule Interview';
-    if (formAction) formAction.value = 'schedule_interview';
-    if (interviewId) interviewId.value = '0';
-    if (submitBtnText) submitBtnText.textContent = 'Schedule Interview';
-    if (statusField) statusField.style.display = 'none';
-    if (interviewForm) interviewForm.reset();
-    if (applicationSelect) applicationSelect.disabled = false;
-    
-    const generateQuestions = document.getElementById('generateQuestions');
-    if (generateQuestions) generateQuestions.checked = true;
-    
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    if (interviewDate) interviewDate.value = tomorrow.toISOString().slice(0, 16);
-    
-    openModal('interviewModal');
-}
-
-// =============================================
-// 8. EDIT INTERVIEW
-// =============================================
-function editInterview(id) {
-    const modalTitle = document.getElementById('modalTitle');
-    const formAction = document.getElementById('formAction');
-    const interviewId = document.getElementById('interviewId');
-    const submitBtnText = document.getElementById('submitBtnText');
-    const statusField = document.getElementById('statusField');
-    const applicationSelect = document.getElementById('applicationSelect');
-    const generateQuestions = document.getElementById('generateQuestions');
-    
-    if (modalTitle) modalTitle.textContent = 'Edit Interview';
-    if (formAction) formAction.value = 'update_interview';
-    if (interviewId) interviewId.value = id;
-    if (submitBtnText) submitBtnText.textContent = 'Update Interview';
-    if (statusField) statusField.style.display = 'block';
-    if (applicationSelect) applicationSelect.disabled = true;
-    if (generateQuestions) generateQuestions.checked = false;
-
-    const interval = showLoading('tips');
-
-    const formData = new FormData();
-    formData.append('action', 'get_interview');
-    formData.append('interview_id', id);
-
-    fetch('interviews.php', {
-        method: 'POST',
-        body: formData,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        hideLoading(interval);
-        if (data.success) {
-            const interview = data.interview;
-            const appSelect = document.getElementById('applicationSelect');
-            const intDate = document.getElementById('interviewDate');
-            const intType = document.getElementById('interviewType');
-            const meetingLink = document.getElementById('meetingLink');
-            const interviewers = document.getElementById('interviewers');
-            const intNotes = document.getElementById('interviewNotes');
-            const editStatus = document.getElementById('editStatus');
-            
-            if (appSelect) appSelect.value = interview.application_id;
-            if (intDate) intDate.value = interview.interview_date.replace(' ', 'T');
-            if (intType) intType.value = interview.interview_type;
-            if (meetingLink) meetingLink.value = interview.meeting_link || '';
-            if (interviewers) interviewers.value = interview.interviewers || '';
-            if (intNotes) intNotes.value = interview.notes || '';
-            if (editStatus) editStatus.value = interview.status;
-            openModal('interviewModal');
-        } else {
-            showToast(data.error || 'Failed to load interview.', 'error');
-        }
-    })
-    .catch(error => {
-        hideLoading(interval);
-        console.error('Edit error:', error);
-        showToast('Error loading interview details.', 'error');
-    });
-}
-
-// =============================================
-// 9. SUBMIT INTERVIEW
-// =============================================
-function submitInterview(event) {
-    event.preventDefault();
-    
-    const form = document.getElementById('interviewForm');
-    if (!form) return;
-    
-    const formData = new FormData(form);
-    
-    const date = document.getElementById('interviewDate');
-    if (!date || !date.value) {
-        showToast('Please select an interview date and time.', 'error');
-        return;
-    }
-    
-    const btn = document.getElementById('submitBtn');
-    if (!btn) return;
-    
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span style="display:inline-block; width:1rem; height:1rem; border:2px solid white; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite;"></span> Saving...';
-
-    const interval = showLoading('generating');
-
-    fetch('interviews.php', {
-        method: 'POST',
-        body: formData,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        hideLoading(interval);
-        btn.disabled = false;
-        btn.innerHTML = originalText;
-        
-        if (data.success) {
-            let message = data.message;
-            if (data.questions && !data.questions.error) {
-                message += ' AI questions generated!';
-            }
-            showToast(message, 'success');
-            closeModal('interviewModal');
-            setTimeout(() => location.reload(), 1000);
-        } else {
-            showToast(data.error || 'Failed to save interview.', 'error');
-        }
-    })
-    .catch(error => {
-        hideLoading(interval);
-        btn.disabled = false;
-        btn.innerHTML = originalText;
-        showToast('Error saving interview. Please try again.', 'error');
-    });
-}
-
-// =============================================
-// 10. VIEW INTERVIEW WITH AI
-// =============================================
-let currentInterviewId = null;
-let currentInterviewData = null;
-
-function viewInterview(id) {
-    currentInterviewId = id;
-    openModal('viewModal');
-    
-    const loading = document.getElementById('viewLoading');
-    const content = document.getElementById('viewContent');
-    const generateFeedbackBtn = document.getElementById('generateFeedbackBtn');
-    const completeFromViewBtn = document.getElementById('completeFromViewBtn');
-    
-    if (loading) loading.style.display = 'block';
-    if (content) content.style.display = 'none';
-    if (generateFeedbackBtn) generateFeedbackBtn.style.display = 'none';
-    if (completeFromViewBtn) completeFromViewBtn.style.display = 'none';
-
-    const formData = new FormData();
-    formData.append('action', 'get_interview');
-    formData.append('interview_id', id);
-
-    fetch('interviews.php', {
-        method: 'POST',
-        body: formData,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (loading) loading.style.display = 'none';
-        if (content) content.style.display = 'block';
-
-        if (data.success) {
-            const i = data.interview;
-            currentInterviewData = i;
-            
-            if (i.status === 'scheduled') {
-                if (completeFromViewBtn) completeFromViewBtn.style.display = 'inline-flex';
-            }
-            if (i.status === 'completed') {
-                if (generateFeedbackBtn) generateFeedbackBtn.style.display = 'inline-flex';
-            }
-            
-            let questionsHtml = '';
-            if (i.ai_questions) {
-                const q = i.ai_questions;
-                questionsHtml = `
-                    <div class="ai-questions-box">
-                        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
-                            <span class="ai-badge">
-                                <span class="material-symbols-outlined" style="font-size:0.75rem;">auto_awesome</span>
-                                AI Generated Questions
-                            </span>
-                            <button class="btn btn-ai btn-sm" onclick="viewAIQuestions(${i.id})" style="margin-left:auto;">
-                                <span class="material-symbols-outlined" style="font-size:0.75rem;">open_in_full</span>
-                                View All
-                            </button>
-                        </div>
-                        ${q.technical ? `
-                            <div class="question-category">Technical</div>
-                            ${q.technical.slice(0, 2).map((qText, idx) => `
-                                <div class="question-item">
-                                    <span class="q-number">${idx + 1}.</span>
-                                    ${escapeHtml(qText)}
-                                </div>
-                            `).join('')}
-                            ${q.technical.length > 2 ? `<div style="font-size:0.75rem; color:var(--text-on-surface-variant); padding:0.25rem 0.5rem;">+ ${q.technical.length - 2} more technical questions</div>` : ''}
-                        ` : ''}
-                        <div class="ai-disclaimer">
-                            <span class="material-symbols-outlined">info</span>
-                            ${q.technical ? `${q.technical.length + (q.behavioral?.length || 0) + (q.role_specific?.length || 0)} questions generated` : 'No questions generated yet'}
-                        </div>
-                    </div>
-                `;
-            } else if (i.status === 'scheduled') {
-                questionsHtml = `
-                    <div style="display:flex; justify-content:center; padding:0.5rem;">
-                        <button class="btn btn-ai btn-sm" onclick="generateQuestionsForInterview(${i.id})" data-tooltip="Generate AI questions">
-                            <span class="material-symbols-outlined">auto_awesome</span>
-                            Generate AI Questions
-                        </button>
-                    </div>
-                `;
-            }
-            
-            let tipsHtml = '';
-            if (i.job_id) {
-                const tips = <?php echo json_encode(getInterviewTips(0)); ?>;
-                const tipItems = Array.isArray(tips) ? tips : ['Focus on key skills', 'Prepare specific examples', 'Research the company'];
-                tipsHtml = `
-                    <div class="ai-tips-box">
-                        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.25rem;">
-                            <span class="ai-badge">
-                                <span class="material-symbols-outlined" style="font-size:0.75rem;">lightbulb</span>
-                                AI Interview Tips
-                            </span>
-                        </div>
-                        ${tipItems.slice(0, 5).map(tip => `
-                            <div class="tip-item">
-                                <span class="material-symbols-outlined">check_circle</span>
-                                ${escapeHtml(tip)}
-                            </div>
-                        `).join('')}
-                    </div>
-                `;
-            }
-            
-            if (content) {
-                content.innerHTML = `
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
-                        <div>
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Candidate</div>
-                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(i.first_name)} ${escapeHtml(i.last_name)}</div>
-                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${escapeHtml(i.email)}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Position</div>
-                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(i.job_title)}</div>
-                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${escapeHtml(i.company_name)}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Date & Time</div>
-                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${new Date(i.interview_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
-                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">${new Date(i.interview_date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Type</div>
-                            <div style="font-weight:600; font-size:0.9375rem; margin-top:0.0625rem;">${escapeHtml(i.interview_type)}</div>
-                            <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                <span class="badge badge-${i.status}">${escapeHtml(i.status)}</span>
-                                ${i.rating && i.rating > 0 ? ` &nbsp;⭐ ${i.rating}/5` : ''}
-                            </div>
-                        </div>
-                        ${i.meeting_link ? `
-                        <div style="grid-column:1/-1;">
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Meeting Link</div>
-                            <a href="${escapeHtml(i.meeting_link)}" target="_blank" style="color:var(--primary); text-decoration:underline; word-break:break-all;">${escapeHtml(i.meeting_link)}</a>
-                        </div>
-                        ` : ''}
-                        ${i.interviewers ? `
-                        <div style="grid-column:1/-1;">
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Interviewers</div>
-                            <div>${escapeHtml(i.interviewers)}</div>
-                        </div>
-                        ` : ''}
-                        ${i.notes ? `
-                        <div style="grid-column:1/-1;">
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Notes</div>
-                            <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(i.notes)}</div>
-                        </div>
-                        ` : ''}
-                        ${i.feedback ? `
-                        <div style="grid-column:1/-1;">
-                            <div style="font-size:0.625rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-on-surface-variant);">Feedback</div>
-                            <div style="background:var(--bg-surface-low); padding:0.5rem; border-radius:0.375rem;">${escapeHtml(i.feedback)}</div>
-                        </div>
-                        ` : ''}
-                    </div>
-                    ${questionsHtml}
-                    ${tipsHtml}
-                    <div id="aiFeedbackContainer"></div>
-                `;
-            }
-        } else {
-            if (content) {
-                content.innerHTML = `
-                    <div style="text-align:center; padding:1rem; color:#dc2626;">
-                        <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                        <p style="margin-top:0.5rem;">${data.error || 'Failed to load interview details.'}</p>
-                    </div>
-                `;
-            }
-        }
-    })
-    .catch(error => {
-        if (loading) loading.style.display = 'none';
-        if (content) {
-            content.style.display = 'block';
-            content.innerHTML = `
-                <div style="text-align:center; padding:1rem; color:#dc2626;">
-                    <span class="material-symbols-outlined" style="font-size:2.5rem;">error</span>
-                    <p style="margin-top:0.5rem;">Error loading interview details. Please try again.</p>
-                </div>
-            `;
-        }
-    });
-}
-
-// =============================================
-// 11. GENERATE AI QUESTIONS
+// 10. GENERATE AI QUESTIONS FOR INTERVIEW
 // =============================================
 function generateQuestionsForInterview(interviewId) {
-    const interval = showLoading('generating');
-
-    const getFormData = new FormData();
-    getFormData.append('action', 'get_interview');
-    getFormData.append('interview_id', interviewId);
+    const formData = new FormData();
+    formData.append('action', 'get_interview');
+    formData.append('interview_id', interviewId);
+    
+    showToast('Generating AI questions...', 'info');
     
     fetch('interviews.php', {
         method: 'POST',
-        body: getFormData,
+        body: formData,
         headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
     .then(response => response.json())
@@ -3411,7 +3445,6 @@ function generateQuestionsForInterview(interviewId) {
     })
     .then(response => response.json())
     .then(data => {
-        hideLoading(interval);
         if (data.success && data.questions) {
             showToast('AI questions generated successfully!', 'success');
             setTimeout(() => {
@@ -3422,14 +3455,13 @@ function generateQuestionsForInterview(interviewId) {
         }
     })
     .catch(error => {
-        hideLoading(interval);
         console.error('Generate questions error:', error);
         showToast('Error generating questions. Please try again.', 'error');
     });
 }
 
 // =============================================
-// 12. GENERATE AI FEEDBACK
+// 11. GENERATE AI FEEDBACK FROM MODAL
 // =============================================
 function generateFeedbackFromModal() {
     if (!currentInterviewId) {
@@ -3437,11 +3469,11 @@ function generateFeedbackFromModal() {
         return;
     }
     
-    const interval = showLoading('feedback');
-    
     const formData = new FormData();
     formData.append('action', 'generate_feedback');
     formData.append('interview_id', currentInterviewId);
+    
+    showToast('Generating AI feedback...', 'info');
     
     fetch('interviews.php', {
         method: 'POST',
@@ -3450,7 +3482,6 @@ function generateFeedbackFromModal() {
     })
     .then(response => response.json())
     .then(data => {
-        hideLoading(interval);
         if (data.success) {
             const feedback = data.feedback;
             const container = document.getElementById('aiFeedbackContainer');
@@ -3495,13 +3526,13 @@ function generateFeedbackFromModal() {
         }
     })
     .catch(error => {
-        hideLoading(interval);
+        console.error('Feedback error:', error);
         showToast('Error generating feedback.', 'error');
     });
 }
 
 // =============================================
-// 13. COMPLETE INTERVIEW - MODAL INSTEAD OF ALERT
+// 12. COMPLETE INTERVIEW
 // =============================================
 let completeInterviewId = 0;
 
@@ -3585,11 +3616,11 @@ function generateAIFeedbackForComplete() {
         return;
     }
     
-    const interval = showLoading('feedback');
-    
     const formData = new FormData();
     formData.append('action', 'generate_feedback');
     formData.append('interview_id', completeInterviewId);
+    
+    showToast('Generating AI feedback suggestions...', 'info');
     
     fetch('interviews.php', {
         method: 'POST',
@@ -3598,7 +3629,6 @@ function generateAIFeedbackForComplete() {
     })
     .then(response => response.json())
     .then(data => {
-        hideLoading(interval);
         if (data.success) {
             const feedback = data.feedback;
             const container = document.getElementById('aiFeedbackSuggestions');
@@ -3632,7 +3662,7 @@ function generateAIFeedbackForComplete() {
         }
     })
     .catch(error => {
-        hideLoading(interval);
+        console.error('AI feedback error:', error);
         showToast('Error generating AI feedback.', 'error');
     });
 }
@@ -3718,12 +3748,12 @@ function submitComplete(event) {
         btn.disabled = false;
         btn.innerHTML = originalText;
         console.error('Complete error:', error);
-        showToast('Error completing interview. Please check console.', 'error');
+        showToast('Error completing interview. Please try again.', 'error');
     });
 }
 
 // =============================================
-// 14. CANCEL INTERVIEW
+// 13. CANCEL INTERVIEW
 // =============================================
 function cancelInterview(id) {
     if (!confirm('Are you sure you want to cancel this interview?')) return;
@@ -3754,7 +3784,7 @@ function cancelInterview(id) {
 }
 
 // =============================================
-// 15. SEARCH & FILTERS
+// 14. SEARCH & FILTERS
 // =============================================
 function applyFilters() {
     const search = document.getElementById('searchInput');
@@ -3777,7 +3807,7 @@ if (searchInput) {
 }
 
 // =============================================
-// 16. TOAST SYSTEM
+// 15. TOAST SYSTEM
 // =============================================
 function showToast(message, type) {
     type = type || 'info';
@@ -3799,7 +3829,7 @@ function showToast(message, type) {
 }
 
 // =============================================
-// 17. UTILITY FUNCTIONS
+// 16. UTILITY FUNCTIONS
 // =============================================
 function escapeHtml(text) {
     if (!text) return '';
@@ -3808,8 +3838,270 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+
 // =============================================
-// 18. RESPONSIVE HANDLING
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+// =============================================
+// 17. RESPONSIVE HANDLING
 // =============================================
 let resizeTimer;
 window.addEventListener('resize', function() {
@@ -3836,6 +4128,6 @@ console.log('ISMERS Interviews Management with AI Integration loaded successfull
 console.log('AI Features: Question Generation, Interview Tips, Feedback Analysis');
 console.log('Completed interviews are automatically archived.');
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

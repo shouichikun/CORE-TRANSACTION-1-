@@ -2,8 +2,9 @@
 // portals/client/settings.php - Client Settings
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
-
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -16,20 +17,20 @@ if ($_SESSION['role'] !== 'client') {
     exit;
 }
 
-$userId = $_SESSION['user_id'];
+$userId = (int)$_SESSION['user_id'];
 $firstName = $_SESSION['first_name'] ?? 'Client User';
 $lastName = $_SESSION['last_name'] ?? '';
 $email = $_SESSION['email'] ?? '';
 $fullName = $_SESSION['full_name'] ?? 'Client User';
 $role = $_SESSION['role'] ?? 'client';
 
-// Get client profile
+// Get client profile - PostgreSQL version
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name, u.first_name, u.last_name, u.phone
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 if (!$client) {
     $client = [
@@ -45,14 +46,14 @@ if (!$client) {
 // GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
 // =============================================
 $pendingAgencyCount = 0;
-$clientId = $client['id'] ?? 0;
+$clientId = (int)($client['id'] ?? 0);
 if ($clientId > 0) {
-    $pendingAgencies = getRecords("
+    $pendingAgencies = getRecord("
         SELECT COUNT(*) as count FROM agency_applications 
-        WHERE client_id = ? AND status = 'pending'
-    ", [$clientId], "i");
-    if (!empty($pendingAgencies)) {
-        $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    if ($pendingAgencies) {
+        $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
     }
 }
 
@@ -60,12 +61,12 @@ $message = '';
 $messageType = '';
 $activeTab = $_GET['tab'] ?? 'security';
 
-// Handle Password Change
+// Handle POST actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
     // =============================================
-    // CHANGE PASSWORD
+    // CHANGE PASSWORD - PostgreSQL version
     // =============================================
     if ($action === 'change_password') {
         $currentPassword = $_POST['current_password'] ?? '';
@@ -87,28 +88,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $messageType = 'error';
         } else {
             // Verify current password
-            $user = getRecord("SELECT password_hash FROM users WHERE id = ?", [$userId], "i");
+            $user = getRecord("SELECT password_hash FROM users WHERE id = $1", [$userId]);
             
             if ($user && password_verify($currentPassword, $user['password_hash'])) {
                 // Hash new password
                 $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
                 
-                // Update password
-                $updateSql = "UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?";
-                $stmt = mysqli_prepare($conn, $updateSql);
-                mysqli_stmt_bind_param($stmt, 'si', $hashedPassword, $userId);
+                // Update password - PostgreSQL
+                $updateSql = "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2";
+                $updateResult = updateRecord($updateSql, [$hashedPassword, $userId]);
                 
-                if (mysqli_stmt_execute($stmt)) {
+                if ($updateResult) {
                     $message = 'Password changed successfully!';
                     $messageType = 'success';
                     
                     // Log the activity
-                    logActivity($userId, 'Password Changed', 'users', $userId, 'Password updated successfully');
+                    if (function_exists('logActivity')) {
+                        logActivity($userId, 'Password Changed', 'users', $userId, 'Password updated successfully');
+                    }
                 } else {
                     $message = 'Failed to update password. Please try again.';
                     $messageType = 'error';
                 }
-                mysqli_stmt_close($stmt);
             } else {
                 $message = 'Current password is incorrect.';
                 $messageType = 'error';
@@ -117,7 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     // =============================================
-    // UPDATE NOTIFICATION SETTINGS
+    // UPDATE NOTIFICATION SETTINGS - PostgreSQL version
     // =============================================
     if ($action === 'update_notifications') {
         $emailNotifications = isset($_POST['email_notifications']) ? 1 : 0;
@@ -125,59 +126,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $applicationUpdates = isset($_POST['application_updates']) ? 1 : 0;
         $marketingEmails = isset($_POST['marketing_emails']) ? 1 : 0;
         
-        // Check if settings exist
-        $checkSql = "SELECT id FROM user_settings WHERE user_id = ? AND setting_type = 'notifications'";
-        $checkResult = getRecord($checkSql, [$userId], "i");
+        $settingsValue = json_encode([
+            'email_notifications' => $emailNotifications,
+            'job_alerts' => $jobAlerts,
+            'application_updates' => $applicationUpdates,
+            'marketing_emails' => $marketingEmails
+        ]);
+        
+        // Check if settings exist - PostgreSQL
+        $checkResult = getRecord("SELECT id FROM user_settings WHERE user_id = $1 AND setting_type = 'notifications'", [$userId]);
         
         if ($checkResult) {
             // Update existing
             $updateSql = "UPDATE user_settings SET 
-                          setting_value = ?,
+                          setting_value = $1,
                           updated_at = NOW()
-                          WHERE user_id = ? AND setting_type = 'notifications'";
-            $settingsValue = json_encode([
-                'email_notifications' => $emailNotifications,
-                'job_alerts' => $jobAlerts,
-                'application_updates' => $applicationUpdates,
-                'marketing_emails' => $marketingEmails
-            ]);
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'si', $settingsValue, $userId);
+                          WHERE user_id = $2 AND setting_type = 'notifications'";
+            $updateResult = updateRecord($updateSql, [$settingsValue, $userId]);
         } else {
             // Insert new
             $insertSql = "INSERT INTO user_settings (user_id, setting_type, setting_value, created_at, updated_at) 
-                          VALUES (?, 'notifications', ?, NOW(), NOW())";
-            $settingsValue = json_encode([
-                'email_notifications' => $emailNotifications,
-                'job_alerts' => $jobAlerts,
-                'application_updates' => $applicationUpdates,
-                'marketing_emails' => $marketingEmails
-            ]);
-            $stmt = mysqli_prepare($conn, $insertSql);
-            mysqli_stmt_bind_param($stmt, 'is', $userId, $settingsValue);
+                          VALUES ($1, 'notifications', $2, NOW(), NOW())";
+            $updateResult = insertRecord($insertSql, [$userId, $settingsValue]);
         }
         
-        if (mysqli_stmt_execute($stmt)) {
+        if ($updateResult !== false) {
             $message = 'Notification settings updated successfully!';
             $messageType = 'success';
         } else {
             $message = 'Failed to update notification settings.';
             $messageType = 'error';
         }
-        mysqli_stmt_close($stmt);
     }
     
     // =============================================
-    // UPDATE PREFERENCES
+    // UPDATE PREFERENCES - PostgreSQL version
     // =============================================
     if ($action === 'update_preferences') {
         $language = $_POST['language'] ?? 'en';
         $timezone = $_POST['timezone'] ?? 'Asia/Manila';
         $dateFormat = $_POST['date_format'] ?? 'Y-m-d';
-        
-        // Check if settings exist
-        $checkSql = "SELECT id FROM user_settings WHERE user_id = ? AND setting_type = 'preferences'";
-        $checkResult = getRecord($checkSql, [$userId], "i");
         
         $settingsValue = json_encode([
             'language' => $language,
@@ -185,40 +173,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'date_format' => $dateFormat
         ]);
         
+        // Check if settings exist
+        $checkResult = getRecord("SELECT id FROM user_settings WHERE user_id = $1 AND setting_type = 'preferences'", [$userId]);
+        
         if ($checkResult) {
             $updateSql = "UPDATE user_settings SET 
-                          setting_value = ?,
+                          setting_value = $1,
                           updated_at = NOW()
-                          WHERE user_id = ? AND setting_type = 'preferences'";
-            $stmt = mysqli_prepare($conn, $updateSql);
-            mysqli_stmt_bind_param($stmt, 'si', $settingsValue, $userId);
+                          WHERE user_id = $2 AND setting_type = 'preferences'";
+            $updateResult = updateRecord($updateSql, [$settingsValue, $userId]);
         } else {
             $insertSql = "INSERT INTO user_settings (user_id, setting_type, setting_value, created_at, updated_at) 
-                          VALUES (?, 'preferences', ?, NOW(), NOW())";
-            $stmt = mysqli_prepare($conn, $insertSql);
-            mysqli_stmt_bind_param($stmt, 'is', $userId, $settingsValue);
+                          VALUES ($1, 'preferences', $2, NOW(), NOW())";
+            $updateResult = insertRecord($insertSql, [$userId, $settingsValue]);
         }
         
-        if (mysqli_stmt_execute($stmt)) {
+        if ($updateResult !== false) {
             $message = 'Preferences updated successfully!';
             $messageType = 'success';
         } else {
             $message = 'Failed to update preferences.';
             $messageType = 'error';
         }
-        mysqli_stmt_close($stmt);
     }
     
     // =============================================
-    // SESSION MANAGEMENT - LOGOUT ALL DEVICES
+    // SESSION MANAGEMENT - LOGOUT ALL DEVICES - PostgreSQL version
     // =============================================
     if ($action === 'logout_all_devices') {
-        // Invalidate all sessions for this user
-        $updateSql = "UPDATE users SET session_token = NULL, updated_at = NOW() WHERE id = ?";
-        $stmt = mysqli_prepare($conn, $updateSql);
-        mysqli_stmt_bind_param($stmt, 'i', $userId);
+        // Invalidate all sessions for this user - PostgreSQL
+        $updateSql = "UPDATE users SET session_token = NULL, updated_at = NOW() WHERE id = $1";
+        $updateResult = updateRecord($updateSql, [$userId]);
         
-        if (mysqli_stmt_execute($stmt)) {
+        if ($updateResult) {
             $message = 'Logged out from all devices successfully!';
             $messageType = 'success';
             
@@ -236,11 +223,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $message = 'Failed to log out from all devices.';
             $messageType = 'error';
         }
-        mysqli_stmt_close($stmt);
+    }
+    
+    // =============================================
+    // DELETE ACCOUNT - PostgreSQL version
+    // =============================================
+    if ($action === 'delete_account') {
+        // Start transaction
+        beginTransaction();
+        
+        try {
+            // Delete client record first
+            $deleteClient = updateRecord("DELETE FROM clients WHERE user_id = $1", [$userId]);
+            
+            // Delete user settings
+            $deleteSettings = updateRecord("DELETE FROM user_settings WHERE user_id = $1", [$userId]);
+            
+            // Delete user account
+            $deleteUser = updateRecord("DELETE FROM users WHERE id = $1", [$userId]);
+            
+            if ($deleteUser) {
+                commitTransaction();
+                $message = 'Account deleted successfully. You will be redirected to login.';
+                $messageType = 'success';
+                
+                // Clear session and redirect
+                $_SESSION = array();
+                session_destroy();
+                
+                echo '<script>
+                    setTimeout(function() {
+                        window.location.href = "../../login.php?deleted=1";
+                    }, 2000);
+                </script>';
+            } else {
+                rollbackTransaction();
+                $message = 'Failed to delete account. Please try again.';
+                $messageType = 'error';
+            }
+        } catch (Exception $e) {
+            rollbackTransaction();
+            $message = 'Error deleting account: ' . $e->getMessage();
+            $messageType = 'error';
+        }
     }
 }
 
-// Get user settings
+// Get user settings - PostgreSQL
 $notificationSettings = [
     'email_notifications' => 1,
     'job_alerts' => 1,
@@ -254,9 +283,8 @@ $preferences = [
     'date_format' => 'Y-m-d'
 ];
 
-$settings = getRecord("SELECT setting_type, setting_value FROM user_settings WHERE user_id = ?", [$userId], "i");
-if ($settings) {
-    $allSettings = getRecords("SELECT setting_type, setting_value FROM user_settings WHERE user_id = ?", [$userId], "i");
+$allSettings = getRecords("SELECT setting_type, setting_value FROM user_settings WHERE user_id = $1", [$userId]);
+if ($allSettings) {
     foreach ($allSettings as $setting) {
         if ($setting['setting_type'] === 'notifications') {
             $decoded = json_decode($setting['setting_value'], true);
@@ -274,6 +302,9 @@ if ($settings) {
 }
 
 $clientEmail = $client['email'] ?? $email;
+
+// Get user profile for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -476,6 +507,13 @@ $clientEmail = $client['email'] ?? $email;
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .sidebar-footer .user-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
@@ -595,6 +633,13 @@ $clientEmail = $client['email'] ?? $email;
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .profile-dropdown-toggle .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
@@ -1035,7 +1080,7 @@ $clientEmail = $client['email'] ?? $email;
     <!-- Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- ===== SIDEBAR - FIXED ===== -->
+    <!-- ===== SIDEBAR ===== -->
     <aside class="dashboard-sidebar" id="appSidebar">
         <div class="sidebar-brand-card">
             <span class="sidebar-brand-icon">
@@ -1044,60 +1089,57 @@ $clientEmail = $client['email'] ?? $email;
             <p class="sidebar-brand-text">ISMERS</p>
             <p class="sidebar-brand-category">Client Portal</p>
         </div>
-       <nav class="sidebar-nav">
-    <div class="nav-label">Main</div>
-    <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">dashboard</span>
-        <span class="nav-text">Dashboard</span>
-    </a>
-    <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">work</span>
-        <span class="nav-text">My Jobs</span>
-    </a>
-    <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">apartment</span>
-        <span class="nav-text">Agencies</span>
-        <?php if ($pendingAgencyCount > 0): ?>
-            <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
-        <?php endif; ?>
-    </a>
-    <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">people</span>
-        <span class="nav-text">Employees</span>
-    </a>
-    <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person_search</span>
-        <span class="nav-text">Applicants</span>
-    </a>
-    <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">receipt</span>
-        <span class="nav-text">Invoices</span>
-    </a>
-    <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">support_agent</span>
-        <span class="nav-text">Support</span>
-    </a>
-    <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">analytics</span>
-        <span class="nav-text">Reports</span>
-    </a>
-    <div class="nav-label" style="margin-top:1rem;">Settings</div>
-    <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">person</span>
-        <span class="nav-text">Profile</span>
-    </a>
-    <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
-        <span class="material-symbols-outlined">settings</span>
-        <span class="nav-text">Settings</span>
-    </a>
-</nav>
+        <nav class="sidebar-nav">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
 
         <!-- =============================================
         SIDEBAR FOOTER
         ============================================= -->
-        <?php
-        $userProfile = getUserProfileData($userId);
-        ?>
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1128,9 +1170,6 @@ $clientEmail = $client['email'] ?? $email;
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Settings</span>
             </div>
-            <?php
-            $userProfile = getUserProfileData($userId);
-            ?>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1588,6 +1627,269 @@ $clientEmail = $client['email'] ?? $email;
             }
         });
 
+
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
         // =============================================
         // RESPONSIVE HANDLING
         // =============================================
@@ -1614,6 +1916,6 @@ $clientEmail = $client['email'] ?? $email;
 
         console.log('⚙️ ISMERS Client Settings loaded successfully!');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

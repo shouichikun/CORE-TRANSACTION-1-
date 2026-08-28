@@ -2,7 +2,9 @@
 // portals/applicant/accept_offer.php - Accept or Reject Job Offer
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 
 // Include PHPMailer autoload
 require_once '../../PHPMailer-master/src/PHPMailer.php';
@@ -12,6 +14,38 @@ require_once '../../PHPMailer-master/src/Exception.php';
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 use PHPMailer\PHPMailer\Exception;
+
+// ✅ FIXED: Define missing constants if not already defined
+if (!defined('SMTP_HOST')) {
+    define('SMTP_HOST', 'smtp.gmail.com');
+}
+if (!defined('SMTP_USER')) {
+    define('SMTP_USER', 'calicaarvy13@gmail.com');
+}
+if (!defined('SMTP_PASS')) {
+    define('SMTP_PASS', 'cetc iywq dnpz wdub');
+}
+if (!defined('SMTP_SECURE')) {
+    define('SMTP_SECURE', 'tls');
+}
+if (!defined('SMTP_PORT')) {
+    define('SMTP_PORT', 587);
+}
+if (!defined('MAIL_FROM')) {
+    define('MAIL_FROM', 'calicaarvy13@gmail.com');
+}
+if (!defined('MAIL_FROM_NAME')) {
+    define('MAIL_FROM_NAME', 'ISMERS System');
+}
+if (!defined('MAIL_REPLY_TO')) {
+    define('MAIL_REPLY_TO', 'calicaarvy13@gmail.com');
+}
+if (!defined('MAIL_REPLY_TO_NAME')) {
+    define('MAIL_REPLY_TO_NAME', 'HR Department');
+}
+if (!defined('SITE_URL')) {
+    define('SITE_URL', 'http://localhost/CT1/');
+}
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -28,11 +62,11 @@ $userId = $_SESSION['user_id'];
 $offerId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
 if ($offerId <= 0) {
-    header('Location: applications.php');
+    header('Location: offers.php');
     exit;
 }
 
-// Get offer details with application and job info
+// ✅ FIXED: Get offer details with application and job info - PostgreSQL uses $1, $2 placeholders
 $offer = getRecord("
     SELECT o.*, a.id as application_id, a.applicant_id, a.job_order_id,
            u.first_name, u.last_name, u.email, u.phone,
@@ -45,13 +79,13 @@ $offer = getRecord("
     JOIN users u ON ap.user_id = u.id
     JOIN job_orders jo ON a.job_order_id = jo.id
     JOIN clients c ON jo.client_id = c.id
-    WHERE o.id = ? AND u.id = ?
-", [$offerId, $userId], "ii");
+    WHERE o.id = $1 AND u.id = $2
+", [$offerId, $userId]);
 
 if (!$offer) {
     $_SESSION['message'] = 'Offer not found.';
     $_SESSION['message_type'] = 'error';
-    header('Location: applications.php');
+    header('Location: offers.php');
     exit;
 }
 
@@ -59,7 +93,7 @@ if (!$offer) {
 if ($offer['status'] !== 'sent') {
     $_SESSION['message'] = 'This offer has already been ' . $offer['status'] . '.';
     $_SESSION['message_type'] = 'info';
-    header('Location: applications.php');
+    header('Location: offers.php');
     exit;
 }
 
@@ -77,15 +111,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
     if ($action === 'accept') {
-        // Start transaction
-        mysqli_begin_transaction($GLOBALS['conn']);
+        // ✅ FIXED: Use PostgreSQL transaction
+        $beginResult = beginTransaction();
         
         try {
-            // Update offer status
+            if (!$beginResult) {
+                throw new Exception("Failed to start transaction.");
+            }
+            
+            // ✅ FIXED: PostgreSQL uses $1 placeholder, no type string
             $offerUpdate = updateRecord(
-                "UPDATE offers SET status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE id = ?",
-                [$offerId],
-                "i"
+                "UPDATE offers SET status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE id = $1",
+                [$offerId]
             );
             
             if (!$offerUpdate) {
@@ -94,9 +131,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Update application status to 'hired'
             $appUpdate = updateRecord(
-                "UPDATE applications SET status = 'hired', updated_at = NOW() WHERE id = ?",
-                [$offer['application_id']],
-                "i"
+                "UPDATE applications SET status = 'hired', updated_at = NOW() WHERE id = $1",
+                [$offer['application_id']]
             );
             
             if (!$appUpdate) {
@@ -105,18 +141,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Update applicant status to indicate they are hired
             $applicantUpdate = updateRecord(
-                "UPDATE applicants SET is_hired = 1, hired_at = NOW(), updated_at = NOW() WHERE id = ?",
-                [$offer['applicant_id']],
-                "i"
+                "UPDATE applicants SET is_hired = 1, hired_at = NOW(), updated_at = NOW() WHERE id = $1",
+                [$offer['applicant_id']]
             );
             
             // =============================================
             // UPDATE USER ROLE TO EMPLOYEE
             // =============================================
             $userUpdate = updateRecord(
-                "UPDATE users SET role = 'employee' WHERE id = ?",
-                [$userId],
-                "i"
+                "UPDATE users SET role = 'employee' WHERE id = $1",
+                [$userId]
             );
             
             if (!$userUpdate) {
@@ -180,8 +214,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             logActivity($userId, 'Role Updated', 'users', $userId, 
                 'User role changed from applicant to employee');
             
-            // Commit transaction
-            mysqli_commit($GLOBALS['conn']);
+            // ✅ FIXED: Use PostgreSQL commit
+            $commitResult = commitTransaction();
+            
+            if (!$commitResult) {
+                throw new Exception("Failed to commit transaction.");
+            }
             
             // =============================================
             // SEND WELCOME EMAIL WITH EMPLOYEE LOGIN INFO
@@ -212,8 +250,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $messageType = 'success';
             
         } catch (Exception $e) {
-            // Rollback transaction on error
-            mysqli_rollback($GLOBALS['conn']);
+            // ✅ FIXED: Use PostgreSQL rollback
+            rollbackTransaction();
             
             error_log("Offer acceptance error: " . $e->getMessage());
             $message = 'Failed to accept offer: ' . $e->getMessage() . ' Please contact HR.';
@@ -222,25 +260,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     if ($action === 'reject') {
-        // Update offer status
-        updateRecord(
-            "UPDATE offers SET status = 'rejected', updated_at = NOW() WHERE id = ?",
-            [$offerId],
-            "i"
+        // Update offer status - PostgreSQL uses $1
+        $rejectResult = updateRecord(
+            "UPDATE offers SET status = 'rejected', updated_at = NOW() WHERE id = $1",
+            [$offerId]
         );
         
         // Update application status
-        updateRecord(
-            "UPDATE applications SET status = 'rejected', updated_at = NOW() WHERE id = ?",
-            [$offer['application_id']],
-            "i"
+        $appRejectResult = updateRecord(
+            "UPDATE applications SET status = 'rejected', updated_at = NOW() WHERE id = $1",
+            [$offer['application_id']]
         );
         
         logActivity($userId, 'Offer Rejected', 'offers', $offerId, 
             'Rejected offer for ' . $offer['job_title'] . ' at ' . $offer['company_name']);
         
-        $message = 'You have declined the offer. We wish you the best in your future endeavors.';
-        $messageType = 'info';
+        // ✅ FIXED: Redirect to offers.php after rejection
+        $_SESSION['message'] = 'You have declined the offer. We wish you the best in your future endeavors.';
+        $_SESSION['message_type'] = 'info';
+        
+        header('Location: offers.php');
+        exit;
     }
 }
 
@@ -857,9 +897,9 @@ function sendEmployeeWelcomeEmail($email, $name, $company, $position, $startDate
                 </div>
             </div>
             <div class="success-actions">
-                <a href="applications.php" class="btn btn-primary">
-                    <span class="material-symbols-outlined">dashboard</span>
-                    Go to Applications
+                <a href="offers.php" class="btn btn-primary">
+                    <span class="material-symbols-outlined">arrow_back</span>
+                    Go to Offers
                 </a>
             </div>
             
@@ -872,9 +912,9 @@ function sendEmployeeWelcomeEmail($email, $name, $company, $position, $startDate
                 <p style="margin-top:4px;">Please contact HR for further assistance.</p>
             </div>
             <div class="actions">
-                <a href="applications.php" class="btn btn-outline" style="flex:1;">
+                <a href="offers.php" class="btn btn-outline" style="flex:1;">
                     <span class="material-symbols-outlined">arrow_back</span>
-                    View Applications
+                    View Offers
                 </a>
             </div>
             
@@ -933,7 +973,7 @@ function sendEmployeeWelcomeEmail($email, $name, $company, $position, $startDate
                 <span class="material-symbols-outlined" style="font-size:16px; vertical-align:middle;">info</span>
                 This offer expires on <strong><?php echo date('M d, Y', strtotime($offer['sent_at'] . ' +7 days')); ?></strong>
                 <br>
-                <a href="applications.php">View all applications</a>
+                <a href="offers.php">View all offers</a>
             </div>
             
         <?php endif; ?>
@@ -970,6 +1010,6 @@ function sendEmployeeWelcomeEmail($email, $name, $company, $position, $startDate
         }
     });
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

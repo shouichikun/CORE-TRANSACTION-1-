@@ -1,7 +1,12 @@
 <?php
 // portals/client/ajax/get_invoice.php - Get Invoice Data
+// ✅ PostgreSQL COMPATIBLE VERSION
+
 session_start();
-require_once '../../../app/config.php';
+
+// ✅ Initialize session timeout
+require_once '../../app/config.php';
+initSessionTimeout();
 
 header('Content-Type: application/json');
 
@@ -18,8 +23,8 @@ if ($invoiceId <= 0) {
     exit;
 }
 
-// Get client ID
-$client = getRecord("SELECT id FROM clients WHERE user_id = ?", [$userId], "i");
+// ✅ FIXED: PostgreSQL uses $1 placeholder, removed type string "i"
+$client = getRecord("SELECT id FROM clients WHERE user_id = $1", [$userId]);
 if (!$client) {
     echo json_encode(['success' => false, 'error' => 'Client not found.']);
     exit;
@@ -27,22 +32,22 @@ if (!$client) {
 
 $clientId = $client['id'];
 
-// Get invoice
+// ✅ FIXED: PostgreSQL uses $1, $2 placeholders, removed type string "ii"
 $invoice = getRecord("
     SELECT * FROM invoices 
-    WHERE id = ? AND client_id = ?
-", [$invoiceId, $clientId], "ii");
+    WHERE id = $1 AND client_id = $2
+", [$invoiceId, $clientId]);
 
 if (!$invoice) {
     echo json_encode(['success' => false, 'error' => 'Invoice not found.']);
     exit;
 }
 
-// Get invoice items
+// ✅ FIXED: PostgreSQL uses $1 placeholder, removed type string "i"
 $items = getRecords("
     SELECT * FROM invoice_items 
-    WHERE invoice_id = ?
-", [$invoiceId], "i");
+    WHERE invoice_id = $1
+", [$invoiceId]);
 
 // Build HTML
 $html = '

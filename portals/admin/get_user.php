@@ -1,7 +1,9 @@
 <?php
 // portals/admin/get_user.php
 session_start();
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     echo json_encode(['success' => false, 'error' => 'Unauthorized']);
@@ -15,7 +17,7 @@ if ($id <= 0) {
 }
 
 $sql = "SELECT id, first_name, last_name, email, role, is_active, created_at FROM users WHERE id = ?";
-$user = getRecord($sql, [$id], "i");
+$user = getRecord($sql, [$id]);
 
 if ($user) {
     echo json_encode(['success' => true, 'user' => $user]);

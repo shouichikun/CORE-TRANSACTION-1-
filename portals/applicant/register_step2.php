@@ -30,11 +30,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (count($selectedInterests) < 2) {
         $error = 'Please select at least 2 areas of interest.';
     } else {
-        // Save interests to database
+        // ✅ Save interests to database - PostgreSQL compatible
         $saved = saveApplicantInterests($applicantId, $selectedInterests);
         
         if ($saved) {
-            // Log the activity
+            // ✅ Log the activity - PostgreSQL compatible
             logActivity($userId, 'Registration Complete', 'applicant', $applicantId, 'User completed registration with ' . count($selectedInterests) . ' interests');
             
             // Set success flag
@@ -59,6 +59,7 @@ if (!empty($error)) {
     $_SESSION['register_error'] = $error;
 }
 ?>
+<!-- HTML CONTENT REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>

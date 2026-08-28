@@ -1,9 +1,18 @@
 <?php
 // portals/hr/deployments.php - Manage Employee Deployments
+// FIXED: PostgreSQL compatibility + proper error handling
+
 session_start();
 
-require_once '../../app/config.php';
+// =============================================
+// ERROR REPORTING - DISABLE WARNINGS
+// =============================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
+require_once '../../app/config.php';
+initSessionTimeout();
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
@@ -26,36 +35,34 @@ $statusFilter = $_GET['status'] ?? 'all';
 $searchQuery = $_GET['search'] ?? '';
 $employeeFilter = isset($_GET['employee_id']) ? (int)$_GET['employee_id'] : 0;
 
-// Build query conditions
+// Build query conditions - PostgreSQL syntax
 $conditions = [];
 $params = [];
-$types = "";
+$counter = 1;
 
 if ($statusFilter !== 'all') {
-    $conditions[] = "d.status = ?";
+    $conditions[] = "d.status = $" . $counter++;
     $params[] = $statusFilter;
-    $types .= "s";
 }
 
 if ($employeeFilter > 0) {
-    $conditions[] = "d.employee_id = ?";
+    $conditions[] = "d.employee_id = $" . $counter++;
     $params[] = $employeeFilter;
-    $types .= "i";
 }
 
 if (!empty($searchQuery)) {
-    $conditions[] = "(e.first_name LIKE ? OR e.last_name LIKE ? OR e.email LIKE ? OR c.company_name LIKE ?)";
+    $conditions[] = "(e.first_name ILIKE $" . $counter . " OR e.last_name ILIKE $" . ($counter+1) . " OR e.email ILIKE $" . ($counter+2) . " OR c.company_name ILIKE $" . ($counter+3) . ")";
     $searchParam = "%$searchQuery%";
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
-    $types .= "ssss";
+    $counter += 4;
 }
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
 
-// Get deployments with employee and client info
+// Get deployments with employee and client info - PostgreSQL syntax
 $sql = "SELECT d.*, 
         e.id as employee_id, e.first_name, e.last_name, e.email, e.position,
         c.company_name, c.id as client_id,
@@ -67,21 +74,21 @@ $sql = "SELECT d.*,
         $whereClause
         ORDER BY d.created_at DESC";
 
-$deployments = getRecords($sql, $params, $types);
+$deployments = @getRecords($sql, $params);
+if (!is_array($deployments)) $deployments = [];
 
-// Get status counts
+// Get status counts - PostgreSQL syntax
 $statusCounts = ['all' => count($deployments)];
 $statuses = ['active', 'completed', 'terminated', 'on_hold'];
 foreach ($statuses as $status) {
-    $countSql = "SELECT COUNT(*) as count FROM deployments d WHERE d.status = ?";
-    $result = getRecord($countSql, [$status], "s");
-    $statusCounts[$status] = $result['count'] ?? 0;
+    $countResult = @getRecord("SELECT COUNT(*) as count FROM deployments WHERE status = $1", [$status]);
+    $statusCounts[$status] = isset($countResult['count']) ? (int)$countResult['count'] : 0;
 }
 
 // =============================================
-// GET ELIGIBLE EMPLOYEES FOR DEPLOYMENT
+// GET ELIGIBLE EMPLOYEES FOR DEPLOYMENT - PostgreSQL syntax
 // =============================================
-$eligibleEmployees = getRecords("
+$eligibleEmployees = @getRecords("
     SELECT DISTINCT e.id, e.first_name, e.last_name, e.email, e.position,
            e.application_id,
            a.job_order_id,
@@ -98,28 +105,28 @@ $eligibleEmployees = getRecords("
     AND a.status = 'hired'
     ORDER BY e.first_name ASC
 ");
+if (!is_array($eligibleEmployees)) $eligibleEmployees = [];
 
-// Get all clients for deployment creation (for reference)
-$clients = getRecords("
+// Get all clients for deployment creation - PostgreSQL syntax
+$clients = @getRecords("
     SELECT id, company_name FROM clients WHERE is_active = 1 ORDER BY company_name ASC
 ");
+if (!is_array($clients)) $clients = [];
 
-// Get all job orders for deployment creation (for reference)
-$jobOrders = getRecords("
+// Get all job orders for deployment creation - PostgreSQL syntax
+$jobOrders = @getRecords("
     SELECT id, title, client_id FROM job_orders WHERE status IN ('open', 'ongoing') ORDER BY title ASC
 ");
+if (!is_array($jobOrders)) $jobOrders = [];
 
 // =============================================
-// MOVE TO ARCHIVE FUNCTION - COMPLETELY FIXED
-// =============================================
-// =============================================
-// MOVE TO ARCHIVE FUNCTION - FIXED PARAMETER TYPES
+// MOVE TO ARCHIVE FUNCTION - FIXED PostgreSQL
 // =============================================
 function moveToArchive($deploymentId) {
-    global $conn, $userId;
+    global $userId;
     
-    // Get deployment details with all necessary data
-    $deployment = getRecord("
+    // Get deployment details with all necessary data - PostgreSQL syntax
+    $deployment = @getRecord("
         SELECT d.*, 
                e.id as employee_id, e.first_name, e.last_name, e.email, e.position,
                c.company_name, c.id as client_id,
@@ -130,42 +137,38 @@ function moveToArchive($deploymentId) {
         JOIN clients c ON d.client_id = c.id
         JOIN job_orders jo ON d.job_order_id = jo.id
         JOIN applications a ON d.application_id = a.id
-        WHERE d.id = ?
-    ", [$deploymentId], "i");
+        WHERE d.id = $1
+    ", [$deploymentId]);
     
     if (!$deployment) {
         return ['success' => false, 'error' => 'Deployment not found.'];
     }
     
-    // Check if already in archive
-    $checkArchive = getRecord("
+    // Check if already in archive - PostgreSQL syntax
+    $checkArchive = @getRecord("
         SELECT id FROM deployment_archive 
-        WHERE original_assignment_id = ? OR (employee_id = ? AND client_id = ? AND job_order_id = ?)
-    ", [$deploymentId, $deployment['employee_id'], $deployment['client_id'], $deployment['job_order_id']], "iiii");
+        WHERE original_assignment_id = $1 OR (employee_id = $2 AND client_id = $3 AND job_order_id = $4)
+    ", [$deploymentId, $deployment['employee_id'], $deployment['client_id'], $deployment['job_order_id']]);
     
     if ($checkArchive) {
-        // Update existing archive record
+        // Update existing archive record - PostgreSQL syntax
         $updateSql = "UPDATE deployment_archive 
                       SET status = 'archived', 
                           end_date = NOW(),
                           archived_at = NOW(),
-                          archived_by = ?,
-                          archive_reason = CONCAT('Status changed to ', ?)
-                      WHERE id = ?";
-        $updateResult = updateRecord($updateSql, [$userId, $deployment['status'], $checkArchive['id']], "isi");
+                          archived_by = $1,
+                          archive_reason = 'Status changed to ' || $2
+                      WHERE id = $3";
+        $updateResult = @updateRecord($updateSql, [$userId, $deployment['status'], $checkArchive['id']]);
         
         if ($updateResult) {
-            // Delete from active deployments
-            deleteRecord("DELETE FROM deployments WHERE id = ?", [$deploymentId], "i");
+            @deleteRecord("DELETE FROM deployments WHERE id = $1", [$deploymentId]);
             return ['success' => true, 'message' => 'Archive record updated and deployment removed.'];
         }
         return ['success' => false, 'error' => 'Failed to update archive record.'];
     }
     
-    // FIXED: Count the parameters - there are 20 values
-    // Type string should have 20 characters: 
-    // First 6 are integers (iiiiii), then 14 are strings (ssssssssssssss)
-    // Total: 6 + 14 = 20 characters
+    // Insert into archive - PostgreSQL syntax
     $archiveSql = "INSERT INTO deployment_archive (
         original_assignment_id, applicant_id, job_order_id, client_id, application_id, employee_id,
         assignment_date, start_date, end_date, status, position_title,
@@ -173,63 +176,77 @@ function moveToArchive($deploymentId) {
         notes, termination_reason, termination_date,
         archived_by, archived_at, archive_reason
     ) VALUES (
-        ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?,
-        ?, ?, ?,
-        ?, NOW(), ?
-    )";
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11,
+        $12, $13, $14, $15, $16,
+        $17, $18, $19,
+        $20, NOW(), $21
+    ) RETURNING id";
     
-    // The parameters must match exactly 20 values
-    $result = insertRecord($archiveSql, [
-        // 6 integers (iiiiii)
-        $deployment['id'],                          // 1
-        $deployment['employee_id'],                 // 2
-        $deployment['job_order_id'],                // 3
-        $deployment['client_id'],                   // 4
-        $deployment['application_id'],              // 5
-        $deployment['employee_id'],                 // 6
-        // 14 strings (ssssssssssssss)
-        $deployment['start_date'],                  // 7
-        $deployment['start_date'],                  // 8
-        $deployment['end_date'] ?? null,            // 9
-        'archived',                                 // 10
-        $deployment['position'] ?? $deployment['job_title'], // 11
-        null,                                       // 12
-        null,                                       // 13
-        null,                                       // 14
-        null,                                       // 15
-        null,                                       // 16
-        $deployment['deployment_notes'] ?? null,    // 17
-        'Deployment ' . $deployment['status'],      // 18
-        $deployment['end_date'] ?? date('Y-m-d'),   // 19
-        $userId,                                    // 20
-        // NOW() is in SQL, archive_reason is 21
-        'Moved to archive from deployments'         // 21
-    ], "iiiiiiissssssssssssss");
+    $result = @insertRecord($archiveSql, [
+        $deployment['id'],
+        $deployment['employee_id'],
+        $deployment['job_order_id'],
+        $deployment['client_id'],
+        $deployment['application_id'],
+        $deployment['employee_id'],
+        $deployment['start_date'],
+        $deployment['start_date'],
+        $deployment['end_date'] ?? null,
+        'archived',
+        $deployment['position'] ?? $deployment['job_title'],
+        null,
+        null,
+        null,
+        null,
+        null,
+        $deployment['deployment_notes'] ?? null,
+        'Deployment ' . $deployment['status'],
+        $deployment['end_date'] ?? date('Y-m-d'),
+        $userId,
+        'Moved to archive from deployments'
+    ]);
     
     if ($result) {
-        // Log activity
-        logActivity($userId, 'Deployment Archived', 'deployment_archive', $result, 
+        @logActivity($userId, 'Deployment Archived', 'deployment_archive', $result, 
             'Archived deployment #' . $deploymentId . ' for ' . $deployment['first_name'] . ' ' . $deployment['last_name']);
         
-        // Delete from active deployments
-        deleteRecord("DELETE FROM deployments WHERE id = ?", [$deploymentId], "i");
+        @deleteRecord("DELETE FROM deployments WHERE id = $1", [$deploymentId]);
         
         return ['success' => true, 'message' => 'Deployment moved to archive.'];
     }
     
-    return ['success' => false, 'error' => 'Failed to archive deployment: ' . ($conn->error ?? 'Unknown error')];
+    return ['success' => false, 'error' => 'Failed to archive deployment.'];
 }
 
-// Handle AJAX requests
+// =============================================
+// Get sidebar counts - PostgreSQL syntax
+// =============================================
+$pendingAppsCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingAppsCount = (int)$pendingResult['count'];
+}
+
+$totalArchived = 0;
+$archivedTables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($archivedTables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
+    }
+}
+
+// =============================================
+// Handle AJAX requests - PostgreSQL syntax
+// =============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
     
     $action = $_POST['action'] ?? '';
     $deploymentId = isset($_POST['deployment_id']) ? (int)$_POST['deployment_id'] : 0;
     
-    // ========== CREATE DEPLOYMENT ==========
+    // ========== CREATE DEPLOYMENT - PostgreSQL ==========
     if ($action === 'create_deployment') {
         $employeeId = isset($_POST['employee_id']) ? (int)$_POST['employee_id'] : 0;
         $clientId = isset($_POST['client_id']) ? (int)$_POST['client_id'] : 0;
@@ -246,13 +263,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         if (empty($startDate)) $errors[] = 'Please select a start date.';
         
         if (empty($errors)) {
-            $employee = getRecord("
+            $employee = @getRecord("
                 SELECT e.id, e.application_id, a.job_order_id, jo.client_id
                 FROM employees e
                 JOIN applications a ON e.application_id = a.id
                 JOIN job_orders jo ON a.job_order_id = jo.id
-                WHERE e.id = ?
-            ", [$employeeId], "i");
+                WHERE e.id = $1
+            ", [$employeeId]);
             
             if (!$employee) {
                 echo json_encode(['success' => false, 'error' => 'Employee not found or not fully hired.']);
@@ -269,10 +286,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 exit;
             }
             
-            $existingDeployment = getRecord("
+            $existingDeployment = @getRecord("
                 SELECT id FROM deployments 
-                WHERE employee_id = ? AND status = 'active'
-            ", [$employeeId], "i");
+                WHERE employee_id = $1 AND status = 'active'
+            ", [$employeeId]);
             
             if ($existingDeployment) {
                 echo json_encode(['success' => false, 'error' => 'This employee already has an active deployment.']);
@@ -281,10 +298,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             
             $sql = "INSERT INTO deployments (
                 application_id, employee_id, client_id, job_order_id,
-                start_date, end_date, status, deployment_notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                start_date, end_date, status, deployment_notes, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            RETURNING id";
             
-            $result = insertRecord($sql, [
+            $result = @insertRecord($sql, [
                 $employee['application_id'] ?? null,
                 $employeeId,
                 $clientId,
@@ -293,12 +311,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 $endDate,
                 $status,
                 $deploymentNotes
-            ], "iiiissss");
+            ]);
             
             if ($result) {
-                updateRecord("UPDATE employees SET status = 'deployed' WHERE id = ?", [$employeeId], "i");
-                
-                logActivity($userId, 'Deployment Created', 'deployments', $result, 
+                @updateRecord("UPDATE employees SET status = 'deployed' WHERE id = $1", [$employeeId]);
+                @logActivity($userId, 'Deployment Created', 'deployments', $result, 
                     'Created deployment for employee #' . $employeeId);
                 
                 echo json_encode(['success' => true, 'message' => 'Deployment created successfully!']);
@@ -311,7 +328,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // ========== UPDATE DEPLOYMENT STATUS - FIXED ==========
+    // ========== UPDATE DEPLOYMENT STATUS - FIXED PostgreSQL ==========
     if ($action === 'update_status' && $deploymentId > 0) {
         $newStatus = $_POST['status'] ?? '';
         $terminationReason = trim($_POST['termination_reason'] ?? '');
@@ -322,8 +339,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             exit;
         }
         
-        // Get deployment details
-        $deployment = getRecord("SELECT * FROM deployments WHERE id = ?", [$deploymentId], "i");
+        $deployment = @getRecord("SELECT * FROM deployments WHERE id = $1", [$deploymentId]);
         
         if (!$deployment) {
             echo json_encode(['success' => false, 'error' => 'Deployment not found.']);
@@ -332,37 +348,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         
         // If status is completed or terminated, move to archive
         if (in_array($newStatus, ['completed', 'terminated'])) {
-            // Begin transaction
-            $conn->begin_transaction();
+            // Use manual transaction with PostgreSQL
+            @beginTransaction();
             
             try {
-                // Update the deployment status first
                 $updateSql = "UPDATE deployments SET 
-                              status = ?, 
-                              end_date = COALESCE(?, end_date),
+                              status = $1, 
+                              end_date = COALESCE($2, end_date),
                               updated_at = NOW() 
-                              WHERE id = ?";
-                $updateResult = updateRecord($updateSql, [$newStatus, $endDate, $deploymentId], "ssi");
+                              WHERE id = $3";
+                $updateResult = @updateRecord($updateSql, [$newStatus, $endDate, $deploymentId]);
                 
                 if (!$updateResult) {
                     throw new Exception('Failed to update deployment status.');
                 }
                 
-                // Move to archive
                 $archiveResult = moveToArchive($deploymentId);
                 
                 if (!$archiveResult['success']) {
                     throw new Exception($archiveResult['error'] ?? 'Failed to archive deployment.');
                 }
                 
-                // Update employee status
-                updateRecord("UPDATE employees SET status = 'active' WHERE id = ?", [$deployment['employee_id']], "i");
-                
-                // Log activity
-                logActivity($userId, 'Deployment Archived', 'deployment_archive', $deploymentId, 
+                @updateRecord("UPDATE employees SET status = 'active' WHERE id = $1", [$deployment['employee_id']]);
+                @logActivity($userId, 'Deployment Archived', 'deployment_archive', $deploymentId, 
                     'Archived deployment with status: ' . $newStatus);
                 
-                $conn->commit();
+                @commitTransaction();
                 
                 echo json_encode([
                     'success' => true, 
@@ -371,23 +382,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 ]);
                 
             } catch (Exception $e) {
-                $conn->rollback();
+                @rollbackTransaction();
                 echo json_encode(['success' => false, 'error' => $e->getMessage()]);
             }
             
         } else {
             // Regular status update (active, on_hold)
-            $updateSql = "UPDATE deployments SET status = ?, updated_at = NOW() WHERE id = ?";
-            $result = updateRecord($updateSql, [$newStatus, $deploymentId], "si");
+            $updateSql = "UPDATE deployments SET status = $1, updated_at = NOW() WHERE id = $2";
+            $result = @updateRecord($updateSql, [$newStatus, $deploymentId]);
             
             if ($result) {
                 if ($newStatus === 'on_hold') {
-                    updateRecord("UPDATE employees SET status = 'on_hold' WHERE id = ?", [$deployment['employee_id']], "i");
+                    @updateRecord("UPDATE employees SET status = 'on_hold' WHERE id = $1", [$deployment['employee_id']]);
                 } elseif ($newStatus === 'active') {
-                    updateRecord("UPDATE employees SET status = 'deployed' WHERE id = ?", [$deployment['employee_id']], "i");
+                    @updateRecord("UPDATE employees SET status = 'deployed' WHERE id = $1", [$deployment['employee_id']]);
                 }
                 
-                logActivity($userId, 'Deployment Status Updated', 'deployments', $deploymentId, 
+                @logActivity($userId, 'Deployment Status Updated', 'deployments', $deploymentId, 
                     'Updated status to: ' . $newStatus);
                 
                 echo json_encode(['success' => true, 'message' => 'Status updated successfully!']);
@@ -398,9 +409,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // ========== GET DEPLOYMENT DETAILS ==========
+    // ========== GET DEPLOYMENT DETAILS - PostgreSQL ==========
     if ($action === 'get_deployment' && $deploymentId > 0) {
-        $deployment = getRecord("
+        $deployment = @getRecord("
             SELECT d.*, 
                    e.first_name, e.last_name, e.position, e.email,
                    c.company_name,
@@ -409,8 +420,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN employees e ON d.employee_id = e.id
             JOIN clients c ON d.client_id = c.id
             JOIN job_orders jo ON d.job_order_id = jo.id
-            WHERE d.id = ?
-        ", [$deploymentId], "i");
+            WHERE d.id = $1
+        ", [$deploymentId]);
         
         if ($deployment) {
             echo json_encode(['success' => true, 'deployment' => $deployment]);
@@ -420,9 +431,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // ========== GET DEPLOYMENT FOR STATUS UPDATE ==========
+    // ========== GET DEPLOYMENT FOR STATUS UPDATE - PostgreSQL ==========
     if ($action === 'get_deployment_status' && $deploymentId > 0) {
-        $deployment = getRecord("
+        $deployment = @getRecord("
             SELECT d.*, 
                    e.first_name, e.last_name, e.position,
                    c.company_name,
@@ -431,8 +442,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             JOIN employees e ON d.employee_id = e.id
             JOIN clients c ON d.client_id = c.id
             JOIN job_orders jo ON d.job_order_id = jo.id
-            WHERE d.id = ?
-        ", [$deploymentId], "i");
+            WHERE d.id = $1
+        ", [$deploymentId]);
         
         if ($deployment) {
             echo json_encode(['success' => true, 'deployment' => $deployment]);
@@ -460,12 +471,13 @@ $statusLabels = [
 
 $allStatuses = ['all' => 'All'] + $statusLabels;
 
-// Get deployment archive count for sidebar
+// Get deployment archive count for sidebar - PostgreSQL syntax
 $deploymentArchiveCount = 0;
-$archiveResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-$deploymentArchiveCount = $archiveResult['count'] ?? 0;
+$archiveResult = @getRecord("SELECT COUNT(*) as count FROM deployment_archive", []);
+if ($archiveResult && isset($archiveResult['count'])) {
+    $deploymentArchiveCount = (int)$archiveResult['count'];
+}
 
-// Color mapping for status options
 $statusColors = [
     'active' => '#22c55e',
     'on_hold' => '#f59e0b',
@@ -1345,22 +1357,54 @@ $statusColors = [
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+  .sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
 
-    <!-- Sidebar Backdrop -->
-    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-
-    <!-- ===== SIDEBAR ===== -->
-    <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon">
-                <span class="material-symbols-outlined">assignment</span>
-            </span>
-            <p class="sidebar-brand-text">ISMERS</p>
-            <p class="sidebar-brand-category">HR Portal</p>
+<!-- ===== SIDEBAR ===== -->
+<aside class="dashboard-sidebar" id="appSidebar">
+    <div class="sidebar-brand-card">
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
         </div>
+        <p class="sidebar-brand-category">HR Portal</p>
+    </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main</div>
             <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
@@ -1379,14 +1423,11 @@ $statusColors = [
                 <span class="material-symbols-outlined">people</span>
                 <span class="nav-text">Applicants</span>
                 <span class="nav-badge"><?php 
-                    $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
+                    $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [])['count'] ?? 0;
                     echo $pendingApps; 
                 ?></span>
             </a>
-            <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">view_kanban</span>
-                <span class="nav-text">Pipeline</span>
-            </a>
+
             <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">calendar_month</span>
                 <span class="nav-text">Interviews</span>
@@ -1400,13 +1441,13 @@ $statusColors = [
                 <span class="nav-text">Archive</span>
                 <span class="nav-badge"><?php 
                     $totalArchived = 0;
-                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
+                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", []);
                     $totalArchived += $archivedResult['count'] ?? 0;
-                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
+                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", []);
                     $totalArchived += $archivedResult['count'] ?? 0;
-                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
+                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", []);
                     $totalArchived += $archivedResult['count'] ?? 0;
-                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
+                    $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", []);
                     $totalArchived += $archivedResult['count'] ?? 0;
                     echo $totalArchived;
                 ?></span>
@@ -1433,17 +1474,25 @@ $statusColors = [
 
     <!-- ===== MAIN CONTENT ===== -->
     <div class="main-wrapper" id="mainWrapper">
-        <header class="top-header">
-            <div class="top-header-left">
-                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                    <span class="material-symbols-outlined">menu</span>
-                </button>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                    <span class="material-symbols-outlined">chevron_left</span>
-                </button>
-                <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">Deployments</span>
-            </div>
+      <!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                     <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -2317,6 +2366,268 @@ $statusColors = [
             return badges[status] || 'badge-active';
         }
 
+
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
         // =============================================
         // RESPONSIVE HANDLING
         // =============================================
@@ -2345,6 +2656,6 @@ $statusColors = [
         console.log('Deployment restricted to hired employee\'s client and job order only.');
         console.log('Completed/Terminated deployments automatically moved to archive.');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

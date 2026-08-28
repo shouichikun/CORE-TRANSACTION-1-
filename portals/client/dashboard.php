@@ -2,7 +2,9 @@
 // portals/client/dashboard.php - AI-Powered Client Dashboard
 session_start();
 
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
@@ -28,13 +30,13 @@ $role = $_SESSION['role'] ?? 'client';
 // =============================================
 $aiService = new AiService();
 
-// Get client profile
+// ✅ FIXED: Get client profile - PostgreSQL uses $1 placeholder
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
     JOIN users u ON c.user_id = u.id
-    WHERE c.user_id = ?
-", [$userId], "i");
+    WHERE c.user_id = $1
+", [$userId]);
 
 // If no client profile exists, show setup message
 if (!$client) {
@@ -53,121 +55,142 @@ $clientId = $client['id'] ?? 0;
 // GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
 // =============================================
 $pendingAgencyCount = 0;
-$pendingAgencies = getRecords("
-    SELECT COUNT(*) as count FROM agency_applications 
-    WHERE client_id = ? AND status = 'pending'
-", [$clientId], "i");
-
-if (!empty($pendingAgencies)) {
-    $pendingAgencyCount = $pendingAgencies[0]['count'] ?? 0;
+if ($clientId > 0) {
+    // ✅ FIXED: PostgreSQL uses $1 placeholder
+    $pendingAgencies = getRecord("
+        SELECT COUNT(*) as count FROM agency_applications 
+        WHERE client_id = $1 AND status = 'pending'
+    ", [$clientId]);
+    $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
 }
 
 // =============================================
-// DASHBOARD STATS
+// DASHBOARD STATS - ✅ FIXED all queries to PostgreSQL
 // =============================================
 
 // 1. TOTAL ACTIVE EMPLOYEES (deployed to this client)
-$employeeSql = "SELECT COUNT(*) as count FROM deployments d 
-                WHERE d.client_id = '$clientId' AND d.status = 'active'";
-$employeeResult = mysqli_query($conn, $employeeSql);
-$employeeRow = mysqli_fetch_assoc($employeeResult);
-$totalEmployees = $employeeRow['count'] ?? 0;
+$totalEmployees = 0;
+if ($clientId > 0) {
+    $employeeResult = getRecord("
+        SELECT COUNT(*) as count FROM deployments d 
+        WHERE d.client_id = $1 AND d.status = 'active'
+    ", [$clientId]);
+    $totalEmployees = (int)($employeeResult['count'] ?? 0);
+}
 
 // 2. TOTAL APPLICANTS (who applied to this client's jobs)
-$applicantsSql = "SELECT COUNT(DISTINCT a.applicant_id) as count 
-                  FROM applications a
-                  JOIN job_orders jo ON a.job_order_id = jo.id
-                  WHERE jo.client_id = '$clientId'";
-$applicantsResult = mysqli_query($conn, $applicantsSql);
-$applicantsRow = mysqli_fetch_assoc($applicantsResult);
-$totalApplicants = $applicantsRow['count'] ?? 0;
+$totalApplicants = 0;
+if ($clientId > 0) {
+    $applicantsResult = getRecord("
+        SELECT COUNT(DISTINCT a.applicant_id) as count 
+        FROM applications a
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE jo.client_id = $1
+    ", [$clientId]);
+    $totalApplicants = (int)($applicantsResult['count'] ?? 0);
+}
 
 // 3. TOTAL APPLICATIONS RECEIVED
-$appsReceivedSql = "SELECT COUNT(*) as count 
-                     FROM applications a
-                     JOIN job_orders jo ON a.job_order_id = jo.id
-                     WHERE jo.client_id = '$clientId'";
-$appsReceivedResult = mysqli_query($conn, $appsReceivedSql);
-$appsReceivedRow = mysqli_fetch_assoc($appsReceivedResult);
-$totalApplications = $appsReceivedRow['count'] ?? 0;
+$totalApplications = 0;
+if ($clientId > 0) {
+    $appsReceivedResult = getRecord("
+        SELECT COUNT(*) as count 
+        FROM applications a
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE jo.client_id = $1
+    ", [$clientId]);
+    $totalApplications = (int)($appsReceivedResult['count'] ?? 0);
+}
 
 // 4. PENDING APPLICATIONS
-$pendingAppsSql = "SELECT COUNT(*) as count 
-                   FROM applications a
-                   JOIN job_orders jo ON a.job_order_id = jo.id
-                   WHERE jo.client_id = '$clientId' AND a.status = 'pending'";
-$pendingAppsResult = mysqli_query($conn, $pendingAppsSql);
-$pendingAppsRow = mysqli_fetch_assoc($pendingAppsResult);
-$pendingApplications = $pendingAppsRow['count'] ?? 0;
+$pendingApplications = 0;
+if ($clientId > 0) {
+    $pendingAppsResult = getRecord("
+        SELECT COUNT(*) as count 
+        FROM applications a
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE jo.client_id = $1 AND a.status = 'pending'
+    ", [$clientId]);
+    $pendingApplications = (int)($pendingAppsResult['count'] ?? 0);
+}
 
 // 5. OPEN JOBS
-$openJobsSql = "SELECT COUNT(*) as count FROM job_orders 
-                WHERE client_id = '$clientId' AND status IN ('open', 'ongoing')";
-$openJobsResult = mysqli_query($conn, $openJobsSql);
-$openJobsRow = mysqli_fetch_assoc($openJobsResult);
-$openJobs = $openJobsRow['count'] ?? 0;
+$openJobs = 0;
+if ($clientId > 0) {
+    $openJobsResult = getRecord("
+        SELECT COUNT(*) as count FROM job_orders 
+        WHERE client_id = $1 AND status IN ('open', 'ongoing')
+    ", [$clientId]);
+    $openJobs = (int)($openJobsResult['count'] ?? 0);
+}
 
 // 6. REVENUE (estimated - from accepted offers)
-$revenueSql = "SELECT SUM(o.salary_offered) as total FROM offers o
-               JOIN applications a ON o.application_id = a.id
-               JOIN job_orders jo ON a.job_order_id = jo.id
-               WHERE jo.client_id = '$clientId' AND o.status = 'accepted'";
-$revenueResult = mysqli_query($conn, $revenueSql);
-$revenueRow = mysqli_fetch_assoc($revenueResult);
-$totalRevenue = $revenueRow['total'] ?? 0;
+$totalRevenue = 0;
+if ($clientId > 0) {
+    $revenueResult = getRecord("
+        SELECT COALESCE(SUM(o.salary_offered), 0) as total FROM offers o
+        JOIN applications a ON o.application_id = a.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE jo.client_id = $1 AND o.status = 'accepted'
+    ", [$clientId]);
+    $totalRevenue = (float)($revenueResult['total'] ?? 0);
+}
 
 // 7. TOTAL JOBS
-$totalJobsSql = "SELECT COUNT(*) as count FROM job_orders 
-                 WHERE client_id = '$clientId'";
-$totalJobsResult = mysqli_query($conn, $totalJobsSql);
-$totalJobsRow = mysqli_fetch_assoc($totalJobsResult);
-$totalJobs = $totalJobsRow['count'] ?? 0;
+$totalJobs = 0;
+if ($clientId > 0) {
+    $totalJobsResult = getRecord("
+        SELECT COUNT(*) as count FROM job_orders 
+        WHERE client_id = $1
+    ", [$clientId]);
+    $totalJobs = (int)($totalJobsResult['count'] ?? 0);
+}
 
 // 8. RECENT EMPLOYEES
-$recentEmployeesSql = "SELECT d.*, 
-                       u.id as user_id, u.first_name, u.last_name, u.email,
-                       jo.title as job_title, d.start_date
-                       FROM deployments d
-                       JOIN users u ON d.employee_id = u.id
-                       JOIN job_orders jo ON d.job_order_id = jo.id
-                       WHERE d.client_id = '$clientId'
-                       ORDER BY d.created_at DESC
-                       LIMIT 5";
-$recentEmployeesResult = mysqli_query($conn, $recentEmployeesSql);
 $recentEmployees = [];
-while ($row = mysqli_fetch_assoc($recentEmployeesResult)) {
-    $recentEmployees[] = $row;
+if ($clientId > 0) {
+    $recentEmployees = getRecords("
+        SELECT d.*, 
+               u.id as user_id, u.first_name, u.last_name, u.email,
+               jo.title as job_title, d.start_date
+        FROM deployments d
+        JOIN users u ON d.employee_id = u.id
+        JOIN job_orders jo ON d.job_order_id = jo.id
+        WHERE d.client_id = $1
+        ORDER BY d.created_at DESC
+        LIMIT 5
+    ", [$clientId]);
 }
 
 // 9. RECENT APPLICANTS
-$recentApplicantsSql = "SELECT a.*, u.first_name, u.last_name, u.email,
-                        jo.title as job_title, jo.id as job_id
-                        FROM applications a
-                        JOIN applicants ap ON a.applicant_id = ap.id
-                        JOIN users u ON ap.user_id = u.id
-                        JOIN job_orders jo ON a.job_order_id = jo.id
-                        WHERE jo.client_id = '$clientId'
-                        ORDER BY a.applied_at DESC
-                        LIMIT 5";
-$recentApplicantsResult = mysqli_query($conn, $recentApplicantsSql);
 $recentApplicants = [];
-while ($row = mysqli_fetch_assoc($recentApplicantsResult)) {
-    $recentApplicants[] = $row;
+if ($clientId > 0) {
+    $recentApplicants = getRecords("
+        SELECT a.*, u.first_name, u.last_name, u.email,
+               jo.title as job_title, jo.id as job_id
+        FROM applications a
+        JOIN applicants ap ON a.applicant_id = ap.id
+        JOIN users u ON ap.user_id = u.id
+        JOIN job_orders jo ON a.job_order_id = jo.id
+        WHERE jo.client_id = $1
+        ORDER BY a.applied_at DESC
+        LIMIT 5
+    ", [$clientId]);
 }
 
 // 10. ACTIVE JOBS LIST
-$activeJobsSql = "SELECT * FROM job_orders 
-                  WHERE client_id = '$clientId' AND status IN ('open', 'ongoing')
-                  ORDER BY created_at DESC
-                  LIMIT 5";
-$activeJobsResult = mysqli_query($conn, $activeJobsSql);
 $activeJobs = [];
-while ($row = mysqli_fetch_assoc($activeJobsResult)) {
-    $activeJobs[] = $row;
+if ($clientId > 0) {
+    $activeJobs = getRecords("
+        SELECT * FROM job_orders 
+        WHERE client_id = $1 AND status IN ('open', 'ongoing')
+        ORDER BY created_at DESC
+        LIMIT 5
+    ", [$clientId]);
 }
 
 // =============================================
-// AI HELPER FUNCTIONS - COMPLETELY FIXED
+// AI HELPER FUNCTIONS
 // =============================================
 
 /**
@@ -378,6 +401,7 @@ if ($aiScore >= 80) {
     $scoreLabel = 'Needs Attention';
 }
 ?>
+<!-- HTML CONTENT REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1725,6 +1749,268 @@ if ($aiScore >= 80) {
             }, 250);
         });
 
+
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
         // =============================================
         // 5. KEYBOARD ACCESSIBILITY
         // =============================================
@@ -1740,6 +2026,6 @@ if ($aiScore >= 80) {
         console.log('📊 AI Provider: <?php echo ucfirst($aiProvider); ?>');
         console.log('📈 Health Score: <?php echo $aiScore; ?>%');
     </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>

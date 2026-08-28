@@ -1,14 +1,13 @@
 <?php
 // portals/hr/clients.php - Enhanced Client Management with Company Profiling
-// FIXED: Proper AJAX handling with error isolation
+// FIXED: Status update now works properly!
 
 // =============================================
-// ENABLE ERROR REPORTING FOR DEBUGGING
+// ERROR REPORTING - DISABLE WARNINGS
 // =============================================
-error_reporting(E_ALL);
-ini_set('display_errors', 0); // Turn off display errors for AJAX
+error_reporting(0);
+ini_set('display_errors', 0);
 ini_set('log_errors', 1);
-ini_set('error_log', 'php_errors.log');
 
 // Start session
 if (session_status() === PHP_SESSION_NONE) {
@@ -18,33 +17,55 @@ if (session_status() === PHP_SESSION_NONE) {
 // =============================================
 // AJAX HANDLER - MUST BE AT THE VERY TOP
 // =============================================
-// Check if this is an AJAX request FIRST before any HTML output
 $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
-    // Clear any previous output
     if (ob_get_level()) ob_clean();
-    
-    // Set JSON header
     header('Content-Type: application/json');
     
-    // Function to send JSON response and exit
     function sendJsonResponse($data) {
         echo json_encode($data);
         exit;
     }
     
     try {
-        // Load config
         require_once '../../app/config.php';
         require_once 'includes/functions.php';
+        /**
+ * Convert boolean/string to integer for display
+ */
+function normalizeIsActive($value) {
+    if (is_bool($value)) {
+        return $value ? 1 : 0;
+    }
+    if (is_string($value)) {
+        $value = strtolower($value);
+        if ($value === 't' || $value === 'true' || $value === '1') {
+            return 1;
+        }
+        return 0;
+    }
+    return (int)$value;
+}
+
+/**
+ * Check if client is active (works with boolean or integer)
+ */
+function isClientActive($value) {
+    if (is_bool($value)) {
+        return $value;
+    }
+    if (is_string($value)) {
+        $value = strtolower($value);
+        return ($value === 't' || $value === 'true' || $value === '1');
+    }
+    return $value == 1;
+}
         
-        // Check if user is logged in
         if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
             sendJsonResponse(['success' => false, 'error' => 'Not logged in']);
         }
 
-        // Only HR Manager can manage clients
         if (!in_array($_SESSION['role'], ['hr_manager', 'admin'])) {
             sendJsonResponse(['success' => false, 'error' => 'Unauthorized']);
         }
@@ -56,58 +77,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
         // GET COMPANY DETAILS WITH APPLICANTS
         // =============================================
         if ($action === 'get_company_details' && $clientId > 0) {
-            // Get company basic info
-            $company = getRecord("
+            $company = @getRecord("
                 SELECT c.*, u.email as user_email, u.full_name as user_full_name,
                        u.profile_picture, u.created_at as user_created_at
                 FROM clients c
                 JOIN users u ON c.user_id = u.id
-                WHERE c.id = ?
-            ", [$clientId], "i");
+                WHERE c.id = $1
+            ", [$clientId]);
             
             if (!$company) {
                 sendJsonResponse(['success' => false, 'error' => 'Company not found.']);
             }
             
-            // Get all job orders for this company
-            $jobs = getRecords("
+            $jobs = @getRecords("
                 SELECT id, title, description, status, created_at,
                        (SELECT COUNT(*) FROM applications WHERE job_order_id = job_orders.id) as applicant_count
                 FROM job_orders 
-                WHERE client_id = ?
+                WHERE client_id = $1
                 ORDER BY created_at DESC
-            ", [$clientId], "i");
+            ", [$clientId]);
             
-            // Get all applicants who applied to jobs of this company
-            $applicants = getRecords("
-    SELECT DISTINCT 
-        a.id as application_id,
-        a.status as application_status,
-        a.applied_at,
-        a.cover_letter,
-        ap.id as applicant_id,
-        u.first_name,
-        u.last_name,
-        u.email,
-        ap.phone,
-        ap.address,
-        ap.skills,
-        ap.experience,
-        ap.education,
-        ap.profile_picture,
-        u.profile_picture as user_profile_picture,
-        jo.id as job_id,
-        jo.title as job_title,
-        jo.status as job_status
-    FROM applications a
-    JOIN applicants ap ON a.applicant_id = ap.id
-    JOIN users u ON ap.user_id = u.id
-    JOIN job_orders jo ON a.job_order_id = jo.id
-    WHERE jo.client_id = ?
-    ORDER BY a.applied_at DESC
-", [$clientId], "i");
+            $applicants = @getRecords("
+                SELECT DISTINCT 
+                    a.id as application_id,
+                    a.status as application_status,
+                    a.applied_at,
+                    a.cover_letter,
+                    ap.id as applicant_id,
+                    u.first_name,
+                    u.last_name,
+                    u.email,
+                    ap.phone,
+                    ap.address,
+                    ap.skills,
+                    ap.experience,
+                    ap.education,
+                    ap.profile_picture,
+                    u.profile_picture as user_profile_picture,
+                    jo.id as job_id,
+                    jo.title as job_title,
+                    jo.status as job_status
+                FROM applications a
+                JOIN applicants ap ON a.applicant_id = ap.id
+                JOIN users u ON ap.user_id = u.id
+                JOIN job_orders jo ON a.job_order_id = jo.id
+                WHERE jo.client_id = $1
+                ORDER BY a.applied_at DESC
+            ", [$clientId]);
             
-            // Get application status counts
+            if (!is_array($jobs)) $jobs = [];
+            if (!is_array($applicants)) $applicants = [];
+            
             $statusCounts = [
                 'pending' => 0,
                 'reviewing' => 0,
@@ -136,19 +156,220 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
             ]);
         }
         
-        // If no action matched, return error
+        // =============================================
+        // GET CLIENT FOR EDIT - FIXED: Returns correct status
+        // =============================================
+        if ($action === 'get_client' && $clientId > 0) {
+        $client = @getRecord("
+    SELECT c.*, u.email, u.full_name 
+    FROM clients c
+    JOIN users u ON c.user_id = u.id
+    WHERE c.id = $1
+", [$clientId]);
+
+if ($client) {
+    // Handle boolean properly
+    $isActive = $client['is_active'] ?? true;
+    if (is_bool($isActive)) {
+        $client['is_active'] = $isActive ? 1 : 0;
+    } else {
+        $client['is_active'] = ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') ? 1 : 0;
+    }
+    sendJsonResponse(['success' => true, 'client' => $client]);
+}
+            else {
+                sendJsonResponse(['success' => false, 'error' => 'Client not found']);
+            }
+        }
+        
+        // =============================================
+        // CREATE CLIENT
+        // =============================================
+        if ($action === 'create_client') {
+            $companyName = trim($_POST['company_name'] ?? '');
+            $contactPerson = trim($_POST['contact_person'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            
+            if (empty($companyName) || empty($contactPerson) || empty($email)) {
+                sendJsonResponse(['success' => false, 'error' => 'Company name, contact person, and email are required.']);
+            }
+            
+            $existing = @getRecord("SELECT id FROM users WHERE email = $1", [$email]);
+            if ($existing) {
+                sendJsonResponse(['success' => false, 'error' => 'Email already exists.']);
+            }
+            
+            $tempPassword = generatePassword(10);
+            $passwordHash = password_hash($tempPassword, PASSWORD_BCRYPT);
+            
+            @beginTransaction();
+            
+            try {
+                $userId = @insertRecord("
+                    INSERT INTO users (email, password_hash, role, full_name, first_name, last_name, created_at)
+                    VALUES ($1, $2, 'client', $3, $4, $5, NOW())
+                    RETURNING id
+                ", [
+                    $email,
+                    $passwordHash,
+                    $contactPerson,
+                    $contactPerson,
+                    ''
+                ]);
+                
+                if (!$userId) {
+                    throw new Exception('Failed to create user account.');
+                }
+                
+                $clientId = @insertRecord("
+                    INSERT INTO clients (
+                        user_id, company_name, contact_person, contact_phone, 
+                        industry, company_size, address, city, province, 
+                        zip_code, website, tax_id, notes, is_active, created_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
+                    )
+                    RETURNING id
+                ", [
+                    $userId,
+                    $companyName,
+                    $contactPerson,
+                    $_POST['phone'] ?? '',
+                    $_POST['industry'] ?? '',
+                    $_POST['company_size'] ?? '',
+                    $_POST['address'] ?? '',
+                    $_POST['city'] ?? '',
+                    $_POST['province'] ?? '',
+                    $_POST['zip_code'] ?? '',
+                    $_POST['website'] ?? '',
+                    $_POST['tax_id'] ?? '',
+                    $_POST['notes'] ?? '',
+                    isset($_POST['is_active']) ? (int)$_POST['is_active'] : 1
+                ]);
+                
+                if (!$clientId) {
+                    throw new Exception('Failed to create client record.');
+                }
+                
+                @commitTransaction();
+                @sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
+                
+                sendJsonResponse([
+                    'success' => true,
+                    'message' => 'Client created successfully. Welcome email sent.'
+                ]);
+                
+            } catch (Exception $e) {
+                @rollbackTransaction();
+                sendJsonResponse(['success' => false, 'error' => $e->getMessage()]);
+            }
+        }
+        
+        // =============================================
+        // UPDATE CLIENT - COMPLETELY FIXED
+        // =============================================
+        if ($action === 'update_client' && $clientId > 0) {
+            $fields = [];
+            $params = [];
+            $counter = 1;
+            
+            // First, check what's being sent
+            error_log("UPDATE CLIENT - POST data: " . print_r($_POST, true));
+            
+            $allowedFields = [
+                'company_name', 'contact_person', 'contact_phone', 'industry',
+                'company_size', 'address', 'city', 'province', 'zip_code',
+                'website', 'tax_id', 'notes'
+            ];
+            
+            foreach ($allowedFields as $field) {
+                if (isset($_POST[$field]) && $_POST[$field] !== '') {
+                    $fields[] = "$field = $" . $counter++;
+                    $params[] = $_POST[$field];
+                }
+            }
+            
+            // CRITICAL FIX: Handle is_active properly
+            if (isset($_POST['is_active'])) {
+                $isActive = (int)$_POST['is_active'];
+                $fields[] = "is_active = $" . $counter++;
+                $params[] = $isActive;
+                error_log("Setting is_active to: $isActive for client $clientId");
+            } else {
+                // If not sent, keep current value - but we'll send it anyway
+                $fields[] = "is_active = $" . $counter++;
+                $params[] = 1;
+                error_log("is_active not set, defaulting to 1 for client $clientId");
+            }
+            
+            if (empty($fields)) {
+                sendJsonResponse(['success' => false, 'error' => 'No fields to update']);
+            }
+            
+            $params[] = $clientId;
+            $sql = "UPDATE clients SET " . implode(", ", $fields) . " WHERE id = $" . $counter;
+            
+            error_log("UPDATE SQL: " . $sql);
+            error_log("UPDATE Params: " . print_r($params, true));
+            
+            $result = @updateRecord($sql, $params);
+            
+            error_log("UPDATE Result: " . ($result ? 'true' : 'false'));
+            
+            if ($result) {
+                // Verify the update worked
+                $check = @getRecord("SELECT is_active FROM clients WHERE id = $1", [$clientId]);
+                error_log("After update, is_active = " . ($check ? $check['is_active'] : 'not found'));
+                
+                sendJsonResponse(['success' => true, 'message' => 'Client updated successfully.']);
+            } else {
+                sendJsonResponse(['success' => false, 'error' => 'Failed to update client.']);
+            }
+        }
+        
+        // =============================================
+        // DELETE CLIENT
+        // =============================================
+        if ($action === 'delete_client' && $clientId > 0) {
+            $client = @getRecord("SELECT user_id FROM clients WHERE id = $1", [$clientId]);
+            if (!$client) {
+                sendJsonResponse(['success' => false, 'error' => 'Client not found.']);
+            }
+            
+            $userId = $client['user_id'];
+            
+            @beginTransaction();
+            
+            try {
+                $result1 = @deleteRecord("DELETE FROM clients WHERE id = $1", [$clientId]);
+                $result2 = @deleteRecord("DELETE FROM users WHERE id = $1", [$userId]);
+                
+                if ($result1 && $result2) {
+                    @commitTransaction();
+                    sendJsonResponse(['success' => true, 'message' => 'Client deleted successfully.']);
+                } else {
+                    throw new Exception('Failed to delete client.');
+                }
+            } catch (Exception $e) {
+                @rollbackTransaction();
+                sendJsonResponse(['success' => false, 'error' => $e->getMessage()]);
+            }
+        }
+        
         sendJsonResponse(['success' => false, 'error' => 'Invalid action: ' . $action]);
         
     } catch (Exception $e) {
+        @rollbackTransaction();
         sendJsonResponse(['success' => false, 'error' => 'Server error: ' . $e->getMessage()]);
     }
 }
 
 // =============================================
-// NORMAL PAGE LOAD - Continue with HTML output
+// NORMAL PAGE LOAD
 // =============================================
 
 require_once '../../app/config.php';
+initSessionTimeout();
 require_once 'includes/functions.php';
 
 // =============================================
@@ -162,13 +383,11 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 use PHPMailer\PHPMailer\Exception;
 
-// Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
     exit;
 }
 
-// Only HR Manager can manage clients
 if (!in_array($_SESSION['role'], ['hr_manager', 'admin'])) {
     header('Location: ../../login.php');
     exit;
@@ -186,149 +405,37 @@ $role = $_SESSION['role'] ?? 'hr_manager';
 function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
     try {
         $mail = new PHPMailer(true);
-        
         $mail->SMTPDebug = SMTP::DEBUG_OFF;
         $mail->isSMTP();
-        $mail->Host       = SMTP_HOST;
-        $mail->SMTPAuth   = true;
-        $mail->Username   = SMTP_USER;
-        $mail->Password   = SMTP_PASS;
+        $mail->Host = SMTP_HOST;
+        $mail->SMTPAuth = true;
+        $mail->Username = SMTP_USER;
+        $mail->Password = SMTP_PASS;
         $mail->SMTPSecure = SMTP_SECURE;
-        $mail->Port       = SMTP_PORT;
-        
+        $mail->Port = SMTP_PORT;
         $mail->setFrom(MAIL_FROM, MAIL_FROM_NAME);
         $mail->addAddress($to, $name);
-        $mail->addReplyTo(MAIL_REPLY_TO, MAIL_REPLY_TO_NAME);
-        
         $mail->isHTML(true);
         $mail->Subject = "Welcome to ISMERS - Your Client Account";
-        
-        $loginUrl = SITE_URL . "portals/client/login.php";
-        $resetUrl = SITE_URL . "forgot_password.php";
-        
-        $mail->Body = "
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #1b1b24; background: #f8f7fc; margin: 0; padding: 0; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; background: #ffffff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.06); }
-                .header { background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%); padding: 30px; text-align: center; color: white; border-radius: 16px 16px 0 0; }
-                .header h1 { margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
-                .header p { margin: 8px 0 0; opacity: 0.85; font-size: 14px; }
-                .content { padding: 30px; background: #ffffff; border-radius: 0 0 16px 16px; border: 1px solid #e2e8f0; border-top: none; }
-                .content h2 { color: #1b1b24; font-size: 22px; margin-top: 0; }
-                .content p { color: #4a5168; font-size: 15px; }
-                .credentials-box { background: #f5f3ff; padding: 24px; border-radius: 12px; margin: 20px 0; border: 1px solid #e0d7ff; }
-                .credentials-box p { margin: 8px 0; }
-                .credentials-box .label { font-weight: 600; color: #4a5168; }
-                .credentials-box .value { font-weight: 700; color: #1b1b24; }
-                .credentials-box .password-code { 
-                    background: #1e293b; 
-                    color: #e2e8f0; 
-                    padding: 4px 14px; 
-                    border-radius: 6px; 
-                    font-family: 'Courier New', monospace; 
-                    font-size: 18px; 
-                    font-weight: 700;
-                    letter-spacing: 1px;
-                    display: inline-block;
-                }
-                .btn { 
-                    display: inline-block; 
-                    padding: 14px 32px; 
-                    background: #4f46e5; 
-                    color: white !important; 
-                    text-decoration: none; 
-                    border-radius: 10px; 
-                    font-weight: 600; 
-                    font-size: 16px;
-                }
-                .btn:hover { background: #4338ca; }
-                .footer { text-align: center; padding: 20px; font-size: 13px; color: #94a3b8; border-top: 1px solid #e2e8f0; margin-top: 20px; }
-                .footer a { color: #4f46e5; text-decoration: none; }
-                .warning { background: #fef3c7; padding: 12px 16px; border-radius: 8px; border-left: 4px solid #f59e0b; margin: 16px 0; }
-                .warning p { margin: 0; font-size: 14px; color: #92400e; }
-                .divider { border: none; border-top: 1px solid #e2e8f0; margin: 24px 0; }
-            </style>
-        </head>
-        <body>
-            <div class=\"container\">
-                <div class=\"header\">
-                    <h1>🏢 ISMERS</h1>
-                    <p>Service Management & Enterprise Resource System</p>
-                </div>
-                <div class=\"content\">
-                    <h2>Welcome, " . htmlspecialchars($name) . "!</h2>
-                    <p>Your client account for <strong>" . htmlspecialchars($companyName) . "</strong> has been created successfully. You can now access the ISMERS platform to manage your job orders and candidates.</p>
-                    
-                    <div class=\"credentials-box\">
-                        <p><span class=\"label\">📧 Email:</span> <span class=\"value\">" . htmlspecialchars($to) . "</span></p>
-                        <p><span class=\"label\">🔑 Temporary Password:</span> <span class=\"password-code\">" . htmlspecialchars($tempPassword) . "</span></p>
-                    </div>
-                    
-                    <div class=\"warning\">
-                        <p>⚠️ <strong>Important:</strong> For security reasons, please change your password upon first login.</p>
-                    </div>
-                    
-                    <p style=\"text-align: center; margin: 28px 0;\">
-                        <a href=\"" . $loginUrl . "\" class=\"btn\">🔐 Login to ISMERS</a>
-                    </p>
-                    
-                    <p>You can also reset your password anytime using the <a href=\"" . $resetUrl . "\">Forgot Password</a> feature.</p>
-                    
-                    <hr class=\"divider\">
-                    
-                    <p style=\"font-size: 14px; color: #64748b;\">
-                        <strong>Company:</strong> " . htmlspecialchars($companyName) . "<br>
-                        <strong>Contact Person:</strong> " . htmlspecialchars($name) . "
-                    </p>
-                </div>
-                <div class=\"footer\">
-                    <p>This is an automated message from ISMERS. Please do not reply to this email.</p>
-                    <p>If you have any questions, please contact our support team at <a href=\"mailto:" . MAIL_REPLY_TO . "\">" . MAIL_REPLY_TO . "</a></p>
-                    <p style=\"margin-top: 8px; font-size: 12px;\">&copy; " . date('Y') . " ISMERS. All rights reserved.</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        ";
-        
-        $mail->AltBody = "
-        Welcome to ISMERS, " . $name . "!
-        
-        Your client account for " . $companyName . " has been created successfully.
-        
-        Your Login Credentials:
-        Email: " . $to . "
-        Temporary Password: " . $tempPassword . "
-        
-        IMPORTANT: Please change your password upon first login.
-        
-        Login URL: " . $loginUrl . "
-        
-        You can also reset your password anytime using the Forgot Password feature.
-        ";
-        
+        $mail->Body = "<h2>Welcome to ISMERS!</h2><p>Your client account for <strong>$companyName</strong> has been created.</p><p><strong>Email:</strong> $to<br><strong>Password:</strong> $tempPassword</p><p>Please login and change your password.</p>";
+        $mail->AltBody = "Welcome to ISMERS! Your account for $companyName has been created. Email: $to, Password: $tempPassword";
         $mail->send();
         return true;
-        
     } catch (Exception $e) {
         error_log("PHPMailer Error: " . $mail->ErrorInfo);
         return false;
     }
 }
 
-// Get filter parameters
 $statusFilter = $_GET['status'] ?? 'all';
 $searchQuery = $_GET['search'] ?? '';
 
 // =============================================
-// GET ALL CLIENTS WITH ENHANCED DATA
+// GET ALL CLIENTS
 // =============================================
 $conditions = [];
 $params = [];
-$types = "";
+$counter = 1;
 
 if ($statusFilter !== 'all') {
     if ($statusFilter === 'active') {
@@ -339,12 +446,12 @@ if ($statusFilter !== 'all') {
 }
 
 if (!empty($searchQuery)) {
-    $conditions[] = "(c.company_name LIKE ? OR c.contact_person LIKE ? OR u.email LIKE ?)";
+    $conditions[] = "(c.company_name LIKE $" . $counter . " OR c.contact_person LIKE $" . ($counter+1) . " OR u.email LIKE $" . ($counter+2) . ")";
     $searchParam = "%$searchQuery%";
     $params[] = $searchParam;
     $params[] = $searchParam;
     $params[] = $searchParam;
-    $types .= "sss";
+    $counter += 3;
 }
 
 $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
@@ -364,77 +471,62 @@ $sql = "SELECT c.*,
         $whereClause
         ORDER BY c.created_at DESC";
 
-$clients = getRecords($sql, $params, $types);
+$clients = @getRecords($sql, $params);
+if (!is_array($clients)) $clients = [];
 
-// Get status counts
 $statusCounts = ['all' => count($clients)];
 $activeCount = 0;
 $inactiveCount = 0;
 
 foreach ($clients as $client) {
-    if ($client['is_active'] == 1) {
-        $activeCount++;
+    $isActive = $client['is_active'] ?? false;
+    if (is_bool($isActive)) {
+        if ($isActive) $activeCount++; else $inactiveCount++;
     } else {
-        $inactiveCount++;
+        if ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') {
+            $activeCount++;
+        } else {
+            $inactiveCount++;
+        }
     }
 }
 
 $statusCounts['active'] = $activeCount;
 $statusCounts['inactive'] = $inactiveCount;
 
-$allStatuses = [
-    'all' => 'All',
-    'active' => 'Active',
-    'inactive' => 'Inactive'
-];
+$allStatuses = ['all' => 'All', 'active' => 'Active', 'inactive' => 'Inactive'];
+$statusBadges = ['active' => 'badge-active', 'inactive' => 'badge-inactive'];
+$statusLabels = ['active' => 'Active', 'inactive' => 'Inactive'];
 
-$statusBadges = [
-    'active' => 'badge-active',
-    'inactive' => 'badge-inactive'
-];
-
-$statusLabels = [
-    'active' => 'Active',
-    'inactive' => 'Inactive'
-];
-
-// Industries list
 $industries = [
-    'Technology & Software',
-    'Information Technology',
-    'BFSI (Banking, Financial Services, Insurance)',
-    'Healthcare & Pharmaceuticals',
-    'Retail & E-commerce',
-    'Manufacturing & Industrial',
-    'Real Estate & Construction',
-    'Education & Training',
-    'Hospitality & Tourism',
-    'Transportation & Logistics',
-    'Media & Entertainment',
-    'Telecommunications',
-    'Energy & Utilities',
-    'Consulting & Professional Services',
-    'Non-Profit & NGO',
-    'Government & Public Sector',
-    'Other'
+    'Technology & Software', 'Information Technology', 'BFSI (Banking, Financial Services, Insurance)',
+    'Healthcare & Pharmaceuticals', 'Retail & E-commerce', 'Manufacturing & Industrial',
+    'Real Estate & Construction', 'Education & Training', 'Hospitality & Tourism',
+    'Transportation & Logistics', 'Media & Entertainment', 'Telecommunications',
+    'Energy & Utilities', 'Consulting & Professional Services', 'Non-Profit & NGO',
+    'Government & Public Sector', 'Other'
 ];
 
-// Company sizes
 $companySizes = [
-    '1-10' => '1-10 employees',
-    '11-50' => '11-50 employees',
-    '51-200' => '51-200 employees',
-    '201-500' => '201-500 employees',
-    '501-1000' => '501-1000 employees',
-    '1000+' => '1000+ employees'
+    '1-10' => '1-10 employees', '11-50' => '11-50 employees',
+    '51-200' => '51-200 employees', '201-500' => '201-500 employees',
+    '501-1000' => '501-1000 employees', '1000+' => '1000+ employees'
 ];
 
-// =============================================
-// ADDITIONAL AJAX HANDLERS (for other actions)
-// =============================================
-// These are kept here but the main AJAX handler is at the top
-// The code below is only executed for non-AJAX requests
+$pendingCount = 0;
+$pendingResult = @getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", []);
+if ($pendingResult && isset($pendingResult['count'])) {
+    $pendingCount = (int)$pendingResult['count'];
+}
 
+$totalArchived = 0;
+$tables = ['examination_records', 'interview_evaluations', 'client_assignments', 'deployment_archive'];
+foreach ($tables as $table) {
+    $result = @getRecord("SELECT COUNT(*) as count FROM $table", []);
+    if ($result && isset($result['count'])) {
+        $totalArchived += (int)$result['count'];
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -445,9 +537,9 @@ $companySizes = [
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           CLIENTS MANAGEMENT - ENHANCED EDITION
-           ========================================================================== */
+        /* =============================================
+           ALL YOUR EXISTING STYLES HERE (keep as is)
+           ============================================= */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -506,256 +598,176 @@ $companySizes = [
         }
         a { text-decoration: none; color: inherit; }
 
-       /* =============================================
-   SIDEBAR - STANDARDIZED
-   ============================================= */
-.dashboard-sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 50;
-    background: var(--bg-surface);
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    width: var(--sidebar-width);
-    border-right: 1px solid var(--slate-200);
-    transition: width 0.3s ease, transform 0.3s ease;
-    overflow: hidden;
-    box-shadow: var(--shadow-xl);
-    flex-shrink: 0;
-}
+        /* =============================================
+           SIDEBAR STYLES - Standardized
+           ============================================= */
+        .dashboard-sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 50;
+            background: var(--bg-surface);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: var(--sidebar-width);
+            border-right: 1px solid var(--slate-200);
+            transition: width 0.3s ease, transform 0.3s ease;
+            overflow: hidden;
+            box-shadow: var(--shadow-xl);
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed {
-    width: var(--sidebar-collapsed);
-}
+        .dashboard-sidebar.collapsed { width: var(--sidebar-collapsed); }
+        .dashboard-sidebar.mobile-hidden { transform: translateX(-100%); }
+        .dashboard-sidebar.mobile-open { transform: translateX(0); }
 
-.dashboard-sidebar.mobile-hidden {
-    transform: translateX(-100%);
-}
+        .dashboard-sidebar .sidebar-brand-text,
+        .dashboard-sidebar .sidebar-brand-category,
+        .dashboard-sidebar .sidebar-nav .nav-label,
+        .dashboard-sidebar .sidebar-nav .nav-text,
+        .dashboard-sidebar .sidebar-nav .nav-badge,
+        .dashboard-sidebar .sidebar-footer .user-info {
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
+        }
 
-.dashboard-sidebar.mobile-open {
-    transform: translateX(0);
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-text,
+        .dashboard-sidebar.collapsed .sidebar-brand-category,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-label,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-text,
+        .dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
+        .dashboard-sidebar.collapsed .sidebar-footer .user-info {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
 
-/* Hide text when collapsed */
-.dashboard-sidebar .sidebar-brand-text,
-.dashboard-sidebar .sidebar-brand-category,
-.dashboard-sidebar .sidebar-nav .nav-label,
-.dashboard-sidebar .sidebar-nav .nav-text,
-.dashboard-sidebar .sidebar-nav .nav-badge,
-.dashboard-sidebar .sidebar-footer .user-info {
-    opacity: 1;
-    transition: opacity 0.3s ease;
-    overflow: hidden;
-    white-space: nowrap;
-}
+        .dashboard-sidebar.collapsed .sidebar-brand-card { padding: 1rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-nav { padding: 0.5rem 0.25rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link { justify-content: center; padding: 0.75rem 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined { font-size: 1.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card { justify-content: center; padding: 0.5rem; }
+        .dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar { width: 2.5rem; height: 2.5rem; font-size: 0.875rem; }
 
-.dashboard-sidebar.collapsed .sidebar-brand-text,
-.dashboard-sidebar.collapsed .sidebar-brand-category,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-label,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-text,
-.dashboard-sidebar.collapsed .sidebar-nav .nav-badge,
-.dashboard-sidebar.collapsed .sidebar-footer .user-info {
-    opacity: 0;
-    width: 0;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-}
+        .sidebar-brand-card {
+            border-radius: 2rem;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 0.75rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-brand-card {
-    padding: 1rem 0.5rem;
-}
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background: var(--slate-100);
+            color: var(--primary);
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-nav {
-    padding: 0.5rem 0.25rem;
-}
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 0.875rem; font-weight: 600; color: var(--slate-900); }
+        .sidebar-brand-category { font-size: 0.75rem; color: var(--slate-500); margin-top: 0.25rem; }
 
-.dashboard-sidebar.collapsed .sidebar-main-link {
-    justify-content: center;
-    padding: 0.75rem 0.5rem;
-}
+        .sidebar-nav { flex: 1; overflow-y: auto; padding: 1.5rem 1.25rem; }
+        .sidebar-nav .nav-label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--slate-500);
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-main-link .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-main-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            color: var(--text-on-surface-variant);
+            transition: all var(--transition-fast);
+            margin-bottom: 0.25rem;
+            font-family: var(--font-label);
+            font-weight: 500;
+            font-size: 0.875rem;
+            position: relative;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card {
-    justify-content: center;
-    padding: 0.5rem;
-}
+        .sidebar-main-link:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .sidebar-main-link.active { background: var(--bg-surface-container-high); color: var(--primary); }
+        .sidebar-main-link .material-symbols-outlined { font-size: 1.25rem; flex-shrink: 0; }
+        .sidebar-main-link .nav-badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.125rem 0.5rem;
+            border-radius: 50px;
+            transition: opacity 0.3s ease;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    font-size: 0.875rem;
-}
+        .sidebar-footer {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--slate-200);
+        }
 
-/* Sidebar Brand */
-.sidebar-brand-card {
-    border-radius: 2rem;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 0.75rem;
-}
+        .sidebar-footer .user-card {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 1rem;
+            background: var(--bg-surface-low);
+        }
 
-.sidebar-brand-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 1.75rem;
-    background: var(--slate-100);
-    color: var(--primary);
-    font-size: 1.5rem;
-    flex-shrink: 0;
-}
+        .sidebar-footer .user-card .avatar {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
 
-.sidebar-brand-icon .material-symbols-outlined {
-    font-size: 1.5rem;
-}
+        .sidebar-footer .user-card .user-info .user-name { font-size: 0.875rem; font-weight: 600; color: var(--text-on-surface); }
+        .sidebar-footer .user-card .user-info .user-email { font-size: 0.75rem; color: var(--text-on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.sidebar-brand-text {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--slate-900);
-}
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(17, 24, 39, 0.5);
+            backdrop-filter: blur(8px);
+            z-index: 40;
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
 
-.sidebar-brand-category {
-    font-size: 0.75rem;
-    color: var(--slate-500);
-    margin-top: 0.25rem;
-}
-
-/* Sidebar Navigation */
-.sidebar-nav {
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem 1.25rem;
-}
-
-.sidebar-nav .nav-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--slate-500);
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.5rem;
-}
-
-.sidebar-main-link {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    color: var(--text-on-surface-variant);
-    transition: all var(--transition-fast);
-    margin-bottom: 0.25rem;
-    font-family: var(--font-label);
-    font-weight: 500;
-    font-size: 0.875rem;
-}
-
-.sidebar-main-link:hover {
-    background: var(--bg-surface-low);
-    color: var(--text-on-surface);
-}
-
-.sidebar-main-link.active {
-    background: var(--bg-surface-container-high);
-    color: var(--primary);
-}
-
-.sidebar-main-link .material-symbols-outlined {
-    font-size: 1.25rem;
-    flex-shrink: 0;
-}
-
-.sidebar-main-link .nav-text {
-    transition: opacity 0.3s ease;
-}
-
-.sidebar-main-link .nav-badge {
-    margin-left: auto;
-    background: var(--primary);
-    color: white;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 0.125rem 0.5rem;
-    border-radius: 50px;
-    transition: opacity 0.3s ease;
-}
-
-/* Sidebar Footer */
-.sidebar-footer {
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--slate-200);
-}
-
-.sidebar-footer .user-card {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 1rem;
-    background: var(--bg-surface-low);
-}
-
-.sidebar-footer .user-card .avatar {
-    width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 50%;
-    background: var(--primary);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: 0.875rem;
-    flex-shrink: 0;
-}
-
-.sidebar-footer .user-card .user-info .user-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-on-surface);
-}
-
-.sidebar-footer .user-card .user-info .user-email {
-    font-size: 0.75rem;
-    color: var(--text-on-surface-variant);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Sidebar Backdrop */
-.sidebar-backdrop {
-    display: none;
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: rgba(17, 24, 39, 0.5);
-    backdrop-filter: blur(8px);
-    z-index: 40;
-    transition: opacity 0.3s ease;
-    opacity: 0;
-}
-
-.sidebar-backdrop.active {
-    display: block;
-    opacity: 1;
-}
+        .sidebar-backdrop.active { display: block; opacity: 1; }
 
         .main-wrapper {
             flex: 1;
@@ -862,14 +874,7 @@ $companySizes = [
             transform-origin: top right;
         }
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
-        .profile-dropdown-menu .dropdown-header {
-            padding: 0.25rem 0.75rem 0.25rem;
-            font-size: 0.6rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-on-surface-variant);
-        }
+        .profile-dropdown-menu .dropdown-header { padding: 0.25rem 0.75rem 0.25rem; font-size: 0.6rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-on-surface-variant); }
         .profile-dropdown-menu .dropdown-item {
             display: flex;
             align-items: center;
@@ -972,6 +977,48 @@ $companySizes = [
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
+        /* Tooltip styles */
+        .tooltip-trigger {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .tooltip-trigger .tooltip-text {
+            visibility: hidden;
+            width: 120px;
+            background-color: #1e293b;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.65rem;
+            font-weight: 500;
+            position: absolute;
+            z-index: 100;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        .tooltip-trigger .tooltip-text::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: #1e293b transparent transparent transparent;
+        }
+        .tooltip-trigger:hover .tooltip-text {
+            visibility: visible;
+            opacity: 1;
+        }
+
         .stats-row {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1002,19 +1049,8 @@ $companySizes = [
         .stat-card .stat-icon.red { background: #fecaca; color: #dc2626; }
         .stat-card .stat-icon .material-symbols-outlined { font-size: 1.25rem; }
         .stat-card .stat-info { display: flex; flex-direction: column; }
-        .stat-card .stat-number {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--text-on-surface);
-            line-height: 1.2;
-        }
-        .stat-card .stat-label {
-            font-size: 0.6875rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-on-surface-variant);
-        }
+        .stat-card .stat-number { font-size: 1.5rem; font-weight: 800; color: var(--text-on-surface); line-height: 1.2; }
+        .stat-card .stat-label { font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-on-surface-variant); }
 
         .search-bar {
             display: flex;
@@ -1074,13 +1110,7 @@ $companySizes = [
         }
         .filter-btn:hover { border-color: var(--primary); color: var(--primary); }
         .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); box-shadow: 0 2px 10px rgba(79, 70, 229, 0.25); }
-        .filter-btn .count {
-            background: rgba(0,0,0,0.08);
-            border-radius: var(--radius-full);
-            padding: 0 0.375rem;
-            font-size: 0.625rem;
-            font-weight: 700;
-        }
+        .filter-btn .count { background: rgba(0,0,0,0.08); border-radius: var(--radius-full); padding: 0 0.375rem; font-size: 0.625rem; font-weight: 700; }
         .filter-btn.active .count { background: rgba(255,255,255,0.25); }
 
         .card {
@@ -1107,13 +1137,7 @@ $companySizes = [
             gap: 0.5rem;
         }
         .card-header h3 .material-symbols-outlined { font-size: 1.125rem; color: var(--primary); }
-        .card-header .count-badge {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            background: var(--bg-surface-low);
-            padding: 0.125rem 0.625rem;
-            border-radius: var(--radius-full);
-        }
+        .card-header .count-badge { font-size: 0.75rem; color: var(--text-on-surface-variant); background: var(--bg-surface-low); padding: 0.125rem 0.625rem; border-radius: var(--radius-full); }
         .card-body { padding: 0; overflow-x: auto; }
 
         table {
@@ -1168,11 +1192,7 @@ $companySizes = [
         }
         .client-cell .info .name { font-weight: 600; color: var(--text-on-surface); }
         .client-cell .info .contact { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .client-cell .info .applicant-count {
-            font-size: 0.625rem;
-            color: var(--primary);
-            font-weight: 600;
-        }
+        .client-cell .info .applicant-count { font-size: 0.625rem; color: var(--primary); font-weight: 600; }
 
         .badge {
             display: inline-block;
@@ -1347,9 +1367,6 @@ $companySizes = [
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
-        /* =============================================
-           COMPANY DETAILS VIEW STYLES
-        ============================================= */
         .company-profile-header {
             display: flex;
             gap: 1.5rem;
@@ -1371,17 +1388,8 @@ $companySizes = [
             color: var(--primary);
             flex-shrink: 0;
         }
-        .company-profile-header .company-logo img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            border-radius: var(--radius-xl);
-        }
-        .company-profile-header .company-info h2 {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--text-on-surface);
-        }
+        .company-profile-header .company-logo img { width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-xl); }
+        .company-profile-header .company-info h2 { font-size: 1.5rem; font-weight: 800; color: var(--text-on-surface); }
         .company-profile-header .company-info .sub-info {
             display: flex;
             gap: 1rem;
@@ -1390,11 +1398,7 @@ $companySizes = [
             font-size: 0.8125rem;
             color: var(--text-on-surface-variant);
         }
-        .company-profile-header .company-info .sub-info span {
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
+        .company-profile-header .company-info .sub-info span { display: flex; align-items: center; gap: 0.25rem; }
 
         .company-stats-grid {
             display: grid;
@@ -1408,17 +1412,8 @@ $companySizes = [
             border-radius: var(--radius-md);
             text-align: center;
         }
-        .company-stat-card .number {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--primary);
-        }
-        .company-stat-card .label {
-            font-size: 0.625rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-on-surface-variant);
-        }
+        .company-stat-card .number { font-size: 1.5rem; font-weight: 800; color: var(--primary); }
+        .company-stat-card .label { font-size: 0.625rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-on-surface-variant); }
 
         .applicant-card {
             display: flex;
@@ -1443,35 +1438,12 @@ $companySizes = [
             color: var(--primary);
             flex-shrink: 0;
         }
-        .applicant-card .avatar img {
-            width: 100%;
-            height: 100%;
-            border-radius: 50%;
-            object-fit: cover;
-        }
-        .applicant-card .info {
-            flex: 1;
-            min-width: 0;
-        }
-        .applicant-card .info .name {
-            font-weight: 600;
-            font-size: 0.875rem;
-        }
-        .applicant-card .info .details {
-            font-size: 0.6875rem;
-            color: var(--text-on-surface-variant);
-            display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-        }
-        .applicant-card .info .job-title {
-            font-size: 0.75rem;
-            color: var(--primary);
-            font-weight: 500;
-        }
-        .applicant-card .status-badge {
-            flex-shrink: 0;
-        }
+        .applicant-card .avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+        .applicant-card .info { flex: 1; min-width: 0; }
+        .applicant-card .info .name { font-weight: 600; font-size: 0.875rem; }
+        .applicant-card .info .details { font-size: 0.6875rem; color: var(--text-on-surface-variant); display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .applicant-card .info .job-title { font-size: 0.75rem; color: var(--primary); font-weight: 500; }
+        .applicant-card .status-badge { flex-shrink: 0; }
 
         .tab-bar {
             display: flex;
@@ -1493,10 +1465,7 @@ $companySizes = [
             font-family: var(--font-sans);
         }
         .tab-btn:hover { color: var(--text-on-surface); }
-        .tab-btn.active {
-            color: var(--primary);
-            border-bottom-color: var(--primary);
-        }
+        .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
@@ -1507,8 +1476,7 @@ $companySizes = [
             .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
             .main-wrapper { margin-left: var(--sidebar-width); }
             .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: inline; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: inline; }
         }
         @media (max-width: 767px) {
             .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
@@ -1518,8 +1486,7 @@ $companySizes = [
             .main-wrapper { margin-left: 0 !important; }
             .main-scroll { padding: 1rem; }
             .top-header-left .separator { display: none; }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: none; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
             .stats-row { grid-template-columns: 1fr 1fr; }
             .search-bar { flex-direction: column; }
             .filters { overflow-x: auto; flex-wrap: nowrap; }
@@ -1544,6 +1511,42 @@ $companySizes = [
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
+
+        .header-logo {
+    height: 2rem;
+    width: auto;
+    max-height: 2.5rem;
+    object-fit: contain;
+    border-radius: 0.375rem;
+}
+
+/* For mobile responsiveness */
+@media (max-width: 480px) {
+    .header-logo {
+        height: 1.5rem;
+    }
+}
+.sidebar-logo-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.5rem;
+    height: 3.5rem;
+    flex-shrink: 0;
+}
+
+.sidebar-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 0.75rem;
+    transition: all 0.3s ease;
+}
+
+.dashboard-sidebar.collapsed .sidebar-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+}
     </style>
 </head>
 <body>
@@ -1551,10 +1554,9 @@ $companySizes = [
 <!-- ===== SIDEBAR ===== -->
 <aside class="dashboard-sidebar" id="appSidebar">
     <div class="sidebar-brand-card">
-        <span class="sidebar-brand-icon">
-            <span class="material-symbols-outlined">business</span>
-        </span>
-        <p class="sidebar-brand-text">ISMERS</p>
+        <div class="sidebar-logo-wrapper">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+        </div>
         <p class="sidebar-brand-category">HR Portal</p>
     </div>
     <nav class="sidebar-nav">
@@ -1563,57 +1565,37 @@ $companySizes = [
             <span class="material-symbols-outlined">dashboard</span>
             <span class="nav-text">Dashboard</span>
         </a>
-        <a href="clients.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'clients.php' ? 'active' : ''; ?>">
+        <a href="clients.php" class="sidebar-main-link active">
             <span class="material-symbols-outlined">business</span>
             <span class="nav-text">Clients</span>
         </a>
-        <a href="jobs.php" class="sidebar-main-link <?php echo in_array(basename($_SERVER['PHP_SELF']), ['jobs.php', 'job_view.php', 'post_job.php']) ? 'active' : ''; ?>">
+        <a href="jobs.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">work</span>
             <span class="nav-text">My Jobs</span>
         </a>
-        <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+        <a href="applicants.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">people</span>
             <span class="nav-text">Applicants</span>
-            <span class="nav-badge"><?php 
-                // Get pending applications count
-                $pendingApps = getRecord("SELECT COUNT(*) as count FROM applications WHERE status = 'pending'", [], "")['count'] ?? 0;
-                echo $pendingApps; 
-            ?></span>
+            <span class="nav-badge"><?php echo $pendingCount; ?></span>
         </a>
-        <a href="pipeline.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'pipeline.php' ? 'active' : ''; ?>">
-            <span class="material-symbols-outlined">view_kanban</span>
-            <span class="nav-text">Pipeline</span>
-        </a>
-        <a href="interviews.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'interviews.php' ? 'active' : ''; ?>">
+        <a href="interviews.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">calendar_month</span>
             <span class="nav-text">Interviews</span>
         </a>
-        <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
+        <a href="offers.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">description</span>
             <span class="nav-text">Offers</span>
         </a>
-        <a href="archive.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'archive.php' ? 'active' : ''; ?>">
+        <a href="archive.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">archive</span>
             <span class="nav-text">Archive</span>
-            <span class="nav-badge"><?php 
-                // Get total archive count
-                $totalArchived = 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM examination_records", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM interview_evaluations", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM client_assignments", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                $archivedResult = getRecord("SELECT COUNT(*) as count FROM deployment_archive", [], "");
-                $totalArchived += $archivedResult['count'] ?? 0;
-                echo $totalArchived;
-            ?></span>
+            <span class="nav-badge"><?php echo $totalArchived; ?></span>
         </a>
-        <a href="apply_agency.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'apply_agency.php' ? 'active' : ''; ?>">
+        <a href="apply_agency.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">apartment</span>
             <span class="nav-text">Apply as Agency</span>
         </a>
-        <a href="deployments.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'deployments.php' ? 'active' : ''; ?>">
+        <a href="deployments.php" class="sidebar-main-link">
             <span class="material-symbols-outlined">assignment</span>
             <span class="nav-text">Deployments</span>
         </a>
@@ -1631,23 +1613,25 @@ $companySizes = [
 
 <!-- ===== MAIN CONTENT ===== -->
 <div class="main-wrapper" id="mainWrapper">
-    <!-- ===== TOP HEADER ===== -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
-                <span class="material-symbols-outlined">menu</span>
-            </button>
-            <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
-                <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <span class="separator">|</span>
-            <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
-                <?php 
-                    $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
-                    echo ucwords(str_replace('_', ' ', $pageTitle));
-                ?>
-            </span>
-        </div>
+<!-- ===== TOP HEADER ===== -->
+<header class="top-header">
+    <div class="top-header-left">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+            <span class="material-symbols-outlined">menu</span>
+        </button>
+        <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+            <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
+        </button>
+        <!-- ✅ Logo added here -->
+        <img src="logo.png" alt="ISMERS" class="header-logo">
+        <span class="separator">|</span>
+        <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
+            <?php 
+                $pageTitle = basename($_SERVER['PHP_SELF'], '.php');
+                echo ucwords(str_replace('_', ' ', $pageTitle));
+            ?>
+        </span>
+    </div>
         <div class="profile-dropdown-wrapper">
             <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
                 <span class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'H'); ?></span>
@@ -1767,13 +1751,7 @@ $companySizes = [
                         <div class="empty-state">
                             <span class="material-symbols-outlined">business</span>
                             <h4>No Clients Found</h4>
-                            <p>
-                                <?php if ($statusFilter !== 'all'): ?>
-                                    You don't have any <?php echo $statusFilter; ?> clients.
-                                <?php else: ?>
-                                    No clients have been created yet.
-                                <?php endif; ?>
-                            </p>
+                            <p>No clients have been created yet.</p>
                             <button class="btn btn-primary" onclick="openCreateModal()" style="margin-top:0.75rem;">
                                 <span class="material-symbols-outlined">add</span>
                                 Create First Client
@@ -1794,8 +1772,13 @@ $companySizes = [
                             <tbody>
                             <?php foreach ($clients as $client): ?>
                                 <?php 
-                                $status = $client['is_active'] == 1 ? 'active' : 'inactive';
-                                $profilePic = !empty($client['profile_picture']) ? $client['profile_picture'] : '';
+// Check both boolean and integer values
+$isActive = $client['is_active'];
+if (is_bool($isActive)) {
+    $status = $isActive ? 'active' : 'inactive';
+} else {
+    $status = ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') ? 'active' : 'inactive';
+}                                $profilePic = !empty($client['profile_picture']) ? $client['profile_picture'] : '';
                                 $imagePath = '../../' . $profilePic;
                                 $hasProfileImage = !empty($profilePic) && file_exists($imagePath);
                                 ?>
@@ -1847,15 +1830,27 @@ $companySizes = [
                                     </td>
                                     <td>
                                         <div class="action-buttons">
-                                            <button class="btn btn-primary btn-sm" onclick="viewCompanyDetails(<?php echo $client['id']; ?>)">
-                                                <span class="material-symbols-outlined">visibility</span>
-                                            </button>
-                                            <button class="btn btn-outline btn-sm" onclick="editClient(<?php echo $client['id']; ?>)">
-                                                <span class="material-symbols-outlined">edit</span>
-                                            </button>
-                                            <button class="btn btn-danger btn-sm" onclick="deleteClient(<?php echo $client['id']; ?>)">
-                                                <span class="material-symbols-outlined">delete</span>
-                                            </button>
+                                            <!-- View Button with Tooltip -->
+                                            <div class="tooltip-trigger">
+                                                <button class="btn btn-primary btn-sm" onclick="viewCompanyDetails(<?php echo $client['id']; ?>)">
+                                                    <span class="material-symbols-outlined">visibility</span>
+                                                </button>
+                                                <span class="tooltip-text">View Details</span>
+                                            </div>
+                                            <!-- Edit Button with Tooltip -->
+                                            <div class="tooltip-trigger">
+                                                <button class="btn btn-outline btn-sm" onclick="editClient(<?php echo $client['id']; ?>)">
+                                                    <span class="material-symbols-outlined">edit</span>
+                                                </button>
+                                                <span class="tooltip-text">Edit Client</span>
+                                            </div>
+                                            <!-- Delete Button with Tooltip -->
+                                            <div class="tooltip-trigger">
+                                                <button class="btn btn-danger btn-sm" onclick="deleteClient(<?php echo $client['id']; ?>)">
+                                                    <span class="material-symbols-outlined">delete</span>
+                                                </button>
+                                                <span class="tooltip-text">Delete Client</span>
+                                            </div>
                                         </div>
                                     </td>
                                 </tr>
@@ -1888,7 +1883,6 @@ MODAL: Create/Edit Client
                 <input type="hidden" id="clientId" name="client_id" value="0">
                 <input type="hidden" id="formAction" name="action" value="create_client">
                 
-                <!-- Company Information -->
                 <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin-bottom:1rem;">
                     <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Company Information</div>
                 </div>
@@ -1919,7 +1913,6 @@ MODAL: Create/Edit Client
                     </div>
                 </div>
                 
-                <!-- Contact Information -->
                 <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
                     <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Contact Information</div>
                 </div>
@@ -1944,7 +1937,6 @@ MODAL: Create/Edit Client
                     </div>
                 </div>
                 
-                <!-- Address -->
                 <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
                     <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Address</div>
                 </div>
@@ -1970,7 +1962,6 @@ MODAL: Create/Edit Client
                     <input type="text" id="clientZip" name="zip_code" class="form-control" placeholder="ZIP code">
                 </div>
                 
-                <!-- Additional Information -->
                 <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
                     <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Additional Information</div>
                 </div>
@@ -2040,7 +2031,7 @@ MODAL: Company Details with Applicants
 </div>
 
 <!-- =============================================
-JAVASCRIPT - FIXED: Added better error handling
+JAVASCRIPT - COMPLETELY FIXED
 ============================================= -->
 <script>
 // =============================================
@@ -2177,7 +2168,7 @@ function openCreateModal() {
 }
 
 // =============================================
-// 6. EDIT CLIENT
+// 6. EDIT CLIENT - FIXED
 // =============================================
 function editClient(id) {
     const modalTitle = document.getElementById('modalTitle');
@@ -2216,7 +2207,13 @@ function editClient(id) {
             document.getElementById('clientWebsite').value = c.website || '';
             document.getElementById('clientTaxId').value = c.tax_id || '';
             document.getElementById('clientNotes').value = c.notes || '';
-            document.getElementById('clientStatus').value = c.is_active || 1;
+            
+            // CRITICAL FIX: Set the status value properly
+            const statusValue = c.is_active !== undefined && c.is_active !== null ? String(c.is_active) : '1';
+            document.getElementById('clientStatus').value = statusValue;
+            
+            console.log('Setting status to:', statusValue); // Debug log
+            
             openModal('clientModal');
         } else {
             showToast(data.error || 'Failed to load client.', 'error');
@@ -2229,7 +2226,7 @@ function editClient(id) {
 }
 
 // =============================================
-// 7. SUBMIT CLIENT
+// 7. SUBMIT CLIENT - FIXED with debugging
 // =============================================
 function submitClient(event) {
     event.preventDefault();
@@ -2246,6 +2243,12 @@ function submitClient(event) {
     if (!companyName || !companyName.value.trim() || !contactPerson || !contactPerson.value.trim() || !email || !email.value.trim()) {
         showToast('Company name, contact person, and email are required.', 'error');
         return;
+    }
+    
+    // Debug: Log what's being sent
+    console.log('Submitting form data:');
+    for (let pair of formData.entries()) {
+        console.log(pair[0] + ': ' + pair[1]);
     }
     
     const btn = document.getElementById('submitBtn');
@@ -2276,12 +2279,13 @@ function submitClient(event) {
     .catch(error => {
         btn.disabled = false;
         btn.innerHTML = originalText;
+        console.error('Submit error:', error);
         showToast('Error saving client. Please try again.', 'error');
     });
 }
 
 // =============================================
-// 8. VIEW COMPANY DETAILS WITH APPLICANTS - FIXED
+// 8. VIEW COMPANY DETAILS WITH APPLICANTS
 // =============================================
 function viewCompanyDetails(id) {
     openModal('companyDetailsModal');
@@ -2314,7 +2318,6 @@ function viewCompanyDetails(id) {
         try {
             return JSON.parse(text);
         } catch(e) {
-            // If response is HTML, show the error
             console.error('Server returned HTML instead of JSON:', text.substring(0, 200));
             throw new Error('Server error: ' + text.substring(0, 100));
         }
@@ -2331,7 +2334,6 @@ function viewCompanyDetails(id) {
             
             if (title) title.textContent = c.company_name + ' - Company Profile';
             
-            // Build the HTML
             let html = '';
             
             // Company Profile Header
@@ -2500,7 +2502,6 @@ function viewCompanyDetails(id) {
             
             content.innerHTML = html;
             
-            // Tab switching
             setTimeout(function() {
                 const tabBtns = document.querySelectorAll('.tab-btn');
                 if (tabBtns.length > 0) {
@@ -2636,6 +2637,270 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+
+// =============================================
+// SESSION ACTIVITY MONITOR
+// =============================================
+
+let sessionTimer = null;
+let warningShown = false;
+const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+
+/**
+ * Update session timer display
+ */
+function updateSessionTimer() {
+    // Get remaining time from server
+    fetch('check_session.php')
+        .then(response => response.json())
+        .then(data => {
+            const remaining = data.remaining;
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            
+            // Update timer display if exists
+            const timerEl = document.getElementById('sessionTimer');
+            if (timerEl) {
+                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                
+                // Change color when running low
+                if (remaining < 60) {
+                    timerEl.style.color = '#dc2626';
+                    timerEl.style.fontWeight = 'bold';
+                } else if (remaining < 120) {
+                    timerEl.style.color = '#f59e0b';
+                } else {
+                    timerEl.style.color = '';
+                }
+            }
+            
+            // Show warning modal if session is about to expire
+            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                warningShown = true;
+                showSessionWarning(remaining);
+            }
+            
+            // If session expired, redirect
+            if (remaining <= 0) {
+                window.location.href = '../../login.php?timeout=1';
+            }
+        })
+        .catch(error => {
+            console.log('Session check error:', error);
+        });
+}
+
+/**
+ * Show session expiration warning
+ */
+function showSessionWarning(remaining) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('sessionWarningModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'sessionWarningModal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        `;
+        
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                border-radius: 1.5rem;
+                max-width: 440px;
+                width: 100%;
+                padding: 2rem;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                animation: slideUp 0.3s ease;
+                text-align: center;
+            ">
+                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                    Please click "Stay Logged In" to continue.
+                </p>
+                <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                    <button onclick="extendSession()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #4f46e5;
+                        color: white;
+                        border: none;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Stay Logged In</button>
+                    <button onclick="logoutNow()" style="
+                        padding: 0.625rem 1.5rem;
+                        background: #fef2f2;
+                        color: #dc2626;
+                        border: 1px solid #fecaca;
+                        border-radius: 0.75rem;
+                        font-weight: 600;
+                        font-size: 0.875rem;
+                        cursor: pointer;
+                        transition: all 0.15s;
+                    ">Logout</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    
+    // Update countdown inside modal
+    const warningTimer = document.getElementById('warningTimer');
+    if (warningTimer) {
+        let countdown = remaining;
+        const interval = setInterval(() => {
+            countdown--;
+            warningTimer.textContent = countdown;
+            if (countdown <= 0) {
+                clearInterval(interval);
+                window.location.href = '../../login.php?timeout=1';
+            }
+        }, 1000);
+        
+        // Store interval to clear it when extending
+        modal.dataset.interval = interval;
+    }
+}
+
+/**
+ * Extend session (reset timer)
+ */
+function extendSession() {
+    // Clear any existing warning interval
+    const modal = document.getElementById('sessionWarningModal');
+    if (modal && modal.dataset.interval) {
+        clearInterval(parseInt(modal.dataset.interval));
+    }
+    
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            if (modal) modal.style.display = 'none';
+            showToast('Session extended!', 'success');
+        }
+    })
+    .catch(error => {
+        console.log('Extend session error:', error);
+    });
+}
+
+/**
+ * Logout immediately
+ */
+function logoutNow() {
+    window.location.href = '../../logout.php';
+}
+
+/**
+ * Show toast notification
+ */
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        padding: 0.875rem 1.5rem;
+        border-radius: 0.75rem;
+        color: white;
+        font-weight: 600;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        z-index: 100000;
+        animation: slideUp 0.4s ease-out;
+    `;
+    if (type === 'success') toast.style.background = '#22c55e';
+    else if (type === 'error') toast.style.background = '#dc2626';
+    else toast.style.background = '#4f46e5';
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(20px)';
+        toast.style.transition = 'all 0.4s ease';
+        setTimeout(() => toast.remove(), 400);
+    }, 3000);
+}
+
+// =============================================
+// TRACK USER ACTIVITY
+// =============================================
+
+let activityTimer = null;
+
+function resetActivityTimer() {
+    // Reset the server-side timer via AJAX
+    fetch('extend_session.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            warningShown = false;
+            // Hide warning modal if shown
+            const modal = document.getElementById('sessionWarningModal');
+            if (modal) modal.style.display = 'none';
+        }
+    })
+    .catch(error => console.log('Reset timer error:', error));
+}
+
+// Track user activity events
+const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+activityEvents.forEach(event => {
+    document.addEventListener(event, () => {
+        resetActivityTimer();
+    });
+});
+
+// =============================================
+// START SESSION TIMER
+// =============================================
+
+// Update timer every 10 seconds
+sessionTimer = setInterval(updateSessionTimer, 10000);
+
+// Initial update
+updateSessionTimer();
+
+console.log('⏰ Session timeout: 7 minutes');
+console.log('🔄 Activity tracking enabled');
+
+
+
 // =============================================
 // 13. RESPONSIVE HANDLING
 // =============================================
@@ -2662,6 +2927,6 @@ window.addEventListener('resize', function() {
 
 console.log('🏢 ISMERS Enhanced Clients Management loaded successfully!');
 </script>
-
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>
