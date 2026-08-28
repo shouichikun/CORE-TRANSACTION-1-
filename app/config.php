@@ -1245,8 +1245,13 @@ if (!function_exists('time_elapsed_string')) {
         $diff->w = floor($diff->d / 7);
         $diff->d -= $diff->w * 7;
         $string = array(
-            'y' => 'year', 'm' => 'month', 'w' => 'week', 'd' => 'day',
-            'h' => 'hour', 'i' => 'minute', 's' => 'second',
+            'y' => 'year',
+            'm' => 'month',
+            'w' => 'week',
+            'd' => 'day',
+            'h' => 'hour',
+            'i' => 'minute',
+            's' => 'second',
         );
         foreach ($string as $k => &$v) {
             if ($diff->$k) {
@@ -1319,9 +1324,6 @@ if (file_exists($permissionsFile)) {
 // =============================================
 // START SESSION IF NOT ALREADY STARTED
 // =============================================
-// =============================================
-// START SESSION IF NOT ALREADY STARTED
-// =============================================
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -1334,13 +1336,57 @@ define('SESSION_TIMEOUT_SECONDS', 420); // 7 minutes (7 * 60)
 
 /**
  * Initialize session with timeout tracking
+ * Call this at the start of every page after session_start()
  */
 function initSessionTimeout() {
-    // Check if session is started
-    if (session_status() === PHP_SESSION_NONE) {
-        session_start();  // ❌ DUPLICATE - REMOVE THIS LINE
+    // Session is already started by config.php above
+    // DO NOT call session_start() here - it causes "headers already sent" errors
+    
+    // Define timeout in seconds
+    $timeout = SESSION_TIMEOUT_SECONDS;
+    
+    // Check if last activity timestamp exists
+    if (isset($_SESSION['last_activity'])) {
+        $inactivity = time() - $_SESSION['last_activity'];
+        
+        // If inactivity exceeds timeout, destroy session
+        if ($inactivity > $timeout) {
+            // Clear all session variables
+            $_SESSION = array();
+            
+            // Delete session cookie
+            if (ini_get("session.use_cookies")) {
+                $params = session_get_cookie_params();
+                setcookie(
+                    session_name(),
+                    '',
+                    time() - 42000,
+                    $params["path"],
+                    $params["domain"],
+                    $params["secure"],
+                    $params["httponly"]
+                );
+            }
+            
+            // Destroy session
+            session_destroy();
+            
+            // Redirect to login with timeout message
+            header('Location: ../../login.php?timeout=1');
+            exit;
+        }
     }
-    // ... rest of function
+    
+    // Update last activity timestamp
+    $_SESSION['last_activity'] = time();
+    
+    // Regenerate session ID periodically (every 5 minutes)
+    if (!isset($_SESSION['created_at'])) {
+        $_SESSION['created_at'] = time();
+    } elseif (time() - $_SESSION['created_at'] > 300) { // 5 minutes
+        session_regenerate_id(true);
+        $_SESSION['created_at'] = time();
+    }
 }
 
 /**
