@@ -41,17 +41,15 @@ if (file_exists($envFile)) {
 // SUPABASE POSTGRESQL DATABASE CONFIGURATION
 // =============================================
 
-define('PROJECT_REF', 'xpiylbzbkmymqigrvmgq');
-define('DB_HOST', 'aws-0-ap-northeast-1.pooler.supabase.com');
-define('DB_PORT', '6543');
-define('DB_USER', 'postgres.' . PROJECT_REF);
-define('DB_PASS', 'CoreTransac1');
-define('DB_NAME', 'postgres');
+define('PROJECT_REF', getenv('PROJECT_REF') ?: 'xpiylbzbkmymqigrvmgq');
+define('DB_HOST', getenv('DB_HOST') ?: 'aws-0-ap-northeast-1.pooler.supabase.com');
+define('DB_PORT', getenv('DB_PORT') ?: '6543');
+define('DB_USER', getenv('DB_USER') ?: 'postgres.' . PROJECT_REF);
+define('DB_PASS', getenv('DB_PASS') ?: 'CoreTransac1');
+define('DB_NAME', getenv('DB_NAME') ?: 'postgres');
 
-define('SUPABASE_URL', 'https://' . PROJECT_REF . '.supabase.co');
-define('SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwaXlsYnpia215bXFpZ3J2bWdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcyMjg5NjIsImV4cCI6MjEwMjgwNDk2Mn0.wZnRU_e8y6yTlUdwhWPREL8Kl7yGHaji-OL1QjqEhfI');
-
-// =============================================
+define('SUPABASE_URL', getenv('SUPABASE_URL') ?: 'https://' . PROJECT_REF . '.supabase.co');
+define('SUPABASE_ANON_KEY', getenv('SUPABASE_ANON_KEY') ?: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwaXlsYnpia215bXFpZ3J2bWdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcyMjg5NjIsImV4cCI6MjEwMjgwNDk2Mn0.wZnRU_e8y6yTlUdwhWPREL8Kl7yGHaji-OL1QjqEhfI');
 // APPLICATION CONFIGURATION
 // =============================================
 define('SITE_NAME', 'ISMERS');
