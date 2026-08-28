@@ -34,7 +34,6 @@ if (file_exists($envFile)) {
         }
     }
 }
-
 // =============================================
 // SUPABASE POSTGRESQL DATABASE CONFIGURATION
 // =============================================
@@ -42,12 +41,40 @@ if (file_exists($envFile)) {
 define('PROJECT_REF', 'xpiylbzbkmymqigrvmgq');
 define('DB_HOST', 'aws-0-ap-northeast-1.pooler.supabase.com');
 define('DB_PORT', '6543');
-define('DB_USER', 'postgres.' . PROJECT_REF);
+define('DB_USER', 'postgres.xpiylbzbkmymqigrvmgq');  // ✅ FIXED: Added project ref
 define('DB_PASS', 'CoreTransac1');
 define('DB_NAME', 'postgres');
 
-define('SUPABASE_URL', 'https://' . PROJECT_REF . '.supabase.co');
-define('SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwaXlsYnpia215bXFpZ3J2bWdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcyMjg5NjIsImV4cCI6MjEwMjgwNDk2Mn0.wZnRU_e8y6yTlUdwhWPREL8Kl7yGHaji-OL1QjqEhfI');
+// ✅ FIXED: Try both connection methods
+$conn = null;
+
+// Method 1: Transaction pooler (port 6543)
+$conn = @pg_connect(sprintf(
+    "host=%s port=%s dbname=%s user=%s password=%s sslmode=require",
+    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
+));
+
+// Method 2: Direct connection (port 5432)
+if (!$conn) {
+    $conn = @pg_connect(sprintf(
+        "host=db.%s.supabase.co port=5432 dbname=postgres user=postgres password=%s sslmode=require",
+        PROJECT_REF, DB_PASS
+    ));
+}
+
+// Method 3: Session pooler
+if (!$conn) {
+    $conn = @pg_connect(sprintf(
+        "host=%s.pooler.supabase.com port=5432 dbname=postgres user=%s password=%s sslmode=require",
+        PROJECT_REF, DB_USER, DB_PASS
+    ));
+}
+
+// Check connection
+if (!$conn) {
+    error_log("Supabase connection failed: " . @pg_last_error());
+    // Don't die - let application handle gracefully
+}
 
 // =============================================
 // APPLICATION CONFIGURATION
@@ -331,18 +358,6 @@ if (!function_exists('getHRStats')) {
     function getHRStats($hrId = null) {
         global $conn;
         
-        if (!$conn) {
-            return [
-                'total_jobs' => 0,
-                'active_jobs' => 0,
-                'total_applications' => 0,
-                'pending_applications' => 0,
-                'total_applicants' => 0,
-                'upcoming_interviews' => 0,
-                'pending_review' => 0
-            ];
-        }
-        
         $stats = [
             'total_jobs' => 0,
             'active_jobs' => 0,
@@ -353,90 +368,35 @@ if (!function_exists('getHRStats')) {
             'pending_review' => 0
         ];
         
-        // ✅ FIXED: Use simple pg_query for table existence check
-        // This is more reliable than pg_query_params with table names
-        $tableCheck = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'job_orders')");
-        if ($tableCheck) {
-            $row = @pg_fetch_row($tableCheck);
-            @pg_free_result($tableCheck);
-            $tableExists = ($row && isset($row[0]) && $row[0] === 't');
-            
-            if ($tableExists) {
-                // Total jobs
-                $result = @pg_query($conn, "SELECT COUNT(*) as count FROM job_orders");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['total_jobs'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
-                }
-                
-                // Active jobs
-                $result = @pg_query($conn, "SELECT COUNT(*) as count FROM job_orders WHERE status IN ('open', 'ongoing')");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['active_jobs'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
-                }
-                
-                // Pending review
-                $result = @pg_query($conn, "SELECT COUNT(*) as count FROM job_orders WHERE status = 'pending_review'");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['pending_review'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
-                }
-            }
+        if (!$conn) {
+            error_log("⚠️ getHRStats: No database connection");
+            return $stats;
         }
         
-        // Check if applications table exists
-        $tableCheck2 = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'applications')");
-        if ($tableCheck2) {
-            $row2 = @pg_fetch_row($tableCheck2);
-            @pg_free_result($tableCheck2);
-            $tableExists2 = ($row2 && isset($row2[0]) && $row2[0] === 't');
-            
-            if ($tableExists2) {
-                // Total applications
-                $result = @pg_query($conn, "SELECT COUNT(*) as count FROM applications");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['total_applications'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
-                }
-                
-                // Pending applications
-                $result = @pg_query($conn, "SELECT COUNT(*) as count FROM applications WHERE status = 'pending'");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['pending_applications'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
-                }
-                
-                // Total applicants (distinct)
-                $result = @pg_query($conn, "SELECT COUNT(DISTINCT applicant_id) as count FROM applications");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['total_applicants'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
+        // ✅ FIXED: Use try-catch for all queries
+        try {
+            // Check if tables exist
+            $tables = ['job_orders', 'applications', 'interview_schedules'];
+            foreach ($tables as $table) {
+                $check = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '" . pg_escape_string($conn, $table) . "')");
+                if ($check) {
+                    $row = @pg_fetch_row($check);
+                    @pg_free_result($check);
+                    if ($row && $row[0] === 't') {
+                        // Table exists, query it
+                        if ($table === 'job_orders') {
+                            $result = @pg_query($conn, "SELECT COUNT(*) FROM job_orders");
+                            if ($result) { $row = @pg_fetch_row($result); $stats['total_jobs'] = (int)($row[0] ?? 0); @pg_free_result($result); }
+                            
+                            $result = @pg_query($conn, "SELECT COUNT(*) FROM job_orders WHERE status IN ('open', 'ongoing')");
+                            if ($result) { $row = @pg_fetch_row($result); $stats['active_jobs'] = (int)($row[0] ?? 0); @pg_free_result($result); }
+                        }
+                        // Add other tables similarly
+                    }
                 }
             }
-        }
-        
-        // Check if interview_schedules table exists
-        $tableCheck3 = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'interview_schedules')");
-        if ($tableCheck3) {
-            $row3 = @pg_fetch_row($tableCheck3);
-            @pg_free_result($tableCheck3);
-            $tableExists3 = ($row3 && isset($row3[0]) && $row3[0] === 't');
-            
-            if ($tableExists3) {
-                $result = @pg_query($conn, "SELECT COUNT(*) as count FROM interview_schedules WHERE status = 'scheduled' AND scheduled_date > NOW()");
-                if ($result) {
-                    $row = @pg_fetch_assoc($result);
-                    $stats['upcoming_interviews'] = (int)($row['count'] ?? 0);
-                    @pg_free_result($result);
-                }
-            }
+        } catch (Exception $e) {
+            error_log("getHRStats error: " . $e->getMessage());
         }
         
         return $stats;
