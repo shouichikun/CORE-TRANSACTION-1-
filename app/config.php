@@ -1,16 +1,12 @@
 <?php
 // app/config.php - Main Configuration File with Supabase PostgreSQL
 
-// Find these lines (around line 7-9)
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
-
 // =============================================
 // ERROR REPORTING
 // =============================================
-error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING & ~E_DEPRECATED);
-ini_set('display_errors', 0);
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
 
 // =============================================
 // LOAD ENVIRONMENT VARIABLES FROM .env
@@ -34,6 +30,7 @@ if (file_exists($envFile)) {
         }
     }
 }
+
 // =============================================
 // SUPABASE POSTGRESQL DATABASE CONFIGURATION
 // =============================================
@@ -41,14 +38,27 @@ if (file_exists($envFile)) {
 define('PROJECT_REF', 'xpiylbzbkmymqigrvmgq');
 define('DB_HOST', 'aws-0-ap-northeast-1.pooler.supabase.com');
 define('DB_PORT', '6543');
-define('DB_USER', 'postgres.xpiylbzbkmymqigrvmgq');  // ✅ FIXED: Added project ref
+define('DB_USER', 'postgres.xpiylbzbkmymqigrvmgq');
 define('DB_PASS', 'CoreTransac1');
 define('DB_NAME', 'postgres');
 
-// ✅ FIXED: Try both connection methods
+// Check if PostgreSQL extension is loaded
+if (!function_exists('pg_connect')) {
+    die("<h2>PostgreSQL extension not loaded!</h2>
+         <p>Please enable pgsql in php.ini:</p>
+         <ol>
+             <li>Open <code>php.ini</code></li>
+             <li>Find and uncomment: <code>extension=pgsql</code></li>
+             <li>Find and uncomment: <code>extension=pdo_pgsql</code></li>
+             <li>Restart your web server</li>
+         </ol>");
+}
+
+// Try connection methods
 $conn = null;
 
 // Method 1: Transaction pooler (port 6543)
+error_log("🔌 Attempting Supabase connection via Transaction Pooler...");
 $conn = @pg_connect(sprintf(
     "host=%s port=%s dbname=%s user=%s password=%s sslmode=require",
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
@@ -56,6 +66,7 @@ $conn = @pg_connect(sprintf(
 
 // Method 2: Direct connection (port 5432)
 if (!$conn) {
+    error_log("🔌 Transaction Pooler failed, trying Direct connection...");
     $conn = @pg_connect(sprintf(
         "host=db.%s.supabase.co port=5432 dbname=postgres user=postgres password=%s sslmode=require",
         PROJECT_REF, DB_PASS
@@ -64,6 +75,7 @@ if (!$conn) {
 
 // Method 3: Session pooler
 if (!$conn) {
+    error_log("🔌 Direct connection failed, trying Session Pooler...");
     $conn = @pg_connect(sprintf(
         "host=%s.pooler.supabase.com port=5432 dbname=postgres user=%s password=%s sslmode=require",
         PROJECT_REF, DB_USER, DB_PASS
@@ -72,15 +84,29 @@ if (!$conn) {
 
 // Check connection
 if (!$conn) {
-    error_log("Supabase connection failed: " . @pg_last_error());
+    $error = function_exists('pg_last_error') ? @pg_last_error() : 'Unknown error';
+    error_log("❌ Supabase connection failed: " . $error);
+    error_log("   Host: " . DB_HOST);
+    error_log("   User: " . DB_USER);
+    error_log("   Database: " . DB_NAME);
     // Don't die - let application handle gracefully
+} else {
+    error_log("✅ Supabase connected successfully!");
+}
+
+// Set timezone
+date_default_timezone_set('Asia/Manila');
+
+// Set PostgreSQL timezone to match PHP
+if ($conn && function_exists('pg_query')) {
+    @pg_query($conn, "SET timezone = 'Asia/Manila'");
 }
 
 // =============================================
 // APPLICATION CONFIGURATION
 // =============================================
 define('SITE_NAME', 'ISMERS');
-define('SITE_URL', 'http://localhost/CT1/');
+define('SITE_URL', 'https://core1.greatsolomonmpservices.com/');
 define('APP_TIMEZONE', 'Asia/Manila');
 define('SESSION_TIMEOUT', 3600);
 define('PASSWORD_MIN_LENGTH', 8);
@@ -90,62 +116,6 @@ define('MAX_LOGIN_ATTEMPTS', 5);
 define('MAX_FILE_SIZE', 5 * 1024 * 1024);
 define('ALLOWED_FILE_TYPES', ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx']);
 
-// =============================================
-// CREATE DATABASE CONNECTION (PostgreSQL)
-// =============================================
-
-// Check if PostgreSQL extension is loaded
-if (!function_exists('pg_connect')) {
-    die("<h2>PostgreSQL extension not loaded!</h2>
-         <p>Please enable pgsql in php.ini:</p>
-         <ol>
-             <li>Open <code>C:\xampp\php\php.ini</code></li>
-             <li>Find and uncomment: <code>extension=pgsql</code></li>
-             <li>Find and uncomment: <code>extension=pdo_pgsql</code></li>
-             <li>Restart Apache</li>
-         </ol>");
-}
-
-// Try to connect using pooler
-$conn = @pg_connect(sprintf(
-    "host=%s port=%s dbname=%s user=%s password=%s",
-    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
-));
-
-// If connection fails, try direct connection
-if (!$conn) {
-    $conn = @pg_connect(sprintf(
-        "host=db.%s.supabase.co port=5432 dbname=postgres user=postgres password=%s",
-        PROJECT_REF, DB_PASS
-    ));
-}
-
-// If still fails, try with different pooler format
-if (!$conn) {
-    $conn = @pg_connect(sprintf(
-        "host=%s.pooler.supabase.com port=%s dbname=%s user=%s password=%s",
-        PROJECT_REF, DB_PORT, DB_NAME, DB_USER, DB_PASS
-    ));
-}
-
-// Check connection
-if (!$conn) {
-    $error = function_exists('pg_last_error') ? @pg_last_error() : 'Unknown error';
-    if (empty($error)) {
-        $error = 'Connection failed - could not connect to database server';
-    }
-    die("Connection failed. Please check your credentials.<br>
-         <strong>Project Ref:</strong> " . PROJECT_REF . "<br>
-         <strong>User:</strong> " . DB_USER . "<br>
-         <strong>Error:</strong> " . $error);
-}
-// Set timezone
-date_default_timezone_set(APP_TIMEZONE);
-
-// ✅ FIX: Set PostgreSQL timezone to match PHP
-if ($conn && function_exists('pg_query')) {
-    @pg_query($conn, "SET timezone = 'Asia/Manila'");
-}
 // =============================================
 // ✅ HELPER: PostgreSQL Boolean to PHP Boolean
 // =============================================
@@ -171,21 +141,23 @@ if (!function_exists('pgBoolToPhp')) {
 }
 
 // =============================================
-// ✅ FIXED: DATABASE HELPER FUNCTIONS (PostgreSQL)
+// ✅ DATABASE HELPER FUNCTIONS (PostgreSQL)
 // =============================================
 
 if (!function_exists('executeQuery')) {
     function executeQuery($sql, $params = []) {
         global $conn;
         if (!$conn) {
+            error_log("⚠️ executeQuery: No database connection");
             return false;
         }
         if (!is_array($params)) {
             $params = [];
         }
-        // ✅ FIXED: pg_query_params requires params to be an array
         $result = @pg_query_params($conn, $sql, $params);
         if (!$result) {
+            error_log("⚠️ Query failed: " . @pg_last_error($conn));
+            error_log("   SQL: " . $sql);
             return false;
         }
         return $result;
@@ -238,8 +210,6 @@ if (!function_exists('insertRecord')) {
             return false;
         }
         
-        // ✅ FIXED: Get last inserted ID
-        // Try to get LASTVAL() - works for tables with SERIAL primary key
         $idResult = @pg_query($conn, "SELECT LASTVAL() as id");
         $id = false;
         if ($idResult) {
@@ -330,7 +300,6 @@ if (!function_exists('escapeString')) {
 
 if (!function_exists('recordExists')) {
     function recordExists($table, $field, $value) {
-        // ✅ FIXED: Sanitize table and field names to prevent SQL injection
         if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $table) || 
             !preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $field)) {
             return false;
@@ -351,13 +320,14 @@ if (!function_exists('getAffectedRows')) {
 }
 
 // =============================================
-// ✅ FIXED: HR STATS FUNCTION
+// ✅ COMPLETE HR STATS FUNCTION
 // =============================================
 
 if (!function_exists('getHRStats')) {
     function getHRStats($hrId = null) {
         global $conn;
         
+        // Default stats
         $stats = [
             'total_jobs' => 0,
             'active_jobs' => 0,
@@ -369,40 +339,111 @@ if (!function_exists('getHRStats')) {
         ];
         
         if (!$conn) {
-            error_log("⚠️ getHRStats: No database connection");
+            error_log("⚠️ getHRStats: No database connection, returning default stats");
             return $stats;
         }
         
-        // ✅ FIXED: Use try-catch for all queries
         try {
-            // Check if tables exist
-            $tables = ['job_orders', 'applications', 'interview_schedules'];
-            foreach ($tables as $table) {
-                $check = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '" . pg_escape_string($conn, $table) . "')");
-                if ($check) {
-                    $row = @pg_fetch_row($check);
-                    @pg_free_result($check);
-                    if ($row && $row[0] === 't') {
-                        // Table exists, query it
-                        if ($table === 'job_orders') {
-                            $result = @pg_query($conn, "SELECT COUNT(*) FROM job_orders");
-                            if ($result) { $row = @pg_fetch_row($result); $stats['total_jobs'] = (int)($row[0] ?? 0); @pg_free_result($result); }
-                            
-                            $result = @pg_query($conn, "SELECT COUNT(*) FROM job_orders WHERE status IN ('open', 'ongoing')");
-                            if ($result) { $row = @pg_fetch_row($result); $stats['active_jobs'] = (int)($row[0] ?? 0); @pg_free_result($result); }
-                        }
-                        // Add other tables similarly
+            // =============================================
+            // 1. JOB ORDERS TABLE
+            // =============================================
+            $checkJobOrders = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'job_orders')");
+            if ($checkJobOrders) {
+                $row = @pg_fetch_row($checkJobOrders);
+                @pg_free_result($checkJobOrders);
+                if ($row && $row[0] === 't') {
+                    // Total jobs
+                    $result = @pg_query($conn, "SELECT COUNT(*) as count FROM job_orders");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['total_jobs'] = (int)($data['count'] ?? 0);
                     }
+                    
+                    // Active jobs
+                    $result = @pg_query($conn, "SELECT COUNT(*) as count FROM job_orders WHERE status IN ('open', 'ongoing')");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['active_jobs'] = (int)($data['count'] ?? 0);
+                    }
+                    
+                    // Pending review jobs
+                    $result = @pg_query($conn, "SELECT COUNT(*) as count FROM job_orders WHERE status = 'pending_review'");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['pending_review'] = (int)($data['count'] ?? 0);
+                    }
+                } else {
+                    error_log("⚠️ Table 'job_orders' does not exist in public schema");
                 }
             }
+            
+            // =============================================
+            // 2. APPLICATIONS TABLE
+            // =============================================
+            $checkApplications = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'applications')");
+            if ($checkApplications) {
+                $row = @pg_fetch_row($checkApplications);
+                @pg_free_result($checkApplications);
+                if ($row && $row[0] === 't') {
+                    // Total applications
+                    $result = @pg_query($conn, "SELECT COUNT(*) as count FROM applications");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['total_applications'] = (int)($data['count'] ?? 0);
+                    }
+                    
+                    // Pending applications
+                    $result = @pg_query($conn, "SELECT COUNT(*) as count FROM applications WHERE status = 'pending'");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['pending_applications'] = (int)($data['count'] ?? 0);
+                    }
+                    
+                    // Total applicants (distinct)
+                    $result = @pg_query($conn, "SELECT COUNT(DISTINCT applicant_id) as count FROM applications");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['total_applicants'] = (int)($data['count'] ?? 0);
+                    }
+                } else {
+                    error_log("⚠️ Table 'applications' does not exist in public schema");
+                }
+            }
+            
+            // =============================================
+            // 3. INTERVIEW SCHEDULES TABLE
+            // =============================================
+            $checkInterviews = @pg_query($conn, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'interview_schedules')");
+            if ($checkInterviews) {
+                $row = @pg_fetch_row($checkInterviews);
+                @pg_free_result($checkInterviews);
+                if ($row && $row[0] === 't') {
+                    // Upcoming interviews
+                    $result = @pg_query($conn, "SELECT COUNT(*) as count FROM interview_schedules WHERE status = 'scheduled' AND scheduled_date > NOW()");
+                    if ($result) {
+                        $data = @pg_fetch_assoc($result);
+                        @pg_free_result($result);
+                        $stats['upcoming_interviews'] = (int)($data['count'] ?? 0);
+                    }
+                } else {
+                    error_log("⚠️ Table 'interview_schedules' does not exist in public schema");
+                }
+            }
+            
         } catch (Exception $e) {
             error_log("getHRStats error: " . $e->getMessage());
         }
         
+        error_log("📊 HR Stats: " . json_encode($stats));
         return $stats;
     }
 }
-
 
 // =============================================
 // USER FUNCTIONS
@@ -850,7 +891,6 @@ if (!function_exists('scheduleInterview')) {
 if (!function_exists('updateApplicantHiredStatus')) {
     function updateApplicantHiredStatus($applicantId, $isHired = true) {
         if (!$applicantId) return false;
-        // ✅ FIXED: Use proper PostgreSQL boolean handling
         $hiredValue = $isHired ? 1 : 0;
         $sql = "UPDATE applicants SET is_hired = $1, hired_at = $2 WHERE id = $3";
         return updateRecord($sql, [
@@ -1230,8 +1270,6 @@ define('SMTP_PORT', 587);
 define('SMTP_SECURE', 'tls');
 define('MAIL_FROM', 'calicaarvy13@gmail.com');
 define('MAIL_FROM_NAME', 'ISMERS System');
-
-// ✅ ADD THESE MISSING CONSTANTS:
 define('MAIL_REPLY_TO', 'calicaarvy13@gmail.com');
 define('MAIL_REPLY_TO_NAME', 'ISMERS Support');
 
@@ -1284,6 +1322,7 @@ if (file_exists($permissionsFile)) {
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
+
 // =============================================
 // SESSION TIMEOUT CONFIGURATION
 // =============================================
