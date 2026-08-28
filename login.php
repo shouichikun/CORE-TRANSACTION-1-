@@ -5,6 +5,28 @@ session_start();
 // Include configuration
 require_once 'app/config.php';
 
+// =============================================
+// DEBUG LOGGING - Safe version (check if variables exist)
+// =============================================
+error_log("=== LOGIN PAGE LOAD ===");
+error_log("Session user_id: " . ($_SESSION['user_id'] ?? 'not set'));
+error_log("Session role: " . ($_SESSION['role'] ?? 'not set'));
+
+// Check database connection safely
+global $conn;
+if (!$conn) {
+    error_log("❌ Database connection is NULL in login.php");
+} else {
+    error_log("✅ Database connection exists in login.php");
+    $test = @pg_query($conn, "SELECT 1 as test");
+    if ($test) {
+        error_log("✅ Database query works in login.php");
+        pg_free_result($test);
+    } else {
+        error_log("❌ Database query failed in login.php: " . @pg_last_error($conn));
+    }
+}
+
 // If already logged in, redirect to dashboard
 if (isset($_SESSION['user_id'])) {
     $role = $_SESSION['role'] ?? 'applicant';
@@ -20,6 +42,8 @@ if (isset($_SESSION['user_id'])) {
     header('Location: ' . ($redirects[$role] ?? 'index.php'));
     exit;
 }
+
+// ... rest of your code continues ...
 
 // Load PHPMailer for verification email
 use PHPMailer\PHPMailer\PHPMailer;
