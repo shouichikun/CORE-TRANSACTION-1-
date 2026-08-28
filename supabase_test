@@ -1,0 +1,37 @@
+<?php
+
+echo "<h2>PHP Test</h2>";
+
+echo "PHP Version: " . PHP_VERSION . "<br>";
+
+echo "cURL: ";
+echo function_exists('curl_init') ? "ENABLED ✅" : "NOT AVAILABLE ❌";
+
+echo "<br><br>";
+
+$url = "https://YOUR_PROJECT.supabase.co/rest/v1/jobs?select=*";
+
+$ch = curl_init($url);
+
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_HTTPHEADER, [
+    "apikey: YOUR_SUPABASE_KEY",
+    "Authorization: Bearer YOUR_SUPABASE_KEY",
+    "Content-Type: application/json"
+]);
+
+$response = curl_exec($ch);
+
+if ($response === false) {
+    echo "<strong>cURL ERROR:</strong> ";
+    echo curl_error($ch);
+} else {
+    echo "<strong>Supabase Response:</strong><br>";
+    echo "<pre>";
+    print_r($response);
+    echo "</pre>";
+}
+
+echo "<br>HTTP Status: " . curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+curl_close($ch);
