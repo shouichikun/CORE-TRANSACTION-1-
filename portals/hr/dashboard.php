@@ -3,11 +3,11 @@
 session_start();
 
 // =============================================
-// ERROR REPORTING - DISABLE WARNINGS
+// ERROR REPORTING - ENABLE FOR DEBUGGING
 // =============================================
-error_reporting(0);
-ini_set('display_errors', 0);
-ini_set('display_startup_errors', 0);
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
 
 require_once '../../app/config.php';
 initSessionTimeout();
