@@ -539,6 +539,24 @@ $showSystemBadge = !empty($email) && isSystemAccount($email);
             transform: none;
         }
 
+           /* =============================================
+           LOGO STYLES
+           ============================================= */
+
+.auth-logo {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 1.25rem;
+}
+
+.auth-logo img {
+    width: 80px;
+    height: 80px;
+    object-fit: contain;
+    display: block;
+}
+
         /* =============================================
            FACE LOGIN DIVIDER - NEW STYLES
            ============================================= */
@@ -962,6 +980,12 @@ $showSystemBadge = !empty($email) && isSystemAccount($email);
 <div class="auth-wrapper">
     <div class="auth-card">
         <div class="auth-header">
+            <!-- ============================================= -->
+            <!-- LOGO - NO ANIMATION -->
+            <!-- ============================================= -->
+            <div class="auth-logo">
+                <img src="logo.png" alt="ISMERS Logo">
+            </div>
             <h1>Sign In</h1>
             <p>Access your account to continue.</p>
         </div>
