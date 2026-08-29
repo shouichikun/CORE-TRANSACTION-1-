@@ -1,22 +1,22 @@
 <?php
-// login_face.php - Face Authentication Login (Inside CT1 folder)
+// login_face.php - Face Authentication Login
 session_start();
 
 require_once 'app/config.php';
 
-// ✅ FIXED: Files are inside /CT1/ folder
+// Check if already logged in
 if (isset($_SESSION['user_id'])) {
     $role = $_SESSION['role'] ?? 'applicant';
     $redirects = [
-        'admin' => '/CT1/portals/admin/dashboard.php',
-        'hr_manager' => '/CT1/portals/hr/dashboard.php',
-        'recruiter' => '/CT1/portals/hr/dashboard.php',
-        'client' => '/CT1/portals/client/dashboard.php',
-        'applicant' => '/CT1/portals/applicant/dashboard.php',
-        'employee' => '/CT1/portals/employee/dashboard.php',
-        'supervisor' => '/CT1/portals/supervisor/dashboard.php'
+        'admin' => '/portals/admin/dashboard.php',
+        'hr_manager' => '/portals/hr/dashboard.php',
+        'recruiter' => '/portals/hr/dashboard.php',
+        'client' => '/portals/client/dashboard.php',
+        'applicant' => '/portals/applicant/dashboard.php',
+        'employee' => '/portals/employee/dashboard.php',
+        'supervisor' => '/portals/supervisor/dashboard.php'
     ];
-    header('Location: ' . ($redirects[$role] ?? '/CT1/index.php'));
+    header('Location: ' . ($redirects[$role] ?? '/index.php'));
     exit;
 }
 
@@ -128,7 +128,7 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
             height: 100%;
             object-fit: cover;
             display: block;
-            transform: scaleX(-1); /* Mirror for natural selfie view */
+            transform: scaleX(-1);
         }
 
         .face-video-wrapper canvas {
@@ -139,7 +139,7 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
             height: 100%;
             pointer-events: none;
             z-index: 2;
-            transform: scaleX(-1); /* Mirror to match video */
+            transform: scaleX(-1);
         }
 
         .face-video-wrapper .face-overlay {
@@ -1053,7 +1053,7 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
 
     <script>
         // =============================================
-        // STATE - CORRECT PATHS FOR CT1 FOLDER
+        // STATE - NO CT1 FOLDER (Supabase branch)
         // =============================================
         let video = null;
         let canvas = null;
@@ -1070,18 +1070,18 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
         let totalSteps = 3;
         let faceAuthInstance = null;
 
-        // ✅ API Base URL - with /CT1/ prefix
-        const API_BASE = '/CT1/api/face/';
+        // ✅ API Base URL - no /CT1/ prefix
+        const API_BASE = '/api/face/';
 
-        // ✅ Role redirects - with /CT1/ prefix
+        // ✅ Role redirects - no /CT1/ prefix
         const ROLE_REDIRECTS = {
-            'admin': '/CT1/portals/admin/dashboard.php',
-            'hr_manager': '/CT1/portals/hr/dashboard.php',
-            'recruiter': '/CT1/portals/hr/dashboard.php',
-            'client': '/CT1/portals/client/dashboard.php',
-            'applicant': '/CT1/portals/applicant/dashboard.php',
-            'employee': '/CT1/portals/employee/dashboard.php',
-            'supervisor': '/CT1/portals/supervisor/dashboard.php'
+            'admin': '/portals/admin/dashboard.php',
+            'hr_manager': '/portals/hr/dashboard.php',
+            'recruiter': '/portals/hr/dashboard.php',
+            'client': '/portals/client/dashboard.php',
+            'applicant': '/portals/applicant/dashboard.php',
+            'employee': '/portals/employee/dashboard.php',
+            'supervisor': '/portals/supervisor/dashboard.php'
         };
 
         // =============================================
@@ -1126,18 +1126,14 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
             currentStep = Math.min(step, totalSteps - 1);
             const config = stepConfigs[currentStep] || stepConfigs[0];
 
-            // Update icon with smooth transition
             const icon = document.getElementById('progressIcon');
             const symbol = document.getElementById('progressIconSymbol');
             
-            // Remove all classes and add new ones with animation
             icon.className = 'progress-icon';
-            // Trigger reflow for animation
             void icon.offsetWidth;
             icon.classList.add(config.iconClass);
             symbol.textContent = config.icon;
 
-            // Update text with fade effect
             const title = document.getElementById('progressTitle');
             const subtitle = document.getElementById('progressSubtitle');
             const tipText = document.getElementById('tipText');
@@ -1148,7 +1144,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
             tipText.textContent = config.tip;
             if (tipIcon) tipIcon.textContent = config.tipIcon || '💡';
 
-            // Update step indicators
             for (let i = 0; i < totalSteps; i++) {
                 const dot = document.getElementById('dot' + i);
                 const label = document.getElementById('label' + i);
@@ -1168,7 +1163,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                 }
             }
 
-            // Update actions
             const actions = document.getElementById('progressActions');
             if (currentStep === totalSteps - 1) {
                 actions.className = 'progress-actions btn-hidden';
@@ -1375,16 +1369,17 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
         }
 
         // =============================================
-        // FACE AUTH INITIALIZATION
+        // FACE AUTH INITIALIZATION - FIXED PATHS
         // =============================================
         async function initFaceAuth() {
             try {
                 video = document.getElementById('video');
                 canvas = document.getElementById('canvas');
                 
-                const modelPath = '/CT1/public/js';
-                    
-                debugLog('Loading face models from: ' + modelPath);
+                // ✅ FIXED: Use CDN for model files (no CT1 folder)
+                const modelPath = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+                
+                debugLog('Loading face models from CDN: ' + modelPath);
 
                 await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
                 await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
@@ -1413,7 +1408,7 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
         }
 
         // =============================================
-        // CAMERA - NON-MIRRORED
+        // CAMERA
         // =============================================
         async function startCamera() {
             try {
@@ -1425,7 +1420,7 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     video: {
                         width: { ideal: 640 },
                         height: { ideal: 480 },
-                        facingMode: 'environment' // Use environment/non-mirrored mode
+                        facingMode: 'environment'
                     },
                     audio: false
                 });
@@ -1792,11 +1787,11 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
         }
 
         // =============================================
-        // LOAD STORED DESCRIPTORS
+        // LOAD STORED DESCRIPTORS - FIXED PATH
         // =============================================
         async function loadStoredDescriptors() {
             try {
-                const url = '/CT1/api/face/get_descriptors.php';
+                const url = '/api/face/get_descriptors.php';
                 debugLog('Fetching descriptors from: ' + url, 'info');
                 
                 const response = await fetch(url);
@@ -1840,21 +1835,19 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
 
             isScanning = true;
             
-            // Show interactive progress modal - Step 1: Scanning
             showProgressModal(0);
             updateStatus('Scanning face...', 'scanning');
 
             try {
-                // STEP 1: SCANNING - Looking for face (fast)
                 await animateProgressToStep(0, 200);
                 
                 let detection = null;
                 let attempts = 0;
-                const maxAttempts = 15; // Reduced from 30 for speed
+                const maxAttempts = 15;
                 let faceFound = false;
 
                 while (attempts < maxAttempts) {
-                    await sleep(100); // Reduced from 150ms
+                    await sleep(100);
                     detection = await detectFace();
 
                     if (detection) {
@@ -1872,7 +1865,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     }
                     attempts++;
 
-                    // Update subtitle with progress (faster updates)
                     if (attempts % 2 === 0) {
                         const progress = Math.min(Math.floor(attempts / 2), 8);
                         document.getElementById('progressSubtitle').textContent = 
@@ -1884,7 +1876,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     document.getElementById('progressSubtitle').textContent = 'No face detected. Please try again.';
                     document.getElementById('tipText').textContent = 'Make sure your face is visible and well-lit';
                     
-                    // Show error state
                     const icon = document.getElementById('progressIcon');
                     const symbol = document.getElementById('progressIconSymbol');
                     icon.className = 'progress-icon error';
@@ -1903,7 +1894,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     return;
                 }
 
-                // STEP 2: MATCHING - Compare face (fast)
                 await animateProgressToStep(1, 200);
                 document.getElementById('progressSubtitle').textContent = 'Comparing with registered faces...';
                 document.getElementById('tipText').textContent = 'Searching for a match';
@@ -1936,7 +1926,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     debugLog(`Match found! Score: ${matchScore}%`, 'success');
                     updateStatus(`✅ Match! ${matchScore}%`, 'success');
                     
-                    // STEP 3: DONE - Authenticating (fast)
                     await animateProgressToStep(2, 200);
                     document.getElementById('progressSubtitle').textContent = `Match found! (${matchScore}% confidence)`;
                     document.getElementById('tipText').textContent = '🎉 Welcome back!';
@@ -1946,7 +1935,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     debugLog(`No match. Score: ${matchScore}%`, 'error');
                     updateStatus(`❌ No match (${matchScore}%)`, 'failed');
                     
-                    // Show error state
                     const icon = document.getElementById('progressIcon');
                     const symbol = document.getElementById('progressIconSymbol');
                     icon.className = 'progress-icon error';
@@ -1982,11 +1970,11 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
         }
 
         // =============================================
-        // PERFORM LOGIN - AUTO REDIRECT
+        // PERFORM LOGIN - FIXED PATH
         // =============================================
         async function performLogin(userId, matchScore) {
             try {
-                const response = await fetch('/CT1/api/face/login.php', {
+                const response = await fetch('/api/face/login.php', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -2012,26 +2000,22 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     showToast('✅ Login successful!', 'success');
                     debugLog('Login successful for user: ' + userId, 'success');
 
-                    // Already on Step 3 (Done) - just update subtitle
                     document.getElementById('progressSubtitle').textContent = 'Redirecting to your dashboard...';
                     document.getElementById('tipText').textContent = '🎉 You\'re all set!';
                     
-                    // Get redirect path
                     let redirectPath = data.redirect || '';
                     
                     if (!redirectPath) {
                         const role = data.user?.role || 'applicant';
-                        redirectPath = ROLE_REDIRECTS[role] || '/CT1/index.php';
+                        redirectPath = ROLE_REDIRECTS[role] || '/index.php';
                     }
                     
-                    if (!redirectPath.startsWith('/CT1/')) {
-                        redirectPath = redirectPath.replace(/^\//, '');
-                        redirectPath = '/CT1/' + redirectPath;
+                    if (!redirectPath.startsWith('/')) {
+                        redirectPath = '/' + redirectPath;
                     }
                     
                     debugLog('Redirecting to: ' + redirectPath, 'success');
                     
-                    // Auto redirect after short delay
                     setTimeout(() => {
                         window.location.replace(redirectPath);
                     }, 800);
@@ -2040,7 +2024,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                     showToast(data.error || 'Login failed. Please try again.', 'error');
                     debugLog('Login failed: ' + data.error, 'error');
                     
-                    // Show error in modal
                     const icon = document.getElementById('progressIcon');
                     const symbol = document.getElementById('progressIconSymbol');
                     icon.className = 'progress-icon error';
@@ -2067,7 +2050,6 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
                 showToast('Login failed. Please try again.', 'error');
                 console.error('Full login error:', error);
                 
-                // Show error in modal
                 const icon = document.getElementById('progressIcon');
                 const symbol = document.getElementById('progressIconSymbol');
                 icon.className = 'progress-icon error';
