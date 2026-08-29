@@ -891,6 +891,6 @@ $aiInsights = getAIJobInsights($job);
         
         console.log('📋 AI-Powered ISMERS Job Details loaded successfully!');
     </script>
-    <script src="/CT1/session_guard.js"></script>
+    <script src="/session_guard.js"></script>
 </body>
 </html>
