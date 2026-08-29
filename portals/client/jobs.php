@@ -198,7 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
     
 // =============================================
-// REQUEST JOB POST (Client -> HR)
+// REQUEST JOB POST (Client -> HR) - FIXED
 // =============================================
 if ($_POST['action'] === 'request_job') {
     // Validate inputs
@@ -290,7 +290,7 @@ if ($_POST['action'] === 'request_job') {
             $positions,
             $status,
             $urgency,
-            $application_deadline,  // ✅ Now NULL if empty
+            $application_deadline,
             $userId,
             $request_notes
         ];
@@ -298,28 +298,41 @@ if ($_POST['action'] === 'request_job') {
         $jobId = insertRecord($insertSql, $params);
         
         if ($jobId) {
-            $message = 'Job request submitted successfully! HR will review and approve it.';
-            $messageType = 'success';
+            // ✅ FIXED: Use session flash message instead of JavaScript
+            $_SESSION['flash'] = [
+                'type' => 'success',
+                'message' => '✅ Job request submitted successfully! HR will review it.'
+            ];
             
             if (function_exists('logActivity')) {
                 logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
                            'Client requested job: ' . $title . ' (Pending HR Review)');
             }
             
-            echo '<script>
-                showToast("✅ Job request submitted successfully! HR will review it.", "success");
-                setTimeout(function() { window.location.href = "jobs.php"; }, 2000);
-            </script>';
+            header('Location: jobs.php');
             exit;
         } else {
             $error = pg_last_error($conn) ?? 'Unknown database error';
             error_log("Job insertion failed: " . $error);
-            $message = 'Error submitting job request: ' . $error;
-            $messageType = 'error';
+            
+            // ✅ FIXED: Store error in session flash
+            $_SESSION['flash'] = [
+                'type' => 'error',
+                'message' => 'Error submitting job request: ' . $error
+            ];
+            
+            header('Location: jobs.php');
+            exit;
         }
     } else {
-        $message = implode('<br>', $errors);
-        $messageType = 'error';
+        // ✅ FIXED: Store errors in session flash
+        $_SESSION['flash'] = [
+            'type' => 'error',
+            'message' => implode('<br>', $errors)
+        ];
+        
+        header('Location: jobs.php');
+        exit;
     }
 }
     
@@ -339,18 +352,38 @@ if ($_POST['action'] === 'request_job') {
                 $updateResult = updateRecord($updateSql, [$jobId, $clientId]);
                 
                 if ($updateResult) {
-                    $message = 'Job request cancelled successfully.';
-                    $messageType = 'success';
+                    $_SESSION['flash'] = [
+                        'type' => 'success',
+                        'message' => 'Job request cancelled successfully.'
+                    ];
                 } else {
-                    $message = 'Error cancelling job request.';
-                    $messageType = 'error';
+                    $_SESSION['flash'] = [
+                        'type' => 'error',
+                        'message' => 'Error cancelling job request.'
+                    ];
                 }
             } else {
-                $message = 'Job request not found or already processed.';
-                $messageType = 'error';
+                $_SESSION['flash'] = [
+                    'type' => 'error',
+                    'message' => 'Job request not found or already processed.'
+                ];
             }
+            header('Location: jobs.php');
+            exit;
         }
     }
+}
+
+// =============================================
+// DISPLAY FLASH MESSAGES FROM SESSION
+// =============================================
+$flashMessage = '';
+$flashType = '';
+
+if (isset($_SESSION['flash'])) {
+    $flashMessage = $_SESSION['flash']['message'] ?? '';
+    $flashType = $_SESSION['flash']['type'] ?? 'info';
+    unset($_SESSION['flash']);
 }
 
 // =============================================
@@ -1809,8 +1842,26 @@ $userProfile = getUserProfileData($userId);
 
         <main class="main-scroll">
             <div class="container">
-                <!-- Toast Messages -->
-                <?php if ($message): ?>
+                <!-- Toast Messages - FIXED to show flash messages -->
+                <?php if ($flashMessage): ?>
+                    <div class="toast <?php echo $flashType; ?>" id="toastMessage">
+                        <span class="material-symbols-outlined">
+                            <?php echo $flashType === 'success' ? 'check_circle' : 'error'; ?>
+                        </span>
+                        <?php echo htmlspecialchars($flashMessage); ?>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            const toast = document.getElementById('toastMessage');
+                            if (toast) {
+                                toast.style.opacity = '0';
+                                toast.style.transform = 'translateY(-15px)';
+                                toast.style.transition = 'all 0.4s ease';
+                                setTimeout(() => toast.remove(), 400);
+                            }
+                        }, 4000);
+                    </script>
+                <?php elseif ($message): ?>
                     <div class="toast <?php echo $messageType; ?>" id="toastMessage">
                         <span class="material-symbols-outlined">
                             <?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?>
@@ -2348,6 +2399,31 @@ $userProfile = getUserProfileData($userId);
     <!-- ============================================= JAVASCRIPT ============================================= -->
     <script>
     // =============================================
+    // TOAST SYSTEM - MUST BE DEFINED FIRST
+    // =============================================
+    function showToast(message, type = 'info') {
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) existingToast.remove();
+        
+        // Also remove any AI success toast
+        const existingAiToast = document.querySelector('.ai-success-toast');
+        if (existingAiToast) existingAiToast.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-10px)';
+            toast.style.transition = 'all 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    // =============================================
     // 1. SIDEBAR TOGGLE
     // =============================================
     const sidebar = document.getElementById('appSidebar');
@@ -2497,31 +2573,6 @@ $userProfile = getUserProfileData($userId);
         }
     });
 
-  // =============================================
-// TOAST SYSTEM - MUST BE DEFINED FIRST
-// =============================================
-function showToast(message, type = 'info') {
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) existingToast.remove();
-    
-    // Also remove any AI success toast
-    const existingAiToast = document.querySelector('.ai-success-toast');
-    if (existingAiToast) existingAiToast.remove();
-
-    const toast = document.createElement('div');
-    toast.className = 'toast ' + type;
-    const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
-    toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
-    document.body.appendChild(toast);
-
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(-10px)';
-        toast.style.transition = 'all 0.3s ease';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
     // =============================================
     // 7. AI OPTIMISTIC MODAL
     // =============================================
@@ -2641,7 +2692,6 @@ function showToast(message, type = 'info') {
                 loading.style.display = 'none';
                 content.style.display = 'block';
                 
-                // ✅ FIXED: Small, subtle toast instead of big modal effect
                 showToast('✨ AI suggestions ready!', 'success');
             } else {
                 loading.style.display = 'none';
