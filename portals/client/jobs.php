@@ -197,128 +197,131 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
     
-    // =============================================
-    // REQUEST JOB POST (Client -> HR)
-    // =============================================
-    if ($_POST['action'] === 'request_job') {
-        // Validate inputs
-        $title = trim($_POST['title'] ?? '');
-        $description = trim($_POST['description'] ?? '');
-        $location = trim($_POST['location'] ?? '');
-        $job_type = trim($_POST['job_type'] ?? 'Full-time');
-        $salary_min = floatval($_POST['salary_min'] ?? 0);
-        $salary_max = floatval($_POST['salary_max'] ?? 0);
-        $positions = intval($_POST['positions'] ?? 1);
-        $experience_level = trim($_POST['experience_level'] ?? 'Entry');
-        $urgency = trim($_POST['urgency'] ?? 'medium');
-        $application_deadline = trim($_POST['application_deadline'] ?? '');
-        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : 0;
-        $request_notes = trim($_POST['request_notes'] ?? '');
+// =============================================
+// REQUEST JOB POST (Client -> HR)
+// =============================================
+if ($_POST['action'] === 'request_job') {
+    // Validate inputs
+    $title = trim($_POST['title'] ?? '');
+    $description = trim($_POST['description'] ?? '');
+    $location = trim($_POST['location'] ?? '');
+    $job_type = trim($_POST['job_type'] ?? 'Full-time');
+    $salary_min = floatval($_POST['salary_min'] ?? 0);
+    $salary_max = floatval($_POST['salary_max'] ?? 0);
+    $positions = intval($_POST['positions'] ?? 1);
+    $experience_level = trim($_POST['experience_level'] ?? 'Entry');
+    $urgency = trim($_POST['urgency'] ?? 'medium');
+    $application_deadline = trim($_POST['application_deadline'] ?? '');
+    $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : 0;
+    $request_notes = trim($_POST['request_notes'] ?? '');
+    
+    // ✅ FIX: Convert empty string to NULL for PostgreSQL date column
+    if ($application_deadline === '') {
+        $application_deadline = null;
+    }
+    
+    // Get selected items from checklists
+    $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
+    $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
+    $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
+    
+    // Get custom input values
+    $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
+    $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
+    $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
+    
+    // Merge selected + custom
+    $allSkills = array_merge($selectedSkills, array_filter($customSkills));
+    $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
+    $allExperience = array_merge($selectedExperience, array_filter($customExperience));
+    
+    // Convert to JSON for storage in skills_required
+    $skillsData = [
+        'skills' => array_values(array_unique($allSkills)),
+        'qualifications' => array_values(array_unique($allQualifications)),
+        'experience' => array_values(array_unique($allExperience))
+    ];
+    $skillsJson = json_encode($skillsData);
+    
+    // Build salary range string
+    $salaryRange = '';
+    if ($salary_min > 0 && $salary_max > 0) {
+        $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
+    } elseif ($salary_min > 0) {
+        $salaryRange = '₱' . number_format($salary_min) . ' and up';
+    } elseif ($salary_max > 0) {
+        $salaryRange = 'Up to ₱' . number_format($salary_max);
+    }
+    
+    // Validate required fields
+    $errors = [];
+    if (empty($title)) $errors[] = 'Job title is required.';
+    if (empty($description)) $errors[] = 'Job description is required.';
+    if (empty($location)) $errors[] = 'Location is required.';
+    if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
+    if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
+    if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
+    if (empty($agency_id) || $agency_id == 0) $errors[] = 'Please select a recruitment agency.';
+    
+    if (empty($errors)) {
+        $status = 'pending_review';
         
-        // Get selected items from checklists
-        $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
-        $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
-        $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
+        $insertSql = "INSERT INTO job_orders (
+            client_id, agency_id, title, description, skills_required, location, 
+            job_type, salary_min, salary_max, salary_range, experience_level, 
+            positions_available, status, urgency, application_deadline, 
+            created_by, request_notes, created_at, updated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW()
+        )";
         
-        // Get custom input values
-        $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
-        $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
-        $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
-        
-        // Merge selected + custom
-        $allSkills = array_merge($selectedSkills, array_filter($customSkills));
-        $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
-        $allExperience = array_merge($selectedExperience, array_filter($customExperience));
-        
-        // Convert to JSON for storage in skills_required
-        $skillsData = [
-            'skills' => array_values(array_unique($allSkills)),
-            'qualifications' => array_values(array_unique($allQualifications)),
-            'experience' => array_values(array_unique($allExperience))
+        $params = [
+            $clientId,
+            $agency_id,
+            $title,
+            $description,
+            $skillsJson,
+            $location,
+            $job_type,
+            $salary_min,
+            $salary_max,
+            $salaryRange,
+            $experience_level,
+            $positions,
+            $status,
+            $urgency,
+            $application_deadline,  // ✅ Now NULL if empty
+            $userId,
+            $request_notes
         ];
-        $skillsJson = json_encode($skillsData);
         
-        // Build salary range string
-        $salaryRange = '';
-        if ($salary_min > 0 && $salary_max > 0) {
-            $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
-        } elseif ($salary_min > 0) {
-            $salaryRange = '₱' . number_format($salary_min) . ' and up';
-        } elseif ($salary_max > 0) {
-            $salaryRange = 'Up to ₱' . number_format($salary_max);
-        }
+        $jobId = insertRecord($insertSql, $params);
         
-        // Validate required fields
-        $errors = [];
-        if (empty($title)) $errors[] = 'Job title is required.';
-        if (empty($description)) $errors[] = 'Job description is required.';
-        if (empty($location)) $errors[] = 'Location is required.';
-        if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
-        if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
-        if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
-        if (empty($agency_id) || $agency_id == 0) $errors[] = 'Please select a recruitment agency.';
-        
-        if (empty($errors)) {
-            $status = 'pending_review';
+        if ($jobId) {
+            $message = 'Job request submitted successfully! HR will review and approve it.';
+            $messageType = 'success';
             
-            // ✅ FIXED: Use correct PostgreSQL syntax - removed 'requested_by' column if it doesn't exist
-            $insertSql = "INSERT INTO job_orders (
-                client_id, agency_id, title, description, skills_required, location, 
-                job_type, salary_min, salary_max, salary_range, experience_level, 
-                positions_available, status, urgency, application_deadline, 
-                created_by, request_notes, created_at, updated_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW()
-            )";
-            
-            $params = [
-                $clientId,
-                $agency_id,
-                $title,
-                $description,
-                $skillsJson,
-                $location,
-                $job_type,
-                $salary_min,
-                $salary_max,
-                $salaryRange,
-                $experience_level,
-                $positions,
-                $status,
-                $urgency,
-                $application_deadline,
-                $userId,
-                $request_notes
-            ];
-            
-            $jobId = insertRecord($insertSql, $params);
-            
-            if ($jobId) {
-                $message = 'Job request submitted successfully! HR will review and approve it.';
-                $messageType = 'success';
-                
-                if (function_exists('logActivity')) {
-                    logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
-                               'Client requested job: ' . $title . ' (Pending HR Review)');
-                }
-                
-                // ✅ FIXED: Use JavaScript redirect instead of header refresh to avoid issues
-                echo '<script>
-                    showToast("✅ Job request submitted successfully! HR will review it.", "success");
-                    setTimeout(function() { window.location.href = "jobs.php"; }, 2000);
-                </script>';
-                exit;
-            } else {
-                $error = pg_last_error($conn) ?? 'Unknown database error';
-                error_log("Job insertion failed: " . $error);
-                $message = 'Error submitting job request: ' . $error;
-                $messageType = 'error';
+            if (function_exists('logActivity')) {
+                logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
+                           'Client requested job: ' . $title . ' (Pending HR Review)');
             }
+            
+            echo '<script>
+                showToast("✅ Job request submitted successfully! HR will review it.", "success");
+                setTimeout(function() { window.location.href = "jobs.php"; }, 2000);
+            </script>';
+            exit;
         } else {
-            $message = implode('<br>', $errors);
+            $error = pg_last_error($conn) ?? 'Unknown database error';
+            error_log("Job insertion failed: " . $error);
+            $message = 'Error submitting job request: ' . $error;
             $messageType = 'error';
         }
+    } else {
+        $message = implode('<br>', $errors);
+        $messageType = 'error';
     }
+}
     
     // =============================================
     // CANCEL JOB REQUEST
