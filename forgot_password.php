@@ -5,7 +5,7 @@ session_start();
 // Include configuration
 require_once 'app/config.php';
 
-// Load PHPMailer manually (since vendor/autoload.php doesn't exist)
+// Load PHPMailer manually
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 use PHPMailer\PHPMailer\Exception;
@@ -54,33 +54,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $token = bin2hex(random_bytes(32));
             $expires = date('Y-m-d H:i:s', strtotime('+1 hour'));
             
-            // Store token in password_resets table
-            $sql = "INSERT INTO password_resets (user_id, token, expires_at) VALUES (?, ?, ?)";
-            $result = insertRecord($sql, [$user['id'], $token, $expires], "iss");
+            // ✅ FIXED: Use PostgreSQL placeholders ($1, $2, $3)
+            $sql = "INSERT INTO password_resets (user_id, token, expires_at, is_used) VALUES ($1, $2, $3, false)";
+            $result = insertRecord($sql, [$user['id'], $token, $expires]);
             
             if ($result) {
-                // Log the activity
-                logActivity($user['id'], 'Password Reset Requested', 'password_resets', $result, 'Password reset requested for: ' . $email);
+                // Log the activity (try/catch to prevent failure)
+                try {
+                    if (function_exists('logActivity')) {
+                        logActivity($user['id'], 'Password Reset Requested', 'password_resets', $result, 'Password reset requested for: ' . $email);
+                    }
+                } catch (Exception $e) {
+                    // Ignore logging errors
+                }
                 
-                // Build reset link
+                // ✅ FIXED: Build reset link correctly
                 $resetLink = SITE_URL . 'reset_password.php?token=' . $token;
                 
                 // Send email using PHPMailer
-                $mailSent = sendResetEmail($email, $user['full_name'], $resetLink);
+                $mailSent = sendResetEmail($email, $user['full_name'] ?? $user['first_name'] ?? 'User', $resetLink);
                 
                 if ($mailSent) {
                     $success = 'A password reset link has been sent to your email address.';
-                    // Show debug link for testing
                     $showDebugLink = true;
                     $debugLink = $resetLink;
                 } else {
                     $error = 'Failed to send email. Please try again later.';
-                    // Show debug link so user can still reset
                     $showDebugLink = true;
                     $debugLink = $resetLink;
                 }
             } else {
                 $error = 'Failed to generate reset link. Please try again.';
+                error_log("Password reset insertion failed for user: " . $user['id']);
             }
         } else {
             // Don't reveal if email exists or not for security
@@ -97,7 +102,7 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
     
     try {
         // Server settings
-        $mail->SMTPDebug = SMTP::DEBUG_OFF; // Set to DEBUG_SERVER for testing
+        $mail->SMTPDebug = SMTP::DEBUG_OFF;
         $mail->isSMTP();
         $mail->Host       = SMTP_HOST;
         $mail->SMTPAuth   = true;
@@ -115,7 +120,6 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
         $mail->isHTML(true);
         $mail->Subject = 'Password Reset Request - ISMERS';
         
-        // Email body
         $mail->Body = '
         <!DOCTYPE html>
         <html>
@@ -161,7 +165,6 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
         </html>
         ';
         
-        // Plain text alternative
         $mail->AltBody = "Hello " . $toName . ",\n\n" .
                          "We received a request to reset the password for your ISMERS account.\n\n" .
                          "Click the link below to reset your password:\n" .
@@ -188,26 +191,21 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ==========================================================================
-           MATERIAL 3 DESIGN SYSTEM - FORGOT PASSWORD
-           ========================================================================== */
+        /* ========================================================================== */
         :root {
             --bg-main: #f5f3ff;
-            --bg-surface-low: #f5f2ff;
             --bg-surface: #ffffff;
-            --bg-surface-lowest: #ffffff;
+            --bg-surface-low: #f5f2ff;
             --bg-surface-bright: #f8f7ff;
             --text-main: #1b1b24;
             --text-muted: #464555;
             --text-dim: #777587;
-            --text-inverse: #ffffff;
             --outline: #777587;
             --outline-variant: #c7c4d8;
             --primary: #4f46e5;
             --primary-hover: #4338ca;
             --primary-container: #4f46e5;
             --on-primary: #ffffff;
-            --on-primary-container: #dad7ff;
             --error: #dc2626;
             --error-bg: #fef2f2;
             --error-border: #fecaca;
@@ -226,12 +224,7 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             --transition-smooth: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
             background: var(--bg-main);
@@ -245,12 +238,7 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ===== FORGOT PASSWORD CARD ===== */
-        .forgot-wrapper {
-            width: 100%;
-            max-width: 28rem;
-        }
-
+        .forgot-wrapper { width: 100%; max-width: 28rem; }
         .forgot-card {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -259,16 +247,9 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             border: 1px solid rgba(199, 196, 216, 0.3);
             transition: box-shadow var(--transition-smooth);
         }
+        .forgot-card:hover { box-shadow: 0 24px 30px -8px rgba(27, 27, 36, 0.12); }
 
-        .forgot-card:hover {
-            box-shadow: 0 24px 30px -8px rgba(27, 27, 36, 0.12);
-        }
-
-        /* ===== HEADER ===== */
-        .forgot-header {
-            margin-bottom: 2rem;
-        }
-
+        .forgot-header { margin-bottom: 2rem; }
         .forgot-header h1 {
             font-size: 1.5rem;
             font-weight: 700;
@@ -276,7 +257,6 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             letter-spacing: -0.025em;
             margin-bottom: 0.5rem;
         }
-
         .forgot-header p {
             font-size: 0.875rem;
             color: var(--text-muted);
@@ -284,7 +264,6 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             font-family: var(--font-label);
         }
 
-        /* ===== MESSAGES ===== */
         .message {
             padding: 0.75rem 1rem;
             border-radius: var(--radius-lg);
@@ -294,49 +273,15 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             align-items: center;
             gap: 0.625rem;
         }
+        .message.hidden { display: none; }
+        .message.success { background: var(--success-bg); border: 1px solid var(--success-border); color: var(--success); }
+        .message.error { background: var(--error-bg); border: 1px solid var(--error-border); color: var(--error); }
+        .message.debug { background: #fef3c7; border: 1px solid #fcd34d; color: #92400e; }
+        .message.debug a { color: var(--primary); word-break: break-all; }
+        .message.debug a:hover { text-decoration: underline; }
+        .message .material-symbols-outlined { font-size: 1.25rem; flex-shrink: 0; }
 
-        .message.hidden {
-            display: none;
-        }
-
-        .message.success {
-            background: var(--success-bg);
-            border: 1px solid var(--success-border);
-            color: var(--success);
-        }
-
-        .message.error {
-            background: var(--error-bg);
-            border: 1px solid var(--error-border);
-            color: var(--error);
-        }
-
-        .message .material-symbols-outlined {
-            font-size: 1.25rem;
-            flex-shrink: 0;
-        }
-
-        /* ===== DEBUG LINK ===== */
-        .message.debug {
-            background: #fef3c7;
-            border: 1px solid #fcd34d;
-            color: #92400e;
-        }
-
-        .message.debug a {
-            color: var(--primary);
-            word-break: break-all;
-        }
-
-        .message.debug a:hover {
-            text-decoration: underline;
-        }
-
-        /* ===== FORM ===== */
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-
+        .form-group { margin-bottom: 1.5rem; }
         .form-group label {
             display: block;
             font-size: 0.875rem;
@@ -346,10 +291,7 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             font-family: var(--font-label);
         }
 
-        .input-wrapper {
-            position: relative;
-        }
-
+        .input-wrapper { position: relative; }
         .input-wrapper .input-icon {
             position: absolute;
             left: 0.75rem;
@@ -358,11 +300,7 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             color: var(--outline);
             pointer-events: none;
         }
-
-        .input-wrapper .input-icon .material-symbols-outlined {
-            font-size: 1.25rem;
-        }
-
+        .input-wrapper .input-icon .material-symbols-outlined { font-size: 1.25rem; }
         .input-wrapper input {
             width: 100%;
             padding: 0.625rem 0.75rem 0.625rem 2.5rem;
@@ -375,18 +313,13 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
             box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }
-
         .input-wrapper input:focus {
             outline: none;
             border-color: var(--primary-container);
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
         }
+        .input-wrapper input::placeholder { color: var(--outline-variant); }
 
-        .input-wrapper input::placeholder {
-            color: var(--outline-variant);
-        }
-
-        /* ===== SUBMIT BUTTON ===== */
         .btn-submit {
             width: 100%;
             display: flex;
@@ -405,28 +338,14 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             transition: background var(--transition-fast), transform var(--transition-fast);
             box-shadow: 0 4px 14px rgba(79, 70, 229, 0.2);
         }
+        .btn-submit:hover { background: var(--primary-hover); transform: translateY(-1px); }
+        .btn-submit:active { transform: scale(0.98); }
+        .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-        .btn-submit:hover {
-            background: var(--primary-hover);
-            transform: translateY(-1px);
-        }
-
-        .btn-submit:active {
-            transform: scale(0.98);
-        }
-
-        .btn-submit:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        /* ===== BACK LINK ===== */
         .forgot-footer {
             margin-top: 1.5rem;
             text-align: center;
         }
-
         .forgot-footer a {
             display: inline-flex;
             align-items: center;
@@ -437,29 +356,16 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             transition: color var(--transition-fast);
             font-family: var(--font-label);
         }
-
-        .forgot-footer a:hover {
-            color: var(--primary-hover);
-        }
-
+        .forgot-footer a:hover { color: var(--primary-hover); }
         .forgot-footer a .material-symbols-outlined {
             font-size: 1.125rem;
             transition: transform var(--transition-fast);
         }
+        .forgot-footer a:hover .material-symbols-outlined { transform: translateX(-3px); }
 
-        .forgot-footer a:hover .material-symbols-outlined {
-            transform: translateX(-3px);
-        }
-
-        /* ===== RESPONSIVE ===== */
         @media (max-width: 480px) {
-            .forgot-card {
-                padding: 1.5rem;
-            }
-
-            .forgot-header h1 {
-                font-size: 1.25rem;
-            }
+            .forgot-card { padding: 1.5rem; }
+            .forgot-header h1 { font-size: 1.25rem; }
         }
     </style>
 </head>
@@ -468,25 +374,21 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
 <div class="forgot-wrapper">
     <div class="forgot-card">
 
-        <!-- Header -->
         <div class="forgot-header">
             <h1>Forgot your password?</h1>
             <p>No problem. Just let us know your email address and we will email you a password reset link that will allow you to choose a new one.</p>
         </div>
 
-        <!-- Success Message -->
         <div class="message success <?php echo empty($success) ? 'hidden' : ''; ?>" id="successMessage">
             <span class="material-symbols-outlined">check_circle</span>
             <span><?php echo htmlspecialchars($success); ?></span>
         </div>
 
-        <!-- Error Message -->
         <div class="message error <?php echo empty($error) ? 'hidden' : ''; ?>" id="errorMessage">
             <span class="material-symbols-outlined">error</span>
             <span id="errorText"><?php echo htmlspecialchars($error); ?></span>
         </div>
 
-        <!-- Debug Link (Shows reset link for testing) -->
         <?php if ($showDebugLink && !empty($debugLink)): ?>
             <div class="message debug">
                 <span class="material-symbols-outlined">link</span>
@@ -497,7 +399,6 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             </div>
         <?php endif; ?>
 
-        <!-- Form -->
         <form method="POST" action="" id="forgotForm">
             <div class="form-group">
                 <label for="email">Email</label>
@@ -515,7 +416,6 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
             </button>
         </form>
 
-        <!-- Back to Login -->
         <div class="forgot-footer">
             <a href="login.php">
                 <span class="material-symbols-outlined">arrow_back</span>
@@ -526,11 +426,7 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
     </div>
 </div>
 
-<!-- ===== JAVASCRIPT ===== -->
 <script>
-    // =============================================
-    // 1. FORM VALIDATION
-    // =============================================
     const form = document.getElementById('forgotForm');
     const submitBtn = document.getElementById('submitBtn');
     const errorMsg = document.getElementById('errorMessage');
@@ -540,24 +436,23 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
     form.addEventListener('submit', function(e) {
         const email = document.getElementById('email').value.trim();
 
-        // Hide previous messages
         errorMsg.classList.add('hidden');
         successMsg.classList.add('hidden');
 
-        // Validate
         if (!email) {
             e.preventDefault();
-            showError('Please enter your email address.');
+            errorText.textContent = 'Please enter your email address.';
+            errorMsg.classList.remove('hidden');
             return false;
         }
 
-        if (!isValidEmail(email)) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             e.preventDefault();
-            showError('Please enter a valid email address.');
+            errorText.textContent = 'Please enter a valid email address.';
+            errorMsg.classList.remove('hidden');
             return false;
         }
 
-        // Show loading state
         submitBtn.disabled = true;
         submitBtn.innerHTML = `
             <span>Sending...</span>
@@ -567,47 +462,17 @@ function sendResetEmail($toEmail, $toName, $resetLink) {
         return true;
     });
 
-    function showError(message) {
-        errorText.textContent = message;
-        errorMsg.classList.remove('hidden');
-    }
-
-    function isValidEmail(email) {
-        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    }
-
-    // =============================================
-    // 2. CLEAR ERROR ON INPUT
-    // =============================================
     document.getElementById('email').addEventListener('input', function() {
         errorMsg.classList.add('hidden');
         successMsg.classList.add('hidden');
     });
 
-    // =============================================
-    // 3. AUTO-HIDE SUCCESS MESSAGE
-    // =============================================
     if (!successMsg.classList.contains('hidden')) {
         setTimeout(function() {
             successMsg.classList.add('hidden');
         }, 8000);
     }
 
-    // =============================================
-    // 4. KEYBOARD SUPPORT
-    // =============================================
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-            const active = document.activeElement;
-            if (active && active.id === 'email') {
-                form.dispatchEvent(new Event('submit'));
-            }
-        }
-    });
-
-    // =============================================
-    // 5. SPIN ANIMATION
-    // =============================================
     const style = document.createElement('style');
     style.textContent = `
         @keyframes spin {
