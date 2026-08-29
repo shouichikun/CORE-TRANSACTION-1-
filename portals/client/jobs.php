@@ -212,7 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $experience_level = trim($_POST['experience_level'] ?? 'Entry');
         $urgency = trim($_POST['urgency'] ?? 'medium');
         $application_deadline = trim($_POST['application_deadline'] ?? '');
-        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : null;
+        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : 0;
         $request_notes = trim($_POST['request_notes'] ?? '');
         
         // Get selected items from checklists
@@ -256,19 +256,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
         if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
         if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
-        if (empty($agency_id)) $errors[] = 'Please select a recruitment agency.';
+        if (empty($agency_id) || $agency_id == 0) $errors[] = 'Please select a recruitment agency.';
         
         if (empty($errors)) {
             $status = 'pending_review';
             
-            // PostgreSQL INSERT using helper function
+            // ✅ FIXED: Use correct PostgreSQL syntax - removed 'requested_by' column if it doesn't exist
             $insertSql = "INSERT INTO job_orders (
                 client_id, agency_id, title, description, skills_required, location, 
                 job_type, salary_min, salary_max, salary_range, experience_level, 
                 positions_available, status, urgency, application_deadline, 
-                created_by, request_notes, requested_by, created_at, updated_at
+                created_by, request_notes, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW()
             )";
             
             $params = [
@@ -288,8 +288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $urgency,
                 $application_deadline,
                 $userId,
-                $request_notes,
-                $userId
+                $request_notes
             ];
             
             $jobId = insertRecord($insertSql, $params);
@@ -303,9 +302,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                                'Client requested job: ' . $title . ' (Pending HR Review)');
                 }
                 
-                header('Refresh: 2; URL=jobs.php');
+                // ✅ FIXED: Use JavaScript redirect instead of header refresh to avoid issues
+                echo '<script>
+                    showToast("✅ Job request submitted successfully! HR will review it.", "success");
+                    setTimeout(function() { window.location.href = "jobs.php"; }, 2000);
+                </script>';
+                exit;
             } else {
-                $message = 'Error submitting job request. Please try again.';
+                $error = pg_last_error($conn) ?? 'Unknown database error';
+                error_log("Job insertion failed: " . $error);
+                $message = 'Error submitting job request: ' . $error;
                 $messageType = 'error';
             }
         } else {
@@ -478,7 +484,61 @@ $userProfile = getUserProfileData($userId);
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
-        /* ===== ALL STYLES from your original ===== */
+        /* =============================================
+           TOAST - SMALL AND SUBTLE
+           ============================================= */
+        .toast {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            color: white;
+            font-weight: 500;
+            font-size: 0.8rem;
+            box-shadow: var(--shadow-lg);
+            z-index: 10000;
+            animation: slideDown 0.35s ease-out;
+            max-width: 320px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .toast .material-symbols-outlined { font-size: 1rem; }
+        .toast.success { background: #059669; }
+        .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-15px) scale(0.96); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* =============================================
+           AI SUCCESS INDICATOR - SMALL
+           ============================================= */
+        .ai-success-toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            padding: 0.4rem 0.8rem;
+            background: rgba(5, 150, 105, 0.95);
+            color: white;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            z-index: 9999;
+            animation: slideUp 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            box-shadow: 0 4px 15px rgba(5, 150, 105, 0.3);
+        }
+        .ai-success-toast .material-symbols-outlined { font-size: 0.9rem; }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -933,32 +993,6 @@ $userProfile = getUserProfileData($userId);
         .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.6875rem; border-radius: 0.375rem; }
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
-
-        .toast {
-            position: fixed;
-            top: 1rem;
-            right: 1rem;
-            padding: 0.75rem 1.25rem;
-            border-radius: 0.5rem;
-            color: white;
-            font-weight: 600;
-            font-size: 0.8125rem;
-            box-shadow: var(--shadow-lg);
-            z-index: 10000;
-            animation: slideDown 0.35s ease-out;
-            max-width: 380px;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-        .toast .material-symbols-outlined { font-size: 1.25rem; }
-        .toast.success { background: #059669; }
-        .toast.error { background: #dc2626; }
-        .toast.info { background: var(--primary); }
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-20px) scale(0.96); }
-            to { opacity: 1; transform: translateY(0) scale(1); }
-        }
 
         /* ===== JOB FILTERS ===== */
         .job-filters {
@@ -2461,7 +2495,32 @@ $userProfile = getUserProfileData($userId);
     });
 
     // =============================================
-    // 6. AI OPTIMISTIC MODAL
+    // 6. TOAST SYSTEM - SMALL AND SUBTLE
+    // =============================================
+    function showToast(message, type = 'info') {
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) existingToast.remove();
+        
+        // Also remove any AI success toast
+        const existingAiToast = document.querySelector('.ai-success-toast');
+        if (existingAiToast) existingAiToast.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-10px)';
+            toast.style.transition = 'all 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    // =============================================
+    // 7. AI OPTIMISTIC MODAL
     // =============================================
     let aiGeneratedData = null;
     let isGenerating = false;
@@ -2578,11 +2637,14 @@ $userProfile = getUserProfileData($userId);
                 
                 loading.style.display = 'none';
                 content.style.display = 'block';
-                showToast('✨ AI job data generated successfully!', 'success');
+                
+                // ✅ FIXED: Small, subtle toast instead of big modal effect
+                showToast('✨ AI suggestions ready!', 'success');
             } else {
                 loading.style.display = 'none';
                 document.getElementById('aiErrorMessage').textContent = data.error || 'Failed to generate job data.';
                 error.style.display = 'block';
+                showToast('❌ Failed to generate AI data', 'error');
             }
         })
         .catch(error => {
@@ -2594,7 +2656,7 @@ $userProfile = getUserProfileData($userId);
             loading.style.display = 'none';
             document.getElementById('aiErrorMessage').textContent = 'Network error. Please check your connection and try again.';
             error.style.display = 'block';
-            showToast('Error generating AI data. Please try again.', 'error');
+            showToast('❌ Network error. Please try again.', 'error');
         });
     }
 
@@ -2751,7 +2813,7 @@ $userProfile = getUserProfileData($userId);
         }
         
         dismissAIModal();
-        showToast('🎉 All AI suggestions applied to your job request!', 'success');
+        showToast('✅ AI suggestions applied successfully!', 'success');
     }
 
     function applyAIDescriptionOnly() {
@@ -2761,11 +2823,11 @@ $userProfile = getUserProfileData($userId);
         }
         document.getElementById('jobDescription').value = aiGeneratedData.description;
         dismissAIModal();
-        showToast('✅ Description applied successfully!', 'success');
+        showToast('✅ Description applied!', 'success');
     }
 
     // =============================================
-    // 7. CUSTOM CHECKLIST FUNCTIONS
+    // 8. CUSTOM CHECKLIST FUNCTIONS
     // =============================================
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -2935,7 +2997,7 @@ $userProfile = getUserProfileData($userId);
     });
 
     // =============================================
-    // 8. FORM VALIDATION
+    // 9. FORM VALIDATION
     // =============================================
     document.getElementById('postJobForm').addEventListener('submit', function(e) {
         const title = this.querySelector('input[name="title"]');
@@ -3015,7 +3077,7 @@ $userProfile = getUserProfileData($userId);
     });
 
     // =============================================
-    // 9. CANCEL JOB REQUEST
+    // 10. CANCEL JOB REQUEST
     // =============================================
     function cancelJobRequest(jobId) {
         if (!confirm('Are you sure you want to cancel this job request? This action cannot be undone.')) return;
@@ -3041,291 +3103,6 @@ $userProfile = getUserProfileData($userId);
     }
 
     // =============================================
-    // 10. TOAST SYSTEM
-    // =============================================
-    function showToast(message, type) {
-        type = type || 'info';
-        const existingToast = document.querySelector('.toast');
-        if (existingToast) existingToast.remove();
-
-        const toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
-        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
-        document.body.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(20px)';
-            toast.style.transition = 'all 0.4s ease';
-            setTimeout(() => toast.remove(), 400);
-        }, 3500);
-    }
-
-
-
-    // =============================================
-// SESSION ACTIVITY MONITOR
-// =============================================
-
-let sessionTimer = null;
-let warningShown = false;
-const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
-const WARNING_TIME = 60; // Show warning 60 seconds before timeout
-
-/**
- * Update session timer display
- */
-function updateSessionTimer() {
-    // Get remaining time from server
-    fetch('check_session.php')
-        .then(response => response.json())
-        .then(data => {
-            const remaining = data.remaining;
-            const minutes = Math.floor(remaining / 60);
-            const seconds = remaining % 60;
-            
-            // Update timer display if exists
-            const timerEl = document.getElementById('sessionTimer');
-            if (timerEl) {
-                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                
-                // Change color when running low
-                if (remaining < 60) {
-                    timerEl.style.color = '#dc2626';
-                    timerEl.style.fontWeight = 'bold';
-                } else if (remaining < 120) {
-                    timerEl.style.color = '#f59e0b';
-                } else {
-                    timerEl.style.color = '';
-                }
-            }
-            
-            // Show warning modal if session is about to expire
-            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
-                warningShown = true;
-                showSessionWarning(remaining);
-            }
-            
-            // If session expired, redirect
-            if (remaining <= 0) {
-                window.location.href = '../../login.php?timeout=1';
-            }
-        })
-        .catch(error => {
-            console.log('Session check error:', error);
-        });
-}
-
-/**
- * Show session expiration warning
- */
-function showSessionWarning(remaining) {
-    // Create modal if it doesn't exist
-    let modal = document.getElementById('sessionWarningModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'sessionWarningModal';
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(8px);
-            z-index: 99999;
-            display: none;
-            justify-content: center;
-            align-items: center;
-            padding: 1rem;
-        `;
-        
-        modal.innerHTML = `
-            <div style="
-                background: white;
-                border-radius: 1.5rem;
-                max-width: 440px;
-                width: 100%;
-                padding: 2rem;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                animation: slideUp 0.3s ease;
-                text-align: center;
-            ">
-                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
-                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
-                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
-                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
-                    Please click "Stay Logged In" to continue.
-                </p>
-                <div style="display: flex; gap: 0.75rem; justify-content: center;">
-                    <button onclick="extendSession()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #4f46e5;
-                        color: white;
-                        border: none;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Stay Logged In</button>
-                    <button onclick="logoutNow()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #fef2f2;
-                        color: #dc2626;
-                        border: 1px solid #fecaca;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Logout</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-    }
-    
-    // Show modal
-    modal.style.display = 'flex';
-    
-    // Update countdown inside modal
-    const warningTimer = document.getElementById('warningTimer');
-    if (warningTimer) {
-        let countdown = remaining;
-        const interval = setInterval(() => {
-            countdown--;
-            warningTimer.textContent = countdown;
-            if (countdown <= 0) {
-                clearInterval(interval);
-                window.location.href = '../../login.php?timeout=1';
-            }
-        }, 1000);
-        
-        // Store interval to clear it when extending
-        modal.dataset.interval = interval;
-    }
-}
-
-/**
- * Extend session (reset timer)
- */
-function extendSession() {
-    // Clear any existing warning interval
-    const modal = document.getElementById('sessionWarningModal');
-    if (modal && modal.dataset.interval) {
-        clearInterval(parseInt(modal.dataset.interval));
-    }
-    
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            if (modal) modal.style.display = 'none';
-            showToast('Session extended!', 'success');
-        }
-    })
-    .catch(error => {
-        console.log('Extend session error:', error);
-    });
-}
-
-/**
- * Logout immediately
- */
-function logoutNow() {
-    window.location.href = '../../logout.php';
-}
-
-/**
- * Show toast notification
- */
-function showToast(message, type = 'info') {
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) existingToast.remove();
-    
-    const toast = document.createElement('div');
-    toast.className = 'toast ' + type;
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 1.5rem;
-        right: 1.5rem;
-        padding: 0.875rem 1.5rem;
-        border-radius: 0.75rem;
-        color: white;
-        font-weight: 600;
-        font-size: 0.875rem;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-        z-index: 100000;
-        animation: slideUp 0.4s ease-out;
-    `;
-    if (type === 'success') toast.style.background = '#22c55e';
-    else if (type === 'error') toast.style.background = '#dc2626';
-    else toast.style.background = '#4f46e5';
-    
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(20px)';
-        toast.style.transition = 'all 0.4s ease';
-        setTimeout(() => toast.remove(), 400);
-    }, 3000);
-}
-
-// =============================================
-// TRACK USER ACTIVITY
-// =============================================
-
-let activityTimer = null;
-
-function resetActivityTimer() {
-    // Reset the server-side timer via AJAX
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reset' })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            // Hide warning modal if shown
-            const modal = document.getElementById('sessionWarningModal');
-            if (modal) modal.style.display = 'none';
-        }
-    })
-    .catch(error => console.log('Reset timer error:', error));
-}
-
-// Track user activity events
-const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
-activityEvents.forEach(event => {
-    document.addEventListener(event, () => {
-        resetActivityTimer();
-    });
-});
-
-// =============================================
-// START SESSION TIMER
-// =============================================
-
-// Update timer every 10 seconds
-sessionTimer = setInterval(updateSessionTimer, 10000);
-
-// Initial update
-updateSessionTimer();
-
-console.log('⏰ Session timeout: 7 minutes');
-console.log('🔄 Activity tracking enabled');
-
-    // =============================================
     // 11. RESPONSIVE HANDLING
     // =============================================
     let resizeTimer;
@@ -3349,10 +3126,35 @@ console.log('🔄 Activity tracking enabled');
         }, 250);
     });
 
+    // =============================================
+    // SESSION ACTIVITY MONITOR (Removed extend_session)
+    // =============================================
+    let sessionTimer = null;
+    let warningShown = false;
+    const SESSION_TIMEOUT = 420; // 7 minutes
+    const WARNING_TIME = 60;
+
+    function updateSessionTimer() {
+        // Just check if session is still valid via simple ping
+        fetch('check_session.php')
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.remaining !== undefined) {
+                    if (data.remaining <= 0) {
+                        window.location.href = '../../login.php?timeout=1';
+                    }
+                }
+            })
+            .catch(() => {});
+    }
+
+    // Simple session ping every 30 seconds
+    sessionTimer = setInterval(updateSessionTimer, 30000);
+
     console.log('📋 ISMERS Client Job Management with HR Approval Flow loaded successfully!');
     console.log('🤖 AI Features: Optimistic Modal, Dots Loading, Full Job Data Generation');
     console.log('📤 Job requests are sent to HR for review (status: pending_review)');
     </script>
-   <script src="/CT1/session_guard.js"></script>
+    <script src="/CT1/session_guard.js"></script>
 </body>
 </html>
