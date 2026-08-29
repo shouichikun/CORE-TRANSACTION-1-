@@ -1,49 +1,20 @@
 <?php
-// portals/client/agency_applications.php - Client Agency Application Management
+// portals/client/jobs.php - AI-Powered Client Job Management
 session_start();
 
 // ✅ Initialize session timeout
 require_once '../../app/config.php';
 initSessionTimeout();
-// =============================================
-// DEBUG: Enable error logging
-// =============================================
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('log_errors', 1);
-ini_set('error_log', 'C:/xampp1/php/logs/php_error_log');
-
-// Add after require_once - Check database connection
-global $conn;
-if (!$conn) {
-    die("Database connection failed!");
-}
-
-// =============================================
-// DEBUG FUNCTION: Log to file
-// =============================================
-function debugLog($message, $data = null) {
-    $logEntry = date('Y-m-d H:i:s') . " - " . $message;
-    if ($data !== null) {
-        $logEntry .= " - " . print_r($data, true);
-    }
-    error_log($logEntry);
-    file_put_contents('C:/xampp1/htdocs/CT1/debug_agency.log', $logEntry . PHP_EOL, FILE_APPEND);
-}
-
-debugLog("=== SCRIPT STARTED ===");
-debugLog("Session user_id: " . ($_SESSION['user_id'] ?? 'NOT SET'));
+require_once '../../app/ai/AiService.php';
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
-    debugLog("User not logged in, redirecting to login");
     header('Location: ../../login.php');
     exit;
 }
 
 // Check if user has client role
 if ($_SESSION['role'] !== 'client') {
-    debugLog("User role is not client: " . $_SESSION['role']);
     header('Location: ../../login.php');
     exit;
 }
@@ -53,21 +24,12 @@ $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
-debugLog("User ID: $userId, Role: $role");
-
 // =============================================
-// Define $userProfile properly
+// AI SERVICE INITIALIZATION
 // =============================================
-$userProfile = [
-    'first_name' => $firstName,
-    'last_name' => $_SESSION['last_name'] ?? '',
-    'email' => $email,
-    'profile_picture' => $_SESSION['profile_picture'] ?? null,
-    'initials' => strtoupper(substr($firstName, 0, 1)) . strtoupper(substr($_SESSION['last_name'] ?? '', 0, 1))
-];
+$aiService = new AiService();
 
-// Get client profile
-debugLog("Getting client profile for user_id: $userId");
+// Get client profile - PostgreSQL
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
@@ -76,16 +38,15 @@ $client = getRecord("
 ", [$userId]);
 
 if (!$client) {
-    debugLog("No client profile found, using defaults");
     $client = ['company_name' => 'Your Company', 'id' => 0];
-} else {
-    debugLog("Client found: ID={$client['id']}, Company={$client['company_name']}");
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
 $clientId = (int)($client['id'] ?? 0);
 
-// Get pending agency applications for sidebar badge
+// =============================================
+// GET PENDING AGENCY APPLICATIONS FOR SIDEBAR BADGE
+// =============================================
 $pendingAgencyCount = 0;
 if ($clientId > 0) {
     $pendingAgencies = getRecord("
@@ -93,263 +54,491 @@ if ($clientId > 0) {
         WHERE client_id = $1 AND status = 'pending'
     ", [$clientId]);
     $pendingAgencyCount = (int)($pendingAgencies['count'] ?? 0);
-    debugLog("Pending agency count: $pendingAgencyCount");
 }
 
-$message = '';
-$messageType = '';
+// =============================================
+// GET RECRUITMENT AGENCIES APPROVED FOR THIS CLIENT
+// =============================================
+$agencies = getRecords("
+    SELECT ra.*, 
+           (SELECT COUNT(*) FROM job_orders WHERE agency_id = ra.id) as job_count
+    FROM recruitment_agencies ra
+    WHERE ra.client_id = $1 
+    AND ra.is_active = true
+    AND ra.application_status = 'approved'
+    ORDER BY ra.agency_name ASC
+", [$clientId]);
 
-// Handle approval/rejection
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    debugLog("POST request received. Action: " . $_POST['action']);
-    debugLog("POST data: " . print_r($_POST, true));
-    
-    $applicationId = isset($_POST['application_id']) ? (int)$_POST['application_id'] : 0;
-    debugLog("Application ID: $applicationId, Client ID: $clientId");
-    
-    if ($_POST['action'] === 'approve_agency' && $applicationId > 0) {
-        debugLog("Processing APPROVE action for application ID: $applicationId");
-        
-        // Get the application
-        $application = getRecord("
-            SELECT a.*, u.first_name, u.last_name, u.email as user_email
-            FROM agency_applications a
-            JOIN users u ON a.user_id = u.id
-            WHERE a.id = $1 AND a.client_id = $2
-        ", [$applicationId, $clientId]);
-        
-        debugLog("Application data: " . print_r($application, true));
-        
-        if ($application) {
-            debugLog("Application found, checking if agency already exists for this client");
-            
-            // Check if agency already exists for THIS client only (composite key)
-            $existing = getRecord("
-                SELECT id FROM recruitment_agencies 
-                WHERE agency_code = $1 AND client_id = $2
-            ", [$application['agency_code'], $clientId]);
-            
-            if ($existing) {
-                debugLog("Agency already exists for this client with code: " . $application['agency_code']);
-                $message = 'This agency code is already approved for your company.';
-                $messageType = 'error';
-            } else {
-                // Check if this agency is already approved for other clients (just for info)
-                $otherClients = getRecord("
-                    SELECT COUNT(*) as count FROM recruitment_agencies 
-                    WHERE agency_code = $1 AND client_id != $2
-                ", [$application['agency_code'], $clientId]);
-                
-                if ($otherClients && $otherClients['count'] > 0) {
-                    debugLog("Agency already exists for " . $otherClients['count'] . " other client(s) - this is allowed");
-                }
-                
-                debugLog("No existing agency found for this client, proceeding with INSERT");
-                
-                beginTransaction();
-                debugLog("Transaction started");
-                
-                try {
-                    global $conn;
-                    
-                    $statusValue = 'approved';
-                    debugLog("Status value: " . $statusValue);
-                    
-                    // Build the INSERT query
-                    $insertSql = "INSERT INTO recruitment_agencies (
-                        user_id, client_id, agency_name, agency_code, contact_person, 
-                        contact_email, contact_phone, address, website, is_active, 
-                        application_status, approved_at, created_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::agency_status, $12, NOW(), NOW()) RETURNING id";
-                    
-                    // Build parameters
-                    $params = [
-                        (int)$application['user_id'],
-                        (int)$clientId,
-                        (string)$application['agency_name'],
-                        (string)$application['agency_code'],
-                        (string)$application['contact_person'],
-                        (string)$application['contact_email'],
-                        (string)($application['contact_phone'] ?? ''),
-                        (string)($application['address'] ?? ''),
-                        (string)($application['website'] ?? ''),
-                        true,  // is_active as boolean
-                        $statusValue,
-                        date('Y-m-d H:i:s')
-                    ];
-                    
-                    // =============================================
-                    // DEBUG: Log everything before execution
-                    // =============================================
-                    debugLog("=== SQL DEBUG ===");
-                    debugLog("SQL: " . $insertSql);
-                    debugLog("PARAMETERS:");
-                    debugLog("  user_id: " . $params[0] . " (type: " . gettype($params[0]) . ")");
-                    debugLog("  client_id: " . $params[1] . " (type: " . gettype($params[1]) . ")");
-                    debugLog("  agency_name: " . $params[2] . " (type: " . gettype($params[2]) . ")");
-                    debugLog("  agency_code: " . $params[3] . " (type: " . gettype($params[3]) . ")");
-                    debugLog("  contact_person: " . $params[4] . " (type: " . gettype($params[4]) . ")");
-                    debugLog("  contact_email: " . $params[5] . " (type: " . gettype($params[5]) . ")");
-                    debugLog("  contact_phone: " . $params[6] . " (type: " . gettype($params[6]) . ")");
-                    debugLog("  address: " . $params[7] . " (type: " . gettype($params[7]) . ")");
-                    debugLog("  website: " . $params[8] . " (type: " . gettype($params[8]) . ")");
-                    debugLog("  is_active: " . ($params[9] ? 'true' : 'false') . " (type: " . gettype($params[9]) . ")");
-                    debugLog("  application_status: " . $params[10] . " (type: " . gettype($params[10]) . ")");
-                    debugLog("  approved_at: " . $params[11] . " (type: " . gettype($params[11]) . ")");
-                    debugLog("=== END DEBUG ===");
-                    
-                    // Use the shared database helper so this page does not depend on raw pg_* calls.
-                    debugLog("Executing agency insert...");
-                    $agencyId = insertRecord($insertSql, $params);
+// =============================================
+// AI HELPER FUNCTIONS
+// =============================================
 
-                    if ($agencyId !== false) {
-                        debugLog("Agency insert succeeded. ID: " . $agencyId);
-                        
-                        if ($agencyId) {
-                            debugLog("Updating application status to approved...");
-                            $updateSql = "UPDATE agency_applications SET status = 'approved', reviewed_by = $1, reviewed_at = NOW() WHERE id = $2";
-                            $updateResult = updateRecord($updateSql, [(int)$userId, (int)$applicationId]);
-                            
-                            commitTransaction();
-                            debugLog("Transaction committed successfully");
-                            
-                            $message = 'Agency approved successfully! They can now handle your job postings.';
-                            $messageType = 'success';
-                            
-                            if (function_exists('logActivity')) {
-                                logActivity($userId, 'Approved Recruitment Agency', 'recruitment_agencies', $agencyId, 
-                                    'Approved agency: ' . $application['agency_name']);
-                                debugLog("Activity logged");
-                            }
-                        } else {
-                            rollbackTransaction();
-                            debugLog("ERROR: No agency ID returned from INSERT");
-                            $message = 'Error creating agency: Could not get agency ID.';
-                            $messageType = 'error';
-                        }
-                    } else {
-                        debugLog("Agency insert failed.");
-                        $message = 'Error creating agency. Please check the application details and try again.';
-                        $messageType = 'error';
-                        
-                        rollbackTransaction();
-                        debugLog("Transaction rolled back");
-                    }
-                } catch (Exception $e) {
-                    rollbackTransaction();
-                    debugLog("EXCEPTION CAUGHT: " . $e->getMessage());
-                    debugLog("Exception trace: " . $e->getTraceAsString());
-                    $message = 'Error: ' . $e->getMessage();
-                    $messageType = 'error';
+function generateAIJobData($jobTitle, $experience = 'Mid') {
+    global $aiService;
+    
+    try {
+        $result = $aiService->optimizeJobDescription([
+            'title' => $jobTitle,
+            'skills_required' => '',
+            'experience_level' => $experience
+        ]);
+        
+        if ($result && !isset($result['error'])) {
+            $skills = $result['suggested_skills'] ?? [];
+            
+            $qualifications = [];
+            $experienceList = [];
+            
+            switch ($experience) {
+                case 'Entry':
+                    $qualifications = ["Bachelor's Degree in related field", "Fresh Graduate / Entry Level", "0-1 year experience"];
+                    $experienceList = ['0-1 year experience', 'Fresh Graduate / Entry Level', 'Internship / OJT'];
+                    break;
+                case 'Junior':
+                    $qualifications = ["Bachelor's Degree in related field", "Junior Level", "1-3 years experience"];
+                    $experienceList = ['1-3 years experience', 'Junior Level'];
+                    break;
+                case 'Mid':
+                    $qualifications = ["Bachelor's Degree in related field", "Mid Level", "3-5 years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['3-5 years experience', 'Mid Level'];
+                    break;
+                case 'Senior':
+                    $qualifications = ["Bachelor's Degree in related field", "Master's Degree in related field", "Senior Level", "5-8 years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['5-8 years experience', 'Senior Level'];
+                    break;
+                case 'Lead':
+                    $qualifications = ["Bachelor's Degree in related field", "Master's Degree in related field", "Lead / Manager Level", "8+ years experience", "Professional Certification (e.g., PMP, AWS, etc.)"];
+                    $experienceList = ['8+ years experience', 'Lead / Manager Level'];
+                    break;
+                default:
+                    $qualifications = ["Bachelor's Degree in related field", "Mid Level", "3-5 years experience"];
+                    $experienceList = ['3-5 years experience', 'Mid Level'];
+            }
+            
+            $salaryMin = 0;
+            $salaryMax = 0;
+            
+            if (isset($result['salary_min']) && isset($result['salary_max'])) {
+                $salaryMin = intval($result['salary_min']);
+                $salaryMax = intval($result['salary_max']);
+            } elseif (isset($result['salary_range'])) {
+                $salaryRange = $result['salary_range'];
+                preg_match('/(\d{1,3}(?:,\d{3})*)\s*-\s*(\d{1,3}(?:,\d{3})*)/', $salaryRange, $matches);
+                if (count($matches) >= 3) {
+                    $salaryMin = intval(str_replace(',', '', $matches[1]));
+                    $salaryMax = intval(str_replace(',', '', $matches[2]));
                 }
             }
-        } else {
-            debugLog("Application not found for ID: $applicationId and client_id: $clientId");
-            $message = 'Application not found or does not belong to your company.';
-            $messageType = 'error';
+            
+            if ($salaryMin === 0 && $salaryMax === 0) {
+                switch ($experience) {
+                    case 'Entry':
+                        $salaryMin = 25000; $salaryMax = 35000; break;
+                    case 'Junior':
+                        $salaryMin = 30000; $salaryMax = 45000; break;
+                    case 'Mid':
+                        $salaryMin = 45000; $salaryMax = 70000; break;
+                    case 'Senior':
+                        $salaryMin = 65000; $salaryMax = 100000; break;
+                    case 'Lead':
+                        $salaryMin = 85000; $salaryMax = 130000; break;
+                    default:
+                        $salaryMin = 35000; $salaryMax = 55000;
+                }
+            }
+            
+            $salaryRangeDisplay = '₱' . number_format($salaryMin) . ' - ₱' . number_format($salaryMax);
+            
+            return [
+                'success' => true,
+                'description' => $result['improved_description'] ?? '',
+                'skills' => $skills,
+                'qualifications' => $qualifications,
+                'experience' => $experienceList,
+                'salary_min' => $salaryMin,
+                'salary_max' => $salaryMax,
+                'salary_range' => $salaryRangeDisplay,
+                'provider' => $result['provider'] ?? 'fallback'
+            ];
         }
+    } catch (Exception $e) {
+        error_log("AI Generation Error: " . $e->getMessage());
     }
     
-    if ($_POST['action'] === 'reject_agency' && $applicationId > 0) {
-        debugLog("Processing REJECT action for application ID: $applicationId");
-        
-        $rejectionReason = trim($_POST['rejection_reason'] ?? 'No reason provided');
-        debugLog("Rejection reason: " . $rejectionReason);
-        
-        $updateSql = "UPDATE agency_applications SET status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), rejection_reason = $2 WHERE id = $3 AND client_id = $4";
-        $updateResult = updateRecord($updateSql, [(int)$userId, (string)$rejectionReason, (int)$applicationId, (int)$clientId]);
-        
-        if ($updateResult) {
-            debugLog("Application rejected successfully");
-            $message = 'Application rejected successfully.';
-            $messageType = 'success';
-            
-            if (function_exists('logActivity')) {
-                logActivity($userId, 'Rejected Recruitment Agency', 'agency_applications', $applicationId, 
-                    'Rejected agency application');
-            }
-        } else {
-            debugLog("Failed to reject application");
-            $message = 'Error rejecting application. Please try again.';
-            $messageType = 'error';
-        }
-    }
-}
-
-// Get pending applications
-$pendingApplications = [];
-if ($clientId > 0) {
-    debugLog("Fetching pending applications for client_id: $clientId");
-    $pendingApplications = getRecords("
-        SELECT a.*, 
-               u.first_name || ' ' || u.last_name as applicant_name,
-               u.email as applicant_email,
-               u.profile_picture
-        FROM agency_applications a
-        JOIN users u ON a.user_id = u.id
-        WHERE a.client_id = $1 AND a.status = 'pending'
-        ORDER BY a.created_at ASC
-    ", [$clientId]);
-    debugLog("Found " . count($pendingApplications) . " pending applications");
-}
-
-// Get approved agencies
-$approvedAgencies = [];
-if ($clientId > 0) {
-    debugLog("Fetching approved agencies for client_id: $clientId");
-    $approvedAgencies = getRecords("
-        SELECT ra.*, 
-               u.first_name || ' ' || u.last_name as owner_name,
-               u.email as owner_email,
-               (SELECT COUNT(*) FROM job_orders WHERE agency_id = ra.id) as job_count
-        FROM recruitment_agencies ra
-        JOIN users u ON ra.user_id = u.id
-        WHERE ra.client_id = $1 AND ra.is_active = true AND ra.application_status = 'approved'
-        ORDER BY ra.agency_name ASC
-    ", [$clientId]);
-    debugLog("Found " . count($approvedAgencies) . " approved agencies");
-}
-
-// Get rejected applications
-$rejectedApplications = [];
-if ($clientId > 0) {
-    debugLog("Fetching rejected applications for client_id: $clientId");
-    $rejectedApplications = getRecords("
-        SELECT a.*, 
-               u.first_name || ' ' || u.last_name as applicant_name,
-               u.email as applicant_email
-        FROM agency_applications a
-        JOIN users u ON a.user_id = u.id
-        WHERE a.client_id = $1 AND a.status = 'rejected'
-        ORDER BY a.updated_at DESC
-        LIMIT 20
-    ", [$clientId]);
-    debugLog("Found " . count($rejectedApplications) . " rejected applications");
-}
-
-// Helper to safely get user profile for display
-function getSafeUserProfile($userId, $firstName, $email) {
     return [
-        'first_name' => $firstName,
-        'last_name' => $_SESSION['last_name'] ?? '',
-        'email' => $email,
-        'initials' => strtoupper(substr($firstName, 0, 1)) . strtoupper(substr($_SESSION['last_name'] ?? '', 0, 1)),
-        'avatar_url' => '../../assets/default-avatar.png'
+        'success' => false,
+        'error' => 'Could not generate AI job data'
     ];
 }
 
-$safeUserProfile = getSafeUserProfile($userId, $firstName, $email);
-debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
+// =============================================
+// HANDLE REQUESTS
+// =============================================
+$message = '';
+$messageType = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    
+    // =============================================
+    // GENERATE AI JOB DATA (AJAX)
+    // =============================================
+    if ($_POST['action'] === 'generate_ai_job') {
+        header('Content-Type: application/json');
+        $jobTitle = trim($_POST['job_title'] ?? '');
+        $experience = trim($_POST['experience'] ?? 'Mid');
+        
+        if (empty($jobTitle)) {
+            echo json_encode(['success' => false, 'error' => 'Job title is required']);
+            exit;
+        }
+        
+        $result = generateAIJobData($jobTitle, $experience);
+        echo json_encode($result);
+        exit;
+    }
+    
+    // =============================================
+    // REQUEST JOB POST (Client -> HR)
+    // =============================================
+    if ($_POST['action'] === 'request_job') {
+        // Validate inputs
+        $title = trim($_POST['title'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $location = trim($_POST['location'] ?? '');
+        $job_type = trim($_POST['job_type'] ?? 'Full-time');
+        $salary_min = floatval($_POST['salary_min'] ?? 0);
+        $salary_max = floatval($_POST['salary_max'] ?? 0);
+        $positions = intval($_POST['positions'] ?? 1);
+        $experience_level = trim($_POST['experience_level'] ?? 'Entry');
+        $urgency = trim($_POST['urgency'] ?? 'medium');
+        $application_deadline = trim($_POST['application_deadline'] ?? '');
+        $agency_id = isset($_POST['agency_id']) ? intval($_POST['agency_id']) : 0;
+        $request_notes = trim($_POST['request_notes'] ?? '');
+        
+        // Get selected items from checklists
+        $selectedSkills = isset($_POST['skills']) ? $_POST['skills'] : [];
+        $selectedQualifications = isset($_POST['qualifications']) ? $_POST['qualifications'] : [];
+        $selectedExperience = isset($_POST['experience']) ? $_POST['experience'] : [];
+        
+        // Get custom input values
+        $customSkills = array_map('trim', explode(',', $_POST['custom_skills'] ?? ''));
+        $customQualifications = array_map('trim', explode(',', $_POST['custom_qualifications'] ?? ''));
+        $customExperience = array_map('trim', explode(',', $_POST['custom_experience'] ?? ''));
+        
+        // Merge selected + custom
+        $allSkills = array_merge($selectedSkills, array_filter($customSkills));
+        $allQualifications = array_merge($selectedQualifications, array_filter($customQualifications));
+        $allExperience = array_merge($selectedExperience, array_filter($customExperience));
+        
+        // Convert to JSON for storage in skills_required
+        $skillsData = [
+            'skills' => array_values(array_unique($allSkills)),
+            'qualifications' => array_values(array_unique($allQualifications)),
+            'experience' => array_values(array_unique($allExperience))
+        ];
+        $skillsJson = json_encode($skillsData);
+        
+        // Build salary range string
+        $salaryRange = '';
+        if ($salary_min > 0 && $salary_max > 0) {
+            $salaryRange = '₱' . number_format($salary_min) . ' - ₱' . number_format($salary_max);
+        } elseif ($salary_min > 0) {
+            $salaryRange = '₱' . number_format($salary_min) . ' and up';
+        } elseif ($salary_max > 0) {
+            $salaryRange = 'Up to ₱' . number_format($salary_max);
+        }
+        
+        // Validate required fields
+        $errors = [];
+        if (empty($title)) $errors[] = 'Job title is required.';
+        if (empty($description)) $errors[] = 'Job description is required.';
+        if (empty($location)) $errors[] = 'Location is required.';
+        if (empty($allSkills)) $errors[] = 'Please add at least one skill.';
+        if (empty($allQualifications)) $errors[] = 'Please add at least one qualification.';
+        if (empty($allExperience)) $errors[] = 'Please add at least one experience requirement.';
+        if (empty($agency_id) || $agency_id == 0) $errors[] = 'Please select a recruitment agency.';
+        
+        if (empty($errors)) {
+            $status = 'pending_review';
+            
+            // ✅ FIXED: Use correct PostgreSQL syntax - removed 'requested_by' column if it doesn't exist
+            $insertSql = "INSERT INTO job_orders (
+                client_id, agency_id, title, description, skills_required, location, 
+                job_type, salary_min, salary_max, salary_range, experience_level, 
+                positions_available, status, urgency, application_deadline, 
+                created_by, request_notes, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW()
+            )";
+            
+            $params = [
+                $clientId,
+                $agency_id,
+                $title,
+                $description,
+                $skillsJson,
+                $location,
+                $job_type,
+                $salary_min,
+                $salary_max,
+                $salaryRange,
+                $experience_level,
+                $positions,
+                $status,
+                $urgency,
+                $application_deadline,
+                $userId,
+                $request_notes
+            ];
+            
+            $jobId = insertRecord($insertSql, $params);
+            
+            if ($jobId) {
+                $message = 'Job request submitted successfully! HR will review and approve it.';
+                $messageType = 'success';
+                
+                if (function_exists('logActivity')) {
+                    logActivity($userId, 'Job Request Submitted', 'job_orders', $jobId, 
+                               'Client requested job: ' . $title . ' (Pending HR Review)');
+                }
+                
+                // ✅ FIXED: Use JavaScript redirect instead of header refresh to avoid issues
+                echo '<script>
+                    showToast("✅ Job request submitted successfully! HR will review it.", "success");
+                    setTimeout(function() { window.location.href = "jobs.php"; }, 2000);
+                </script>';
+                exit;
+            } else {
+                $error = pg_last_error($conn) ?? 'Unknown database error';
+                error_log("Job insertion failed: " . $error);
+                $message = 'Error submitting job request: ' . $error;
+                $messageType = 'error';
+            }
+        } else {
+            $message = implode('<br>', $errors);
+            $messageType = 'error';
+        }
+    }
+    
+    // =============================================
+    // CANCEL JOB REQUEST
+    // =============================================
+    if ($_POST['action'] === 'cancel_request') {
+        $jobId = intval($_POST['job_id'] ?? 0);
+        
+        if ($jobId > 0) {
+            $checkSql = "SELECT id, status FROM job_orders WHERE id = $1 AND client_id = $2 AND status = 'pending_review'";
+            $check = getRecord($checkSql, [$jobId, $clientId]);
+            
+            if ($check) {
+                $updateSql = "UPDATE job_orders SET status = 'cancelled', updated_at = NOW() 
+                              WHERE id = $1 AND client_id = $2";
+                $updateResult = updateRecord($updateSql, [$jobId, $clientId]);
+                
+                if ($updateResult) {
+                    $message = 'Job request cancelled successfully.';
+                    $messageType = 'success';
+                } else {
+                    $message = 'Error cancelling job request.';
+                    $messageType = 'error';
+                }
+            } else {
+                $message = 'Job request not found or already processed.';
+                $messageType = 'error';
+            }
+        }
+    }
+}
+
+// =============================================
+// GET ALL JOBS FOR THIS CLIENT - PostgreSQL
+// =============================================
+$jobsSql = "SELECT j.*, 
+            a.agency_name, a.agency_code,
+            (SELECT COUNT(*) FROM applications WHERE job_order_id = j.id) as applicant_count
+            FROM job_orders j
+            LEFT JOIN recruitment_agencies a ON j.agency_id = a.id
+            WHERE j.client_id = $1
+            ORDER BY j.created_at DESC";
+
+$jobs = getRecords($jobsSql, [$clientId]);
+
+// Get status counts for filter
+$statusCounts = [
+    'all' => count($jobs),
+    'open' => 0,
+    'ongoing' => 0,
+    'closed' => 0,
+    'on_hold' => 0,
+    'draft' => 0,
+    'filled' => 0,
+    'cancelled' => 0,
+    'pending_review' => 0,
+    'rejected' => 0
+];
+
+foreach ($jobs as $job) {
+    $status = $job['status'] ?? 'closed';
+    if (isset($statusCounts[$status])) {
+        $statusCounts[$status]++;
+    }
+}
+
+// Get filter parameter
+$filter = $_GET['filter'] ?? 'all';
+$filteredJobs = $jobs;
+if ($filter !== 'all') {
+    $filteredJobs = array_filter($jobs, function($job) use ($filter) {
+        return ($job['status'] ?? '') === $filter;
+    });
+}
+
+// Get job types for dropdown
+$jobTypes = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship'];
+$experienceLevels = ['Entry', 'Junior', 'Mid', 'Senior', 'Lead'];
+$urgencyLevels = ['low', 'medium', 'high'];
+
+// Pre-defined suggestions
+$suggestedSkills = [
+    'PHP', 'JavaScript', 'Python', 'Java', 'C#', 'C++', 'Ruby', 'Go', 'Rust', 'Swift', 'Kotlin',
+    'TypeScript', 'HTML5', 'CSS3', 'Sass', 'LESS', 'SQL',
+    'Laravel', 'React', 'Vue.js', 'Angular', 'Node.js', 'Express.js', 'Django', 'Flask', 'Spring Boot',
+    'MySQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Firebase',
+    'AWS', 'Azure', 'Google Cloud', 'Docker', 'Kubernetes', 'Git', 'GitHub', 'GitLab',
+    'Figma', 'Adobe XD', 'Photoshop', 'UI Design', 'UX Design',
+    'Project Management', 'Agile', 'Scrum', 'Leadership', 'Communication',
+    'REST APIs', 'GraphQL', 'Microservices', 'Serverless',
+    'English', 'Filipino', 'Spanish', 'Mandarin', 'Japanese'
+];
+
+$suggestedQualifications = [
+    "Bachelor's Degree in Computer Science",
+    "Bachelor's Degree in Information Technology",
+    "Bachelor's Degree in Engineering",
+    "Bachelor's Degree in Business Administration",
+    "Master's Degree in related field",
+    "PhD in related field",
+    "Professional Certification (e.g., PMP, AWS, etc.)",
+    "Licensed Professional",
+    "Vocational / Technical Certificate",
+    "High School Diploma",
+    "College Graduate",
+    "Post Graduate Studies"
+];
+
+$suggestedExperience = [
+    '0-1 year experience',
+    '1-3 years experience',
+    '3-5 years experience',
+    '5-8 years experience',
+    '8+ years experience',
+    'Fresh Graduate / Entry Level',
+    'Junior Level',
+    'Mid Level',
+    'Senior Level',
+    'Lead / Manager Level',
+    'Executive Level',
+    'Internship / OJT'
+];
+
+sort($suggestedSkills);
+sort($suggestedQualifications);
+sort($suggestedExperience);
+
+// =============================================
+// JOB STATUS LABELS & BADGES
+// =============================================
+$statusLabels = [
+    'open' => 'Open',
+    'ongoing' => 'Ongoing',
+    'closed' => 'Closed',
+    'on_hold' => 'On Hold',
+    'draft' => 'Draft',
+    'filled' => 'Filled',
+    'cancelled' => 'Cancelled',
+    'pending_review' => 'Pending Review',
+    'rejected' => 'Rejected'
+];
+
+$statusBadges = [
+    'open' => 'badge-open',
+    'ongoing' => 'badge-ongoing',
+    'closed' => 'badge-closed',
+    'on_hold' => 'badge-on_hold',
+    'draft' => 'badge-draft',
+    'filled' => 'badge-filled',
+    'cancelled' => 'badge-cancelled',
+    'pending_review' => 'badge-pending',
+    'rejected' => 'badge-rejected'
+];
+
+// Get user profile for sidebar
+$userProfile = getUserProfileData($userId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Recruitment Agencies - ISMERS Client</title>
+    <title>My Jobs - ISMERS Client</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
+        /* =============================================
+           TOAST - SMALL AND SUBTLE
+           ============================================= */
+        .toast {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            color: white;
+            font-weight: 500;
+            font-size: 0.8rem;
+            box-shadow: var(--shadow-lg);
+            z-index: 10000;
+            animation: slideDown 0.35s ease-out;
+            max-width: 320px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .toast .material-symbols-outlined { font-size: 1rem; }
+        .toast.success { background: #059669; }
+        .toast.error { background: #dc2626; }
+        .toast.info { background: var(--primary); }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-15px) scale(0.96); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* =============================================
+           AI SUCCESS INDICATOR - SMALL
+           ============================================= */
+        .ai-success-toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            padding: 0.4rem 0.8rem;
+            background: rgba(5, 150, 105, 0.95);
+            color: white;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            z-index: 9999;
+            animation: slideUp 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            box-shadow: 0 4px 15px rgba(5, 150, 105, 0.3);
+        }
+        .ai-success-toast .material-symbols-outlined { font-size: 0.9rem; }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -359,6 +548,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             --primary: #4f46e5;
             --primary-container: #eef0ff;
             --on-primary-fixed-variant: #4338ca;
+            --slate-100: #f1f5f9;
             --slate-200: #e2e8f0;
             --slate-300: #cbd5e1;
             --slate-400: #94a3b8;
@@ -382,6 +572,37 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             --sidebar-collapsed: 72px;
         }
 
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
+
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.55rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .ai-badge .material-symbols-outlined { font-size: 0.7rem; }
+
+        .btn-ai {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+        }
+        .btn-ai:hover {
+            background: linear-gradient(135deg, #6d28d9, #4338ca);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        .btn-ai .material-symbols-outlined { font-size: 1rem; }
+        .btn-ai:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: var(--font-sans);
@@ -396,6 +617,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
         }
         a { text-decoration: none; color: inherit; }
 
+        /* ===== SIDEBAR ===== */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -467,7 +689,8 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             font-size: 1.5rem;
             flex-shrink: 0;
         }
-        .sidebar-brand-text { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); }
+        .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
+        .sidebar-brand-text { font-size: 1rem; font-weight: 700; color: var(--slate-900); letter-spacing: -0.025em; }
         .sidebar-brand-category { font-size: 0.7rem; font-weight: 500; color: var(--slate-500); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.1rem; }
         .sidebar-nav { flex: 1; overflow-y: auto; padding: 1rem 0.75rem; }
         .sidebar-nav .nav-label {
@@ -527,6 +750,13 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .sidebar-footer .user-card .avatar img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .sidebar-footer .user-card .user-info .user-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .sidebar-footer .user-card .user-info .user-email { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
@@ -538,7 +768,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             bottom: 0;
             left: 0;
             right: 0;
-            background: rgba(0,0,0,0.3);
+            background: rgba(0, 0, 0, 0.3);
             backdrop-filter: blur(4px);
             z-index: 40;
             opacity: 0;
@@ -557,7 +787,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
         .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
 
         .top-header {
-            background: rgba(255,255,255,0.85);
+            background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(12px);
             border-bottom: 1px solid var(--slate-200);
             display: flex;
@@ -627,6 +857,13 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             font-weight: 700;
             font-size: 0.75rem;
             flex-shrink: 0;
+            object-fit: cover;
+        }
+        .profile-dropdown-toggle .avatar-small img {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
         .profile-dropdown-toggle .profile-name { font-size: 0.8125rem; font-weight: 600; color: var(--text-on-surface); }
         .profile-dropdown-toggle .profile-role { font-size: 0.6875rem; color: var(--text-on-surface-variant); font-weight: 400; }
@@ -651,7 +888,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
         }
         .profile-dropdown-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
         .profile-dropdown-menu .dropdown-header {
-            padding: 0.25rem 0.75rem;
+            padding: 0.25rem 0.75rem 0.25rem;
             font-size: 0.6rem;
             font-weight: 600;
             text-transform: uppercase;
@@ -676,13 +913,17 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             font-family: var(--font-sans);
         }
         .profile-dropdown-menu .dropdown-item:hover { background: var(--bg-surface-low); color: var(--primary); }
+        .profile-dropdown-menu .dropdown-item .material-symbols-outlined { font-size: 1.125rem; color: var(--text-on-surface-variant); }
+        .profile-dropdown-menu .dropdown-item:hover .material-symbols-outlined { color: var(--primary); }
         .profile-dropdown-menu .dropdown-item.danger { color: #dc2626; }
         .profile-dropdown-menu .dropdown-item.danger:hover { background: #fef2f2; color: #dc2626; }
+        .profile-dropdown-menu .dropdown-item.danger .material-symbols-outlined { color: #dc2626; }
         .profile-dropdown-menu .dropdown-divider { height: 1px; background: var(--slate-200); margin: 0.25rem 0.5rem; }
 
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
+        /* ===== BREADCRUMB ===== */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -708,6 +949,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             font-size: 0.75rem;
             font-weight: 600;
         }
+        .breadcrumb-view .material-symbols-outlined { font-size: 1rem; }
         .breadcrumb-meta { font-size: 0.75rem; color: var(--text-on-surface-variant); }
 
         .page-header {
@@ -736,7 +978,7 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             font-family: var(--font-sans);
             text-decoration: none;
         }
-        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79,70,229,0.15); }
+        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79, 70, 229, 0.15); }
         .btn-primary:hover { background: var(--on-primary-fixed-variant); transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
         .btn-outline:hover { background: var(--primary-container); }
@@ -746,368 +988,196 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
         .btn-success:hover { background: #047857; transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-danger { background: #dc2626; color: white; }
         .btn-danger:hover { background: #b91c1c; transform: translateY(-1px); box-shadow: var(--shadow-md); }
+        .btn-warning { background: #d97706; color: white; }
+        .btn-warning:hover { background: #b45309; transform: translateY(-1px); box-shadow: var(--shadow-md); }
         .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.6875rem; border-radius: 0.375rem; }
         .btn .material-symbols-outlined { font-size: 1.125rem; }
         .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        .toast {
-            position: fixed;
-            top: 1rem;
-            right: 1rem;
-            padding: 0.75rem 1.25rem;
-            border-radius: 0.5rem;
-            color: white;
-            font-weight: 600;
-            font-size: 0.8125rem;
-            box-shadow: var(--shadow-lg);
-            z-index: 10000;
-            animation: slideDown 0.35s ease-out;
-            max-width: 380px;
+        /* ===== JOB FILTERS ===== */
+        .job-filters {
             display: flex;
-            align-items: center;
-            gap: 0.75rem;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
         }
-        .toast.success { background: #059669; }
-        .toast.error { background: #dc2626; }
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-20px) scale(0.96); }
-            to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-
-        .card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
+        .filter-btn {
+            padding: 0.375rem 1rem;
+            border-radius: var(--radius-full);
             border: 1px solid var(--slate-200);
-            box-shadow: var(--shadow-xs);
-            overflow: hidden;
-            margin-bottom: 1.5rem;
+            background: var(--bg-surface);
+            color: var(--text-on-surface-variant);
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: var(--font-sans);
+            text-decoration: none;
         }
-        .card-header {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--slate-200);
+        .filter-btn:hover { background: var(--bg-surface-low); border-color: var(--slate-300); }
+        .filter-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .filter-btn .count {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 0.05rem 0.5rem;
+            border-radius: var(--radius-full);
+            font-size: 0.6rem;
+            margin-left: 0.25rem;
+        }
+        .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
+
+        /* ===== JOB CARDS ===== */
+        .job-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--slate-200);
+            padding: 1.25rem;
+            margin-bottom: 0.75rem;
+            transition: all var(--transition-fast);
+            box-shadow: var(--shadow-xs);
+        }
+        .job-card:hover { box-shadow: var(--shadow-md); border-color: var(--slate-300); }
+        .job-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .job-card-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text-on-surface);
+        }
+        .job-card-title a { color: var(--primary); }
+        .job-card-title a:hover { text-decoration: underline; }
+        .job-card-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 0.375rem;
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+        }
+        .job-card-meta .material-symbols-outlined { font-size: 0.875rem; vertical-align: middle; }
+        .job-card-description {
+            margin-top: 0.625rem;
+            font-size: 0.8125rem;
+            color: var(--text-on-surface-variant);
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .job-card-skills {
+            margin-top: 0.625rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        .job-card-skills .skill-tag {
+            padding: 0.0625rem 0.5rem;
+            background: var(--bg-surface-low);
+            border: 1px solid var(--slate-200);
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            color: var(--text-on-surface-variant);
+        }
+        .job-card-footer {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            margin-top: 0.875rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--slate-100);
             flex-wrap: wrap;
             gap: 0.5rem;
-            background: var(--bg-surface-low);
         }
-        .card-header h3 {
-            font-size: 0.9375rem;
-            font-weight: 700;
+        .job-card-stats {
             display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .card-header h3 .material-symbols-outlined { font-size: 1.125rem; color: var(--primary); }
-        .card-header .count-badge {
+            gap: 1.25rem;
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
-            background: var(--bg-surface);
-            padding: 0.125rem 0.625rem;
-            border-radius: var(--radius-full);
-            border: 1px solid var(--slate-200);
         }
-        .card-body { padding: 1.5rem; }
-
-        .badge {
-            display: inline-block;
-            padding: 0.125rem 0.75rem;
-            border-radius: var(--radius-full);
-            font-size: 0.625rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .badge-pending { background: #fef3c7; color: #92400e; }
-        .badge-approved { background: #d1fae5; color: #065f46; }
-        .badge-rejected { background: #fecaca; color: #991b1b; }
-
-        .application-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-lg);
-            border: 1px solid var(--slate-200);
-            padding: 1rem 1.25rem;
-            margin-bottom: 0.75rem;
-            transition: all var(--transition-fast);
-        }
-        .application-card:hover { box-shadow: var(--shadow-sm); border-color: var(--slate-300); }
-        .application-card:last-child { margin-bottom: 0; }
-
-        .app-row {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: flex-start;
-            gap: 0.75rem;
-        }
-        .app-row .app-main { flex: 1; min-width: 200px; }
-        .app-row .app-main .app-name {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        .app-row .app-main .app-name .agency-name {
-            font-weight: 700;
-            font-size: 1rem;
-            color: var(--text-on-surface);
-        }
-        .app-row .app-main .app-name .agency-code {
+        .job-card-stats span { display: flex; align-items: center; gap: 0.25rem; }
+        .job-card-stats .material-symbols-outlined { font-size: 0.875rem; }
+        .job-card-actions { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+        .job-card-agency {
             font-size: 0.6875rem;
             color: var(--text-on-surface-variant);
             background: var(--bg-surface-low);
             padding: 0.0625rem 0.5rem;
             border-radius: var(--radius-full);
-            border: 1px solid var(--slate-200);
-        }
-        .app-row .app-main .app-submitter {
-            font-size: 0.8125rem;
-            color: var(--text-on-surface-variant);
-            margin-top: 0.125rem;
-        }
-        .app-row .app-main .app-submitter strong { color: var(--text-on-surface); }
-
-        .app-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 0.5rem 1.5rem;
-            margin-top: 0.75rem;
-            padding-top: 0.75rem;
-            border-top: 1px solid var(--slate-100);
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-        .app-grid .grid-item {
-            display: flex;
-            align-items: center;
-            gap: 0.375rem;
-            padding: 0.125rem 0;
-        }
-        .app-grid .grid-item .material-symbols-outlined {
-            font-size: 0.875rem;
-            color: var(--text-on-surface-variant);
-            flex-shrink: 0;
-        }
-
-        .app-specialization {
-            margin-top: 0.5rem;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-            background: var(--bg-surface-low);
-            padding: 0.25rem 0.75rem;
-            border-radius: var(--radius-full);
             display: inline-flex;
             align-items: center;
             gap: 0.25rem;
-            border: 1px solid var(--slate-200);
         }
-        .app-specialization .material-symbols-outlined { font-size: 0.875rem; color: var(--primary); }
+        .job-card-agency .material-symbols-outlined { font-size: 0.875rem; color: var(--primary); }
 
-        .app-actions {
-            display: flex;
-            gap: 0.5rem;
-            margin-top: 0.75rem;
-            padding-top: 0.75rem;
-            border-top: 1px solid var(--slate-200);
-            flex-wrap: wrap;
-        }
-
-        .agency-card {
-            background: var(--bg-surface);
-            border-radius: var(--radius-lg);
-            border: 1px solid var(--slate-200);
-            padding: 0.75rem 1.25rem;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            flex-wrap: wrap;
-            transition: all var(--transition-fast);
-        }
-        .agency-card:hover { box-shadow: var(--shadow-sm); border-color: var(--slate-300); }
-        .agency-card:last-child { margin-bottom: 0; }
-
-        .agency-card .agency-icon {
-            width: 2.5rem;
-            height: 2.5rem;
-            border-radius: 0.5rem;
-            background: var(--primary-container);
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 1rem;
-            flex-shrink: 0;
-        }
-        .agency-card .agency-icon img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            border-radius: 0.5rem;
-        }
-
-        .agency-card .agency-details { flex: 1; min-width: 150px; }
-        .agency-card .agency-details .agency-name { font-weight: 700; font-size: 0.9375rem; }
-        .agency-card .agency-details .agency-meta {
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .agency-card .agency-stats {
-            display: flex;
-            gap: 1rem;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-        .agency-card .agency-stats span {
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-            background: var(--bg-surface-low);
-            padding: 0.125rem 0.5rem;
+        .badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
             border-radius: var(--radius-full);
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
         }
-
-        .rejected-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.5rem 0.25rem;
-            border-bottom: 1px solid var(--slate-100);
-        }
-        .rejected-item:last-child { border-bottom: none; }
-        .rejected-item .rejected-info {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        .rejected-item .rejected-info .agency-name { font-weight: 600; font-size: 0.875rem; }
-        .rejected-item .rejected-info .agency-code { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
-        .rejected-item .rejected-info .rejected-meta { font-size: 0.6875rem; color: var(--text-on-surface-variant); }
+        .badge-open { background: #dbeafe; color: #2563eb; }
+        .badge-ongoing { background: #e0e7ff; color: #4f46e5; }
+        .badge-closed { background: #f1f5f9; color: #64748b; }
+        .badge-on_hold { background: #fef3c7; color: #d97706; }
+        .badge-draft { background: #f1f5f9; color: #64748b; }
+        .badge-filled { background: #d1fae5; color: #059669; }
+        .badge-cancelled { background: #fecaca; color: #dc2626; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-rejected { background: #fecaca; color: #dc2626; }
 
         .empty-state {
             text-align: center;
-            padding: 2.5rem 1.5rem;
+            padding: 3rem 1.5rem;
             color: var(--text-on-surface-variant);
         }
         .empty-state .material-symbols-outlined {
-            font-size: 3.5rem;
+            font-size: 4rem;
             color: var(--slate-300);
             display: block;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.75rem;
         }
-        .empty-state h4 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); }
-        .empty-state p { font-size: 0.875rem; }
+        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state p { font-size: 0.8125rem; }
 
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.5);
-            backdrop-filter: blur(4px);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-            padding: 1rem;
-        }
-        .modal-overlay.active { display: flex; }
-        .modal {
-            background: var(--bg-surface);
-            border-radius: var(--radius-2xl);
-            max-width: 480px;
-            width: 100%;
-            max-height: 90vh;
-            overflow: hidden;
-            box-shadow: var(--shadow-xl);
-            animation: modalSlideUp 0.3s ease-out;
-            display: flex;
-            flex-direction: column;
-        }
-        @keyframes modalSlideUp {
-            from { opacity: 0; transform: translateY(20px) scale(0.96); }
-            to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        .modal-header {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--slate-200);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-shrink: 0;
-        }
-        .modal-header h2 {
-            font-size: 1.125rem;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .modal-header h2 .material-symbols-outlined { font-size: 1.25rem; color: var(--primary); }
-        .modal-close {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 0.375rem;
-            border-radius: 0.375rem;
-            color: var(--text-on-surface-variant);
-            transition: all var(--transition-fast);
-        }
-        .modal-close:hover { background: var(--bg-surface-low); }
-        .modal-close .material-symbols-outlined { font-size: 1.25rem; }
-        .modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; }
-        .modal-footer {
-            padding: 0.875rem 1.5rem;
-            border-top: 1px solid var(--slate-200);
-            display: flex;
-            justify-content: flex-end;
-            gap: 0.625rem;
-            flex-shrink: 0;
-            flex-wrap: wrap;
-        }
-
-        .modal-confirm-icon {
-            width: 3.5rem;
-            height: 3.5rem;
+        .avatar-img {
+            width: 2.25rem;
+            height: 2.25rem;
             border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+            background: var(--primary-container);
+        }
+        .avatar-small {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
             display: flex;
             align-items: center;
             justify-content: center;
-            margin: 0 auto 1rem;
-            font-size: 2rem;
-        }
-        .modal-confirm-icon.success { background: #d1fae5; color: #059669; }
-        .modal-confirm-icon.danger { background: #fecaca; color: #dc2626; }
-        .modal-confirm-icon.warning { background: #fef3c7; color: #d97706; }
-
-        .form-group { margin-bottom: 1rem; }
-        .form-group:last-child { margin-bottom: 0; }
-        .form-group label {
-            display: block;
+            font-weight: 700;
             font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--text-on-surface);
-            margin-bottom: 0.25rem;
+            flex-shrink: 0;
+            object-fit: cover;
         }
-        .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
-        .form-control {
+        .avatar-small img {
             width: 100%;
-            padding: 0.5rem 0.75rem;
-            border: 1.5px solid var(--slate-200);
-            border-radius: 0.5rem;
-            font-size: 0.8125rem;
-            font-family: var(--font-sans);
-            transition: all var(--transition-fast);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
         }
-        .form-control:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
-        }
-        textarea.form-control { resize: vertical; min-height: 60px; }
 
         @media (min-width: 768px) {
             .sidebar-backdrop { display: none !important; }
@@ -1116,8 +1186,6 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
             .main-wrapper { margin-left: var(--sidebar-width); }
             .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: inline; }
         }
         @media (max-width: 767px) {
             .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
@@ -1127,677 +1195,1966 @@ debugLog("=== SCRIPT COMPLETED SUCCESSFULLY ===");
             .main-wrapper { margin-left: 0 !important; }
             .main-scroll { padding: 1rem; }
             .top-header-left .separator { display: none; }
-            .profile-dropdown-toggle .profile-name,
-            .profile-dropdown-toggle .profile-role { display: none; }
-            .app-grid { grid-template-columns: repeat(2, 1fr); }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
         }
         @media (max-width: 480px) {
             .main-scroll { padding: 0.75rem; }
             .breadcrumb-bar { padding: 0.625rem 0.875rem; }
             .page-header h1 { font-size: 1.25rem; }
-            .app-grid { grid-template-columns: 1fr; gap: 0.25rem; }
-            .application-card { padding: 0.75rem; }
-            .agency-card { flex-direction: column; align-items: stretch; text-align: center; }
-            .agency-card .agency-stats { justify-content: center; }
-            .app-row .app-main .app-name { flex-direction: column; align-items: flex-start; }
-            .app-actions { justify-content: center; }
-            .rejected-item { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+            .job-card-header { flex-direction: column; }
+            .job-card-footer { flex-direction: column; align-items: stretch; }
+            .job-card-actions { justify-content: flex-start; }
         }
         .main-scroll::-webkit-scrollbar { width: 5px; }
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
-    </style>
-</head>
-<body>
 
-    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-
-    <aside class="dashboard-sidebar" id="appSidebar">
-        <div class="sidebar-brand-card">
-            <span class="sidebar-brand-icon"><span class="material-symbols-outlined">business</span></span>
-            <p class="sidebar-brand-text">ISMERS</p>
-            <p class="sidebar-brand-category">Client Portal</p>
-        </div>
-        <nav class="sidebar-nav">
-            <div class="nav-label">Main</div>
-            <a href="dashboard.php" class="sidebar-main-link"><span class="material-symbols-outlined">dashboard</span><span class="nav-text">Dashboard</span></a>
-            <a href="jobs.php" class="sidebar-main-link"><span class="material-symbols-outlined">work</span><span class="nav-text">My Jobs</span></a>
-            <a href="agency_application.php" class="sidebar-main-link active"><span class="material-symbols-outlined">apartment</span><span class="nav-text">Agencies</span><?php if ($pendingAgencyCount > 0): ?><span class="nav-badge"><?php echo $pendingAgencyCount; ?></span><?php endif; ?></a>
-            <a href="employees.php" class="sidebar-main-link"><span class="material-symbols-outlined">people</span><span class="nav-text">Employees</span></a>
-            <a href="applicants.php" class="sidebar-main-link"><span class="material-symbols-outlined">person_search</span><span class="nav-text">Applicants</span></a>
-            <a href="invoices.php" class="sidebar-main-link"><span class="material-symbols-outlined">receipt</span><span class="nav-text">Invoices</span></a>
-            <a href="support.php" class="sidebar-main-link"><span class="material-symbols-outlined">support_agent</span><span class="nav-text">Support</span></a>
-            <a href="reports.php" class="sidebar-main-link"><span class="material-symbols-outlined">analytics</span><span class="nav-text">Reports</span></a>
-            <div class="nav-label" style="margin-top:1rem;">Settings</div>
-            <a href="profile.php" class="sidebar-main-link"><span class="material-symbols-outlined">person</span><span class="nav-text">Profile</span></a>
-            <a href="settings.php" class="sidebar-main-link"><span class="material-symbols-outlined">settings</span><span class="nav-text">Settings</span></a>
-        </nav>
-        <div class="sidebar-footer">
-            <div class="user-card">
-                <span class="avatar"><?php echo htmlspecialchars($safeUserProfile['initials']); ?></span>
-                <div class="user-info">
-                    <div class="user-name"><?php echo htmlspecialchars($safeUserProfile['first_name']); ?></div>
-                    <div class="user-email"><?php echo htmlspecialchars($safeUserProfile['email']); ?></div>
-                </div>
-            </div>
-        </div>
-    </aside>
-
-    <div class="main-wrapper" id="mainWrapper">
-        <header class="top-header">
-            <div class="top-header-left">
-                <button class="mobile-menu-btn" id="mobileMenuBtn"><span class="material-symbols-outlined">menu</span></button>
-                <button class="sidebar-toggle-btn" id="sidebarToggleBtn"><span class="material-symbols-outlined">chevron_left</span></button>
-                <span class="separator">|</span>
-                <span style="font-weight:600; font-size:0.875rem;">Agencies</span>
-            </div>
-            <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileToggle">
-                    <span class="avatar-small"><?php echo htmlspecialchars($safeUserProfile['initials']); ?></span>
-                    <span class="profile-name"><?php echo htmlspecialchars($safeUserProfile['first_name']); ?></span>
-                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
-                    <span class="material-symbols-outlined">expand_more</span>
-                </button>
-                <div class="profile-dropdown-menu" id="profileMenu">
-                    <div class="dropdown-header">Account</div>
-                    <div class="dropdown-divider"></div>
-                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'"><span class="material-symbols-outlined">logout</span>Logout</button>
-                </div>
-            </div>
-        </header>
-
-        <main class="main-scroll">
-            <div class="container">
-                <?php if ($message): ?>
-                    <div class="toast <?php echo $messageType; ?>" id="toastMessage">
-                        <span class="material-symbols-outlined"><?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?></span>
-                        <?php echo htmlspecialchars($message); ?>
-                    </div>
-                    <script>setTimeout(() => { const toast = document.getElementById('toastMessage'); if (toast) toast.remove(); }, 5000);</script>
-                <?php endif; ?>
-
-                <div class="breadcrumb-bar">
-                    <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">apartment</span>
-                        <span>Recruitment Agencies</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
-                        <span style="font-weight:400; color:var(--text-on-surface-variant);"><?php echo htmlspecialchars($companyName); ?></span>
-                    </div>
-                    <span class="breadcrumb-meta">
-                        <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">pending</span>
-                        <?php echo count($pendingApplications); ?> pending ·
-                        <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">check_circle</span>
-                        <?php echo count($approvedAgencies); ?> active
-                    </span>
-                </div>
-
-                <div class="page-header">
-                    <div>
-                        <h1><span class="material-symbols-outlined">apartment</span> Recruitment Agencies</h1>
-                        <p>Review and manage agency applications for your company</p>
-                    </div>
-                </div>
-
-                <!-- Pending Applications -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3><span class="material-symbols-outlined">pending</span> Pending Applications</h3>
-                        <span class="count-badge"><?php echo count($pendingApplications); ?> pending</span>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($pendingApplications)): ?>
-                            <div class="empty-state">
-                                <span class="material-symbols-outlined">check_circle</span>
-                                <h4>All Caught Up</h4>
-                                <p>No pending agency applications to review.</p>
-                            </div>
-                        <?php else: ?>
-                            <?php foreach ($pendingApplications as $app): ?>
-                                <div class="application-card">
-                                    <div class="app-row">
-                                        <div class="app-main">
-                                            <div class="app-name">
-                                                <span class="agency-name"><?php echo htmlspecialchars($app['agency_name']); ?></span>
-                                                <span class="agency-code"><?php echo htmlspecialchars($app['agency_code']); ?></span>
-                                            </div>
-                                            <div class="app-submitter">
-                                                Submitted by: <strong><?php echo htmlspecialchars($app['applicant_name']); ?></strong>
-                                                <span style="color:var(--text-on-surface-variant);">(<?php echo htmlspecialchars($app['applicant_email']); ?>)</span>
-                                            </div>
-                                        </div>
-                                        <span class="badge badge-pending">Pending</span>
-                                    </div>
-
-                                    <div class="app-grid">
-                                        <div class="grid-item"><span class="material-symbols-outlined">person</span><?php echo htmlspecialchars($app['contact_person']); ?></div>
-                                        <div class="grid-item"><span class="material-symbols-outlined">email</span><?php echo htmlspecialchars($app['contact_email']); ?></div>
-                                        <?php if ($app['contact_phone']): ?>
-                                            <div class="grid-item"><span class="material-symbols-outlined">phone</span><?php echo htmlspecialchars($app['contact_phone']); ?></div>
-                                        <?php endif; ?>
-                                        <?php if ($app['years_experience']): ?>
-                                            <div class="grid-item"><span class="material-symbols-outlined">work_history</span><?php echo htmlspecialchars($app['years_experience']); ?></div>
-                                        <?php endif; ?>
-                                        <?php if ($app['team_size']): ?>
-                                            <div class="grid-item"><span class="material-symbols-outlined">group</span><?php echo htmlspecialchars($app['team_size']); ?></div>
-                                        <?php endif; ?>
-                                        <div class="grid-item"><span class="material-symbols-outlined">calendar_today</span><?php echo date('M d, Y', strtotime($app['created_at'])); ?></div>
-                                    </div>
-
-                                    <?php if ($app['specialization']): ?>
-                                        <div class="app-specialization"><span class="material-symbols-outlined">sell</span><?php echo htmlspecialchars($app['specialization']); ?></div>
-                                    <?php endif; ?>
-
-                                    <div class="app-actions">
-                                        <button class="btn btn-success btn-sm" onclick="openApproveModal(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['agency_name']); ?>')">
-                                            <span class="material-symbols-outlined">check</span> Approve
-                                        </button>
-                                        <button class="btn btn-danger btn-sm" onclick="rejectAgency(<?php echo $app['id']; ?>, '<?php echo htmlspecialchars($app['agency_name']); ?>')">
-                                            <span class="material-symbols-outlined">close</span> Reject
-                                        </button>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-                <!-- Approved Agencies -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3><span class="material-symbols-outlined">check_circle</span> Approved Agencies</h3>
-                        <span class="count-badge"><?php echo count($approvedAgencies); ?> agencies</span>
-                    </div>
-                    <div class="card-body">
-                        <?php if (empty($approvedAgencies)): ?>
-                            <div class="empty-state">
-                                <span class="material-symbols-outlined">apartment</span>
-                                <h4>No Approved Agencies</h4>
-                                <p>You haven't approved any recruitment agencies yet.</p>
-                            </div>
-                        <?php else: ?>
-                            <?php foreach ($approvedAgencies as $agency): ?>
-                                <div class="agency-card">
-                                    <div class="agency-icon">
-                                        <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
-                                            <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
-                                        <?php else: ?>
-                                            <?php echo substr($agency['agency_name'], 0, 1); ?>
-                                        <?php endif; ?>
-                                    </div>
-                                    <div class="agency-details">
-                                        <div class="agency-name"><?php echo htmlspecialchars($agency['agency_name']); ?></div>
-                                        <div class="agency-meta">
-                                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">code</span>
-                                            <?php echo htmlspecialchars($agency['agency_code']); ?> ·
-                                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">person</span>
-                                            <?php echo htmlspecialchars($agency['contact_person']); ?>
-                                            <span style="color:var(--text-on-surface-variant);">(<?php echo htmlspecialchars($agency['contact_email']); ?>)</span>
-                                        </div>
-                                    </div>
-                                    <div class="agency-stats">
-                                        <span><span class="material-symbols-outlined">work</span><?php echo $agency['job_count'] ?? 0; ?></span>
-                                        <span><span class="material-symbols-outlined">check_circle</span>Active</span>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-                <!-- Rejected Applications -->
-                <?php if (!empty($rejectedApplications)): ?>
-                    <div class="card">
-                        <div class="card-header">
-                            <h3><span class="material-symbols-outlined">cancel</span> Rejected Applications</h3>
-                            <span class="count-badge"><?php echo count($rejectedApplications); ?></span>
-                        </div>
-                        <div class="card-body">
-                            <?php foreach ($rejectedApplications as $app): ?>
-                                <div class="rejected-item">
-                                    <div class="rejected-info">
-                                        <span class="agency-name"><?php echo htmlspecialchars($app['agency_name']); ?></span>
-                                        <span class="agency-code">(<?php echo htmlspecialchars($app['agency_code']); ?>)</span>
-                                        <span class="rejected-meta">· <?php echo htmlspecialchars($app['applicant_name']); ?></span>
-                                        <span class="rejected-meta">· <?php echo date('M d, Y', strtotime($app['updated_at'])); ?></span>
-                                    </div>
-                                    <span class="badge badge-rejected">Rejected</span>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-                <?php endif; ?>
-            </div>
-        </main>
-    </div>
-
-    <!-- Approve Modal -->
-    <div class="modal-overlay" id="approveModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2><span class="material-symbols-outlined">check_circle</span> Confirm Approval</h2>
-                <button class="modal-close" onclick="closeModal('approveModal')"><span class="material-symbols-outlined">close</span></button>
-            </div>
-            <div class="modal-body">
-                <div class="modal-confirm-icon success"><span class="material-symbols-outlined">check_circle</span></div>
-                <p style="font-size:0.875rem; text-align:center; color:var(--text-on-surface-variant); margin-bottom:1rem;">
-                    You are about to approve <strong id="approveAgencyName" style="color:var(--text-on-surface);"></strong> as a recruitment agency for your company.
-                </p>
-                <div style="background:#f0fdf4; padding:0.75rem 1rem; border-radius:0.5rem; border:1px solid #bbf7d0; text-align:center;">
-                    <span style="font-size:0.8125rem; color:#065f46;">✅ This agency will be able to handle your job postings immediately.</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-ghost" onclick="closeModal('approveModal')">Cancel</button>
-                <button type="button" class="btn btn-success" id="confirmApproveBtn"><span class="material-symbols-outlined">check</span> Yes, Approve Agency</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Reject Modal -->
-    <div class="modal-overlay" id="rejectModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2><span class="material-symbols-outlined">cancel</span> Reject Application</h2>
-                <button class="modal-close" onclick="closeModal('rejectModal')"><span class="material-symbols-outlined">close</span></button>
-            </div>
-            <form method="POST" action="" id="rejectForm">
-                <input type="hidden" name="action" value="reject_agency">
-                <input type="hidden" name="application_id" id="rejectApplicationId" value="">
-                <div class="modal-body">
-                    <div class="modal-confirm-icon danger"><span class="material-symbols-outlined">cancel</span></div>
-                    <p style="font-size:0.875rem; text-align:center; color:var(--text-on-surface-variant); margin-bottom:1rem;">
-                        You are about to reject <strong id="rejectAgencyName" style="color:var(--text-on-surface);"></strong>'s application.
-                    </p>
-                    <div class="form-group">
-                        <label for="rejection_reason">Reason for Rejection <span class="required">*</span></label>
-                        <textarea id="rejection_reason" name="rejection_reason" class="form-control" placeholder="Please provide a reason for rejecting this application..." rows="4" required></textarea>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-ghost" onclick="closeModal('rejectModal')">Cancel</button>
-                    <button type="submit" class="btn btn-danger"><span class="material-symbols-outlined">cancel</span> Reject Application</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        // Sidebar toggle
-        const sidebar = document.getElementById('appSidebar');
-        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-        const savedState = localStorage.getItem('sidebarCollapsed');
-        if (savedState === 'true' && window.innerWidth > 768) {
-            sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+        /* ===== MODAL ===== */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
         }
-        sidebarToggleBtn.addEventListener('click', function() {
-            if (window.innerWidth <= 768) return;
-            sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
-        });
-
-        // Mobile sidebar
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
-        function openMobileSidebar() { sidebar.classList.add('mobile-open'); sidebarBackdrop.classList.add('active'); document.body.style.overflow = 'hidden'; }
-        function closeMobileSidebar() { sidebar.classList.remove('mobile-open'); sidebarBackdrop.classList.remove('active'); document.body.style.overflow = ''; }
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-
-        // Profile dropdown
-        const profileToggle = document.getElementById('profileToggle');
-        const profileMenu = document.getElementById('profileMenu');
-        profileToggle.addEventListener('click', function(e) { e.stopPropagation(); this.classList.toggle('open'); profileMenu.classList.toggle('open'); });
-        document.addEventListener('click', function(e) { if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) { profileToggle.classList.remove('open'); profileMenu.classList.remove('open'); } });
-
-        // Modal functions
-        function openModal(id) {
-            const modal = document.getElementById(id);
-            if (modal) { modal.classList.add('active'); document.body.style.overflow = 'hidden'; }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 820px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: var(--shadow-xl);
+            animation: modalIn 0.3s ease;
+        }
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.95) translateY(10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .modal-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            background: var(--bg-surface);
+            z-index: 10;
+        }
+        .modal-header h2 { font-size: 1.25rem; font-weight: 700; }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-on-surface-variant);
+            padding: 0.25rem;
+            border-radius: 0.375rem;
+            transition: all var(--transition-fast);
+        }
+        .modal-close:hover { background: var(--bg-surface-low); }
+        .modal-body { padding: 1.5rem; }
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--slate-200);
+            display: flex;
+            gap: 0.75rem;
+            justify-content: flex-end;
+            position: sticky;
+            bottom: 0;
+            background: var(--bg-surface);
+            z-index: 10;
         }
 
-        function closeModal(id) {
-            const modal = document.getElementById(id);
-            if (modal) { modal.classList.remove('active'); document.body.style.overflow = ''; }
+        .form-group { margin-bottom: 1.25rem; }
+        .form-group label {
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-bottom: 0.375rem;
+        }
+        .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
+        .form-control {
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .form-control::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
+        textarea.form-control { resize: vertical; min-height: 100px; }
+        select.form-control { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%234a5168' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.75rem center; padding-right: 2.5rem; }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        @media (max-width: 480px) { .form-row { grid-template-columns: 1fr; } }
+
+        .agency-selection {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.5rem;
+            border: 1.5px solid var(--slate-200);
+            transition: all var(--transition-fast);
+        }
+        .agency-selection:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .agency-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.375rem 0.625rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--slate-200);
+            background: var(--bg-surface);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-size: 0.8125rem;
+        }
+        .agency-option:hover {
+            border-color: var(--primary);
+            background: var(--primary-container);
+        }
+        .agency-option.selected {
+            border-color: var(--primary);
+            background: var(--primary-container);
+            box-shadow: 0 0 0 2px var(--primary);
+        }
+        .agency-option input[type="radio"] { accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
+        .agency-option .agency-info { display: flex; flex-direction: column; }
+        .agency-option .agency-name { font-weight: 600; color: var(--text-on-surface); }
+        .agency-option .agency-code { font-size: 0.625rem; color: var(--text-on-surface-variant); }
+        .agency-option .agency-logo {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.375rem;
+            background: var(--primary-container);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.75rem;
+            color: var(--primary);
+            flex-shrink: 0;
+        }
+        .agency-option .agency-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 0.375rem;
         }
 
-        document.querySelectorAll('.modal-overlay').forEach(overlay => {
-            overlay.addEventListener('click', function(e) {
-                if (e.target === this) { closeModal(this.id); }
-            });
-        });
+        .checklist-section {
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+        }
+        .checklist-section:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .checklist-section .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .checklist-section .section-header .section-title {
+            font-weight: 600;
+            font-size: 0.8125rem;
+            color: var(--text-on-surface);
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+        .checklist-section .section-header .section-title .material-symbols-outlined {
+            font-size: 1rem;
+            color: var(--primary);
+        }
+        .checklist-section .section-header .count-badge {
+            font-size: 0.6875rem;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.0625rem 0.5rem;
+            border-radius: var(--radius-full);
+        }
+        .checklist-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.25rem;
+            max-height: 150px;
+            overflow-y: auto;
+            padding: 0.125rem;
+        }
+        .checklist-grid::-webkit-scrollbar { width: 4px; }
+        .checklist-grid::-webkit-scrollbar-track { background: transparent; }
+        .checklist-grid::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
+        .checklist-item {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.1875rem 0.375rem;
+            border-radius: 0.25rem;
+            transition: all var(--transition-fast);
+            cursor: pointer;
+            font-size: 0.75rem;
+            color: var(--text-on-surface);
+        }
+        .checklist-item:hover { background: var(--bg-surface-low); }
+        .checklist-item input[type="checkbox"] {
+            width: 0.8125rem;
+            height: 0.8125rem;
+            accent-color: var(--primary);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .checklist-item .item-label { user-select: none; cursor: pointer; }
+        .checklist-item.checked { background: var(--primary-container); }
+        .checklist-item.checked .item-label { color: var(--primary); font-weight: 500; }
 
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeModal('approveModal');
-                closeModal('rejectModal');
-                closeMobileSidebar();
-                if (profileToggle) profileToggle.classList.remove('open');
-                if (profileMenu) profileMenu.classList.remove('open');
-            }
-        });
-
-        // Agency actions
-        let approveApplicationId = null;
-        
-        function openApproveModal(id, name) {
-            approveApplicationId = id;
-            document.getElementById('approveAgencyName').textContent = name;
-            openModal('approveModal');
+        .custom-input-row {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        .custom-input-row .form-control {
+            flex: 1;
+            padding: 0.375rem 0.625rem;
+            font-size: 0.75rem;
+            border-radius: 0.375rem;
+        }
+        .custom-input-row .btn-add {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: 0.375rem;
+            background: var(--primary);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            white-space: nowrap;
+        }
+        .custom-input-row .btn-add:hover {
+            background: var(--on-primary-fixed-variant);
+            transform: translateY(-1px);
         }
 
-        document.getElementById('confirmApproveBtn').addEventListener('click', function() {
-            if (!approveApplicationId) return;
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.style.display = 'none';
-            form.innerHTML = `
-                <input type="hidden" name="action" value="approve_agency">
-                <input type="hidden" name="application_id" value="${approveApplicationId}">
-            `;
-            document.body.appendChild(form);
-            closeModal('approveModal');
-            form.submit();
-        });
-
-        function rejectAgency(id, name) {
-            document.getElementById('rejectApplicationId').value = id;
-            document.getElementById('rejectAgencyName').textContent = name;
-            openModal('rejectModal');
+        .selected-items-display {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.375rem;
+            margin-top: 0.5rem;
+            min-height: 2rem;
+            padding: 0.375rem;
+            background: var(--bg-surface-low);
+            border-radius: 0.375rem;
+            border: 1px dashed var(--slate-200);
+            align-items: center;
+        }
+        .selected-items-display .item-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            background: var(--primary);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 0.6875rem;
+            font-weight: 500;
+            animation: tagAppear 0.2s ease-out;
+        }
+        .selected-items-display .item-tag .remove-item {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            font-size: 0.875rem;
+            padding: 0 0.125rem;
+            transition: all var(--transition-fast);
+            line-height: 1;
+        }
+        .selected-items-display .item-tag .remove-item:hover {
+            color: white;
+            transform: scale(1.2);
+        }
+        @keyframes tagAppear {
+            from { opacity: 0; transform: scale(0.8); }
+            to { opacity: 1; transform: scale(1); }
         }
 
-// =============================================
-// SESSION ACTIVITY MONITOR
-// =============================================
+        @media (max-width: 768px) {
+            .checklist-grid { grid-template-columns: repeat(2, 1fr); }
+            .agency-selection { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+        }
+        @media (max-width: 480px) {
+            .checklist-grid { grid-template-columns: 1fr; }
+            .custom-input-row { flex-direction: column; }
+            .agency-selection { grid-template-columns: 1fr; }
+        }
 
-let sessionTimer = null;
-let warningShown = false;
-const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
-const WARNING_TIME = 60; // Show warning 60 seconds before timeout
-
-/**
- * Update session timer display
- */
-function updateSessionTimer() {
-    // Get remaining time from server
-    fetch('check_session.php')
-        .then(response => response.json())
-        .then(data => {
-            const remaining = data.remaining;
-            const minutes = Math.floor(remaining / 60);
-            const seconds = remaining % 60;
-            
-            // Update timer display if exists
-            const timerEl = document.getElementById('sessionTimer');
-            if (timerEl) {
-                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                
-                // Change color when running low
-                if (remaining < 60) {
-                    timerEl.style.color = '#dc2626';
-                    timerEl.style.fontWeight = 'bold';
-                } else if (remaining < 120) {
-                    timerEl.style.color = '#f59e0b';
-                } else {
-                    timerEl.style.color = '';
-                }
-            }
-            
-            // Show warning modal if session is about to expire
-            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
-                warningShown = true;
-                showSessionWarning(remaining);
-            }
-            
-            // If session expired, redirect
-            if (remaining <= 0) {
-                window.location.href = '../../login.php?timeout=1';
-            }
-        })
-        .catch(error => {
-            console.log('Session check error:', error);
-        });
-}
-
-/**
- * Show session expiration warning
- */
-function showSessionWarning(remaining) {
-    // Create modal if it doesn't exist
-    let modal = document.getElementById('sessionWarningModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'sessionWarningModal';
-        modal.style.cssText = `
+        /* AI Optimistic Modal */
+        .ai-optimistic-modal {
+            display: none;
             position: fixed;
             top: 0;
             left: 0;
             right: 0;
             bottom: 0;
             background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(8px);
-            z-index: 99999;
-            display: none;
-            justify-content: center;
+            backdrop-filter: blur(12px);
+            z-index: 9999;
             align-items: center;
-            padding: 1rem;
-        `;
-        
-        modal.innerHTML = `
-            <div style="
-                background: white;
-                border-radius: 1.5rem;
-                max-width: 440px;
-                width: 100%;
-                padding: 2rem;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                animation: slideUp 0.3s ease;
-                text-align: center;
-            ">
-                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
-                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
-                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
-                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
-                    Please click "Stay Logged In" to continue.
-                </p>
-                <div style="display: flex; gap: 0.75rem; justify-content: center;">
-                    <button onclick="extendSession()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #4f46e5;
-                        color: white;
-                        border: none;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Stay Logged In</button>
-                    <button onclick="logoutNow()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #fef2f2;
-                        color: #dc2626;
-                        border: 1px solid #fecaca;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Logout</button>
+            justify-content: center;
+            padding: 1.5rem;
+        }
+        .ai-optimistic-card {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 720px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 2rem 2rem 1.5rem;
+            box-shadow: var(--shadow-xl);
+            animation: slideUp 0.4s cubic-bezier(0.16,1,0.3,1);
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.97); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .ai-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--slate-200);
+        }
+        .ai-icon {
+            width: 2.75rem;
+            height: 2.75rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+        .ai-title { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); }
+        .ai-subtitle { font-size: 0.75rem; color: var(--text-on-surface-variant); }
+        .ai-provider {
+            margin-left: auto;
+            font-size: 0.6rem;
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            background: var(--bg-surface-low);
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+        }
+
+        .ai-dots-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 2rem 0;
+            min-height: 120px;
+        }
+        .ai-dots-loading .dot {
+            width: 0.75rem;
+            height: 0.75rem;
+            background: var(--primary);
+            border-radius: 50%;
+            animation: dotBounce 1.4s infinite ease-in-out both;
+        }
+        .ai-dots-loading .dot:nth-child(2) { animation-delay: 0.2s; }
+        .ai-dots-loading .dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes dotBounce {
+            0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+        .ai-dots-loading .loading-text {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-left: 0.75rem;
+            font-weight: 500;
+        }
+
+        .ai-error {
+            display: none;
+            text-align: center;
+            padding: 1.5rem;
+            color: #dc2626;
+            background: #fef2f2;
+            border-radius: var(--radius-md);
+            margin: 1rem 0;
+        }
+
+        .ai-generated-content { display: none; animation: fadeIn 0.5s ease; }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .ai-gen-section {
+            margin-bottom: 1.25rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-md);
+            border-left: 3px solid var(--primary);
+        }
+        .ai-gen-section .section-label {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            margin-bottom: 0.25rem;
+        }
+        .ai-gen-section .section-label .material-symbols-outlined { font-size: 0.875rem; }
+        .ai-gen-section .section-value {
+            font-size: 0.875rem;
+            color: var(--text-on-surface);
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .ai-gen-section .section-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        .ai-gen-section .section-tags .tag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: var(--primary);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 0.8rem;
+            font-weight: 500;
+            margin: 0.15rem;
+        }
+        .ai-gen-section .section-salary {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .ai-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--slate-200);
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar Backdrop -->
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="dashboard-sidebar" id="appSidebar">
+        <div class="sidebar-brand-card">
+            <span class="sidebar-brand-icon">
+                <span class="material-symbols-outlined">business</span>
+            </span>
+            <p class="sidebar-brand-text">ISMERS</p>
+            <p class="sidebar-brand-category">Client Portal</p>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="nav-label">Main</div>
+            <a href="dashboard.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'dashboard.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">dashboard</span>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="jobs.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'jobs.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">work</span>
+                <span class="nav-text">My Jobs</span>
+            </a>
+            <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">apartment</span>
+                <span class="nav-text">Agencies</span>
+                <?php if ($pendingAgencyCount > 0): ?>
+                    <span class="nav-badge"><?php echo $pendingAgencyCount; ?></span>
+                <?php endif; ?>
+            </a>
+            <a href="employees.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'employees.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">people</span>
+                <span class="nav-text">Employees</span>
+            </a>
+            <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person_search</span>
+                <span class="nav-text">Applicants</span>
+            </a>
+            <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">receipt</span>
+                <span class="nav-text">Invoices</span>
+            </a>
+            <a href="support.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'support.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">support_agent</span>
+                <span class="nav-text">Support</span>
+            </a>
+            <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">analytics</span>
+                <span class="nav-text">Reports</span>
+            </a>
+            <div class="nav-label" style="margin-top:1rem;">Settings</div>
+            <a href="profile.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'profile.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">person</span>
+                <span class="nav-text">Profile</span>
+            </a>
+            <a href="settings.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">settings</span>
+                <span class="nav-text">Settings</span>
+            </a>
+        </nav>
+        <!-- ===== SIDEBAR FOOTER ===== -->
+        <div class="sidebar-footer">
+            <div class="user-card">
+                <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                    <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                         alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                         class="avatar">
+                <?php else: ?>
+                    <span class="avatar"><?php echo $userProfile['initials']; ?></span>
+                <?php endif; ?>
+                <div class="user-info">
+                    <div class="user-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></div>
+                    <div class="user-email"><?php echo htmlspecialchars($userProfile['email']); ?></div>
                 </div>
             </div>
-        `;
-        document.body.appendChild(modal);
-    }
-    
-    // Show modal
-    modal.style.display = 'flex';
-    
-    // Update countdown inside modal
-    const warningTimer = document.getElementById('warningTimer');
-    if (warningTimer) {
-        let countdown = remaining;
-        const interval = setInterval(() => {
-            countdown--;
-            warningTimer.textContent = countdown;
-            if (countdown <= 0) {
-                clearInterval(interval);
-                window.location.href = '../../login.php?timeout=1';
-            }
-        }, 1000);
-        
-        // Store interval to clear it when extending
-        modal.dataset.interval = interval;
-    }
-}
+        </div>
+    </aside>
 
-/**
- * Extend session (reset timer)
- */
-function extendSession() {
-    // Clear any existing warning interval
-    const modal = document.getElementById('sessionWarningModal');
-    if (modal && modal.dataset.interval) {
-        clearInterval(parseInt(modal.dataset.interval));
+    <!-- ===== MAIN CONTENT ===== -->
+    <div class="main-wrapper" id="mainWrapper">
+        <header class="top-header">
+            <div class="top-header-left">
+                <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">
+                    <span class="material-symbols-outlined">menu</span>
+                </button>
+                <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
+                    <span class="material-symbols-outlined">chevron_left</span>
+                </button>
+                <span class="separator">|</span>
+                <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Jobs</span>
+                <span class="ai-badge" style="margin-left:0.5rem;">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                    AI Powered
+                </span>
+            </div>
+            <div class="profile-dropdown-wrapper">
+                <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
+                    <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
+                        <img src="<?php echo htmlspecialchars($userProfile['avatar_url']); ?>" 
+                             alt="<?php echo htmlspecialchars($userProfile['first_name']); ?>" 
+                             class="avatar-small">
+                    <?php else: ?>
+                        <span class="avatar-small"><?php echo $userProfile['initials']; ?></span>
+                    <?php endif; ?>
+                    <span class="profile-name"><?php echo htmlspecialchars($userProfile['first_name']); ?></span>
+                    <span class="profile-role"><?php echo ucfirst(str_replace('_', ' ', $role)); ?></span>
+                    <span class="material-symbols-outlined">expand_more</span>
+                </button>
+                <div class="profile-dropdown-menu" id="profileMenu">
+                    <div class="dropdown-header">Account</div>
+                    <button class="dropdown-item" onclick="window.location.href='profile.php'">
+                        <span class="material-symbols-outlined">person</span> Profile
+                    </button>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item danger" onclick="window.location.href='../../logout.php'">
+                        <span class="material-symbols-outlined">logout</span> Logout
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-scroll">
+            <div class="container">
+                <!-- Toast Messages -->
+                <?php if ($message): ?>
+                    <div class="toast <?php echo $messageType; ?>" id="toastMessage">
+                        <span class="material-symbols-outlined">
+                            <?php echo $messageType === 'success' ? 'check_circle' : 'error'; ?>
+                        </span>
+                        <?php echo htmlspecialchars($message); ?>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            const toast = document.getElementById('toastMessage');
+                            if (toast) toast.remove();
+                        }, 5000);
+                    </script>
+                <?php endif; ?>
+
+                <!-- Breadcrumb -->
+                <div class="breadcrumb-bar">
+                    <div class="breadcrumb-view">
+                        <span class="material-symbols-outlined">work</span>
+                        <span>Job Management</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            <?php echo htmlspecialchars($companyName); ?>
+                        </span>
+                    </div>
+                    <span class="breadcrumb-meta">Total Jobs: <?php echo count($jobs); ?></span>
+                </div>
+
+                <!-- Page Header -->
+                <div class="page-header">
+                    <div>
+                        <h1>My Jobs</h1>
+                        <p style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                            Manage your job postings and track applications
+                            <span class="ai-badge">
+                                <span class="material-symbols-outlined">auto_awesome</span>
+                                AI Enhanced
+                            </span>
+                        </p>
+                    </div>
+                    <div>
+                        <button class="btn btn-ai" onclick="openModal()">
+                            <span class="material-symbols-outlined">add</span>
+                            Request Job Post
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Filters -->
+                <div class="job-filters">
+                    <a href="?filter=all" class="filter-btn <?php echo $filter === 'all' ? 'active' : ''; ?>">
+                        All <span class="count"><?php echo $statusCounts['all']; ?></span>
+                    </a>
+                    <a href="?filter=open" class="filter-btn <?php echo $filter === 'open' ? 'active' : ''; ?>">
+                        Open <span class="count"><?php echo $statusCounts['open']; ?></span>
+                    </a>
+                    <a href="?filter=ongoing" class="filter-btn <?php echo $filter === 'ongoing' ? 'active' : ''; ?>">
+                        Ongoing <span class="count"><?php echo $statusCounts['ongoing']; ?></span>
+                    </a>
+                    <a href="?filter=pending_review" class="filter-btn <?php echo $filter === 'pending_review' ? 'active' : ''; ?>">
+                        Pending Review <span class="count"><?php echo $statusCounts['pending_review']; ?></span>
+                    </a>
+                    <a href="?filter=on_hold" class="filter-btn <?php echo $filter === 'on_hold' ? 'active' : ''; ?>">
+                        On Hold <span class="count"><?php echo $statusCounts['on_hold']; ?></span>
+                    </a>
+                    <a href="?filter=closed" class="filter-btn <?php echo $filter === 'closed' ? 'active' : ''; ?>">
+                        Closed <span class="count"><?php echo $statusCounts['closed']; ?></span>
+                    </a>
+                </div>
+
+                <!-- Job Listings -->
+                <?php if (empty($filteredJobs)): ?>
+                    <div class="empty-state">
+                        <span class="material-symbols-outlined">work_off</span>
+                        <h3>No jobs found</h3>
+                        <p>
+                            <?php if ($filter !== 'all'): ?>
+                                No jobs with status "<?php echo htmlspecialchars(str_replace('_', ' ', $filter)); ?>".
+                                <a href="?filter=all" style="color:var(--primary); font-weight:600;">View all jobs</a>
+                            <?php else: ?>
+                                You haven't requested any jobs yet. Click the "Request Job Post" button to get started.
+                            <?php endif; ?>
+                        </p>
+                    </div>
+                <?php else: ?>
+                    <?php foreach ($filteredJobs as $job): 
+                        $skillsData = json_decode($job['skills_required'] ?? '{}', true);
+                        $displaySkills = $skillsData['skills'] ?? [];
+                        $isPending = $job['status'] === 'pending_review';
+                        $isRejected = $job['status'] === 'rejected';
+                    ?>
+                        <div class="job-card">
+                            <div class="job-card-header">
+                                <div>
+                                    <div class="job-card-title">
+                                        <?php if ($isPending || $isRejected): ?>
+                                            <?php echo htmlspecialchars($job['title']); ?>
+                                        <?php else: ?>
+                                            <a href="job-details.php?id=<?php echo (int)$job['id']; ?>">
+                                                <?php echo htmlspecialchars($job['title']); ?>
+                                            </a>
+                                        <?php endif; ?>
+                                        <?php if ($isPending): ?>
+                                            <span class="badge badge-pending" style="font-size:0.55rem; margin-left:0.5rem;">⏳ Pending HR Review</span>
+                                        <?php endif; ?>
+                                        <?php if ($isRejected): ?>
+                                            <span class="badge badge-rejected" style="font-size:0.55rem; margin-left:0.5rem;">Rejected</span>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="job-card-meta">
+                                        <span>
+                                            <span class="material-symbols-outlined">location_on</span>
+                                            <?php echo htmlspecialchars($job['location'] ?? 'Remote'); ?>
+                                        </span>
+                                        <span>
+                                            <span class="material-symbols-outlined">work</span>
+                                            <?php echo htmlspecialchars($job['job_type'] ?? 'Full-time'); ?>
+                                        </span>
+                                        <?php if ($job['salary_min'] > 0 || $job['salary_max'] > 0): ?>
+                                            <span>
+                                                <span class="material-symbols-outlined">payments</span>
+                                                ₱<?php echo number_format($job['salary_min']); ?> - ₱<?php echo number_format($job['salary_max']); ?>
+                                            </span>
+                                        <?php endif; ?>
+                                        <span>
+                                            <span class="material-symbols-outlined">calendar_today</span>
+                                            <?php echo $isPending || $isRejected ? 'Requested: ' : 'Posted: '; ?>
+                                            <?php echo date('M d, Y', strtotime($job['created_at'])); ?>
+                                        </span>
+                                    </div>
+                                    <?php if ($job['agency_name']): ?>
+                                        <div class="job-card-agency" style="margin-top:0.25rem;">
+                                            <span class="material-symbols-outlined">apartment</span>
+                                            Agency: <?php echo htmlspecialchars($job['agency_name']); ?>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if ($isPending && !empty($job['request_notes'])): ?>
+                                        <div style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-on-surface-variant); background:var(--bg-surface-low); padding:0.25rem 0.5rem; border-radius:0.25rem; border-left:3px solid #f59e0b;">
+                                            <strong>Request Notes:</strong> <?php echo htmlspecialchars($job['request_notes']); ?>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if ($isRejected && !empty($job['request_notes'])): ?>
+                                        <div style="margin-top:0.25rem; font-size:0.75rem; color:#dc2626; background:#fef2f2; padding:0.25rem 0.5rem; border-radius:0.25rem; border-left:3px solid #dc2626;">
+                                            <strong>Feedback:</strong> <?php echo htmlspecialchars($job['request_notes']); ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                                <span class="badge <?php echo $statusBadges[$job['status']] ?? 'badge-draft'; ?>">
+                                    <?php echo $statusLabels[$job['status']] ?? ucfirst($job['status']); ?>
+                                </span>
+                            </div>
+
+                            <?php if (!$isPending && !$isRejected): ?>
+                                <div class="job-card-description">
+                                    <?php echo htmlspecialchars(substr($job['description'] ?? '', 0, 200)); ?>
+                                    <?php if (strlen($job['description'] ?? '') > 200): ?>...<?php endif; ?>
+                                </div>
+
+                                <?php if (!empty($displaySkills)): ?>
+                                    <div class="job-card-skills">
+                                        <?php foreach (array_slice($displaySkills, 0, 6) as $skill): ?>
+                                            <span class="skill-tag"><?php echo htmlspecialchars($skill); ?></span>
+                                        <?php endforeach; ?>
+                                        <?php if (count($displaySkills) > 6): ?>
+                                            <span class="skill-tag">+<?php echo count($displaySkills) - 6; ?> more</span>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <div class="job-card-footer">
+                                <div class="job-card-stats">
+                                    <?php if (!$isPending && !$isRejected): ?>
+                                        <span>
+                                            <span class="material-symbols-outlined">person_search</span>
+                                            <?php echo $job['applicant_count'] ?? 0; ?> Applicants
+                                        </span>
+                                        <span>
+                                            <span class="material-symbols-outlined">people</span>
+                                            <?php echo $job['positions_available'] ?? 1; ?> Positions
+                                        </span>
+                                    <?php else: ?>
+                                        <span style="color:var(--text-on-surface-variant); font-size:0.7rem;">
+                                            <?php if ($isPending): ?>
+                                                ⏳ Awaiting HR review
+                                            <?php elseif ($isRejected): ?>
+                                                ❌ Request was rejected by HR
+                                            <?php endif; ?>
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="job-card-actions">
+                                    <?php if ($isPending): ?>
+                                        <button class="btn btn-sm btn-danger" onclick="cancelJobRequest(<?php echo $job['id']; ?>)">
+                                            <span class="material-symbols-outlined">cancel</span>
+                                            Cancel Request
+                                        </button>
+                                        <span style="font-size:0.7rem; color:var(--text-on-surface-variant);">⏳ Pending HR Review</span>
+                                    <?php elseif ($isRejected): ?>
+                                        <button class="btn btn-sm btn-primary" onclick="openModalWithData(<?php echo $job['id']; ?>)">
+                                            <span class="material-symbols-outlined">refresh</span>
+                                            Resubmit
+                                        </button>
+                                    <?php else: ?>
+                                        <a href="job-details.php?id=<?php echo (int)$job['id']; ?>" class="btn btn-sm btn-outline">
+                                            <span class="material-symbols-outlined">visibility</span>
+                                            View
+                                        </a>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </main>
+    </div>
+
+    <!-- ===== AI OPTIMISTIC MODAL ===== -->
+    <div class="ai-optimistic-modal" id="aiOptimisticModal" style="display:none;">
+        <div class="ai-optimistic-card">
+            <div class="ai-header">
+                <div class="ai-icon">
+                    <span class="material-symbols-outlined">auto_awesome</span>
+                </div>
+                <div>
+                    <div class="ai-title">AI is crafting your job posting</div>
+                    <div class="ai-subtitle">Generating optimized description, skills, qualifications, and salary</div>
+                </div>
+                <div class="ai-provider" id="aiProvider">Groq</div>
+            </div>
+
+            <!-- Loading State -->
+            <div class="ai-dots-loading" id="aiDotsLoading">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <span class="loading-text">Analyzing job requirements</span>
+            </div>
+
+            <!-- Error State -->
+            <div class="ai-error" id="aiError">
+                <span class="material-symbols-outlined" style="font-size:2rem; display:block; margin-bottom:0.5rem;">error</span>
+                <span id="aiErrorMessage">Something went wrong. Please try again.</span>
+            </div>
+
+            <!-- Generated Content -->
+            <div class="ai-generated-content" id="aiGeneratedContent">
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">description</span> Job Description
+                    </div>
+                    <div class="section-value" id="aiGenDescription"></div>
+                </div>
+
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">psychology</span> Suggested Skills
+                    </div>
+                    <div class="section-tags" id="aiGenSkills"></div>
+                </div>
+
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">school</span> Suggested Qualifications
+                    </div>
+                    <div class="section-tags" id="aiGenQualifications"></div>
+                </div>
+
+                <div class="ai-gen-section">
+                    <div class="section-label">
+                        <span class="material-symbols-outlined">work_history</span> Suggested Experience
+                    </div>
+                    <div class="section-tags" id="aiGenExperience"></div>
+                </div>
+
+                <div class="ai-gen-section" style="border-left-color:#059669;">
+                    <div class="section-label" style="color:#059669;">
+                        <span class="material-symbols-outlined">payments</span> Recommended Salary
+                    </div>
+                    <div class="section-salary" id="aiGenSalary">₱50,000 - ₱80,000</div>
+                </div>
+
+                <div class="ai-actions">
+                    <button class="btn btn-primary" onclick="applyAIGeneratedData()">
+                        <span class="material-symbols-outlined">check</span> Apply All
+                    </button>
+                    <button class="btn btn-outline" onclick="applyAIDescriptionOnly()">
+                        <span class="material-symbols-outlined">description</span> Apply Description Only
+                    </button>
+                    <button class="btn btn-ghost" onclick="dismissAIModal()">Dismiss</button>
+                    <button class="btn btn-ghost" onclick="regenerateAI()" style="margin-left:auto;">
+                        <span class="material-symbols-outlined">refresh</span> Regenerate
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== POST JOB MODAL ===== -->
+    <div class="modal-overlay" id="postJobModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Request Job Post <span class="ai-badge" style="font-size:0.55rem; margin-left:0.5rem;">
+                    <span class="material-symbols-outlined" style="font-size:0.65rem;">auto_awesome</span>
+                    AI
+                </span></h2>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <form method="POST" action="" id="postJobForm">
+                <input type="hidden" name="action" value="request_job">
+                <div class="modal-body">
+                    <!-- Agency Selection -->
+                    <div class="form-group">
+                        <label>Recruitment Agency <span class="required">*</span></label>
+                        <div class="agency-selection" id="agencySelection">
+                            <?php if (empty($agencies)): ?>
+                                <div style="grid-column:1/-1; text-align:center; padding:0.5rem; color:var(--text-on-surface-variant); font-size:0.8125rem;">
+                                    No active recruitment agencies found. Please apply for an agency first.
+                                </div>
+                            <?php else: ?>
+                                <?php $firstAgency = true; foreach ($agencies as $agency): ?>
+                                    <label class="agency-option" data-agency-id="<?php echo $agency['id']; ?>">
+                                        <input type="radio" name="agency_id" value="<?php echo $agency['id']; ?>" <?php echo $firstAgency ? 'checked' : ''; ?>>
+                                        <div class="agency-logo">
+                                            <?php if (!empty($agency['logo_path']) && file_exists('../../' . $agency['logo_path'])): ?>
+                                                <img src="../../<?php echo htmlspecialchars($agency['logo_path']); ?>" alt="<?php echo htmlspecialchars($agency['agency_name']); ?>">
+                                            <?php else: ?>
+                                                <?php echo substr($agency['agency_name'], 0, 1); ?>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="agency-info">
+                                            <span class="agency-name"><?php echo htmlspecialchars($agency['agency_name']); ?></span>
+                                            <span class="agency-code"><?php echo htmlspecialchars($agency['agency_code']); ?></span>
+                                        </div>
+                                    </label>
+                                <?php $firstAgency = false; endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- Job Title with AI Button -->
+                    <div class="form-group">
+                        <label for="jobTitle">Job Title <span class="required">*</span></label>
+                        <div style="display:flex; gap:0.5rem;">
+                            <input type="text" id="jobTitle" name="title" class="form-control" 
+                                   placeholder="e.g., Senior Software Engineer" required style="flex:1;">
+                            <button type="button" class="btn btn-ai btn-sm" onclick="openAIModal()" id="aiGenerateBtn">
+                                <span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span>
+                                AI Generate
+                            </button>
+                        </div>
+                        <div class="helper-text" style="font-size:0.75rem; color:var(--text-on-surface-variant); margin-top:0.25rem;">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
+                            Enter a job title, select experience level, and click "AI Generate"
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="jobLocation">Location <span class="required">*</span></label>
+                            <input type="text" id="jobLocation" name="location" class="form-control" placeholder="e.g., Makati City, Remote" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="jobTypeSelect">Job Type <span class="required">*</span></label>
+                            <select id="jobTypeSelect" name="job_type" class="form-control" required>
+                                <?php foreach ($jobTypes as $type): ?>
+                                    <option value="<?php echo $type; ?>"><?php echo $type; ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="experienceLevel">Experience Level <span class="required">*</span></label>
+                            <select id="experienceLevel" name="experience_level" class="form-control" required>
+                                <?php foreach ($experienceLevels as $level): ?>
+                                    <option value="<?php echo $level; ?>"><?php echo $level; ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="urgency">Urgency</label>
+                            <select id="urgency" name="urgency" class="form-control">
+                                <?php foreach ($urgencyLevels as $level): ?>
+                                    <option value="<?php echo $level; ?>"><?php echo ucfirst($level); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="salaryMin">Salary Range (Min)</label>
+                            <input type="number" id="salaryMin" name="salary_min" class="form-control" placeholder="e.g., 30000" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="salaryMax">Salary Range (Max)</label>
+                            <input type="number" id="salaryMax" name="salary_max" class="form-control" placeholder="e.g., 50000" min="0">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="positions">Number of Positions</label>
+                            <input type="number" id="positions" name="positions" class="form-control" value="1" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="applicationDeadline">Application Deadline</label>
+                            <input type="date" id="applicationDeadline" name="application_deadline" class="form-control">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="jobDescription">Job Description <span class="required">*</span></label>
+                        <textarea id="jobDescription" name="description" class="form-control" 
+                                  placeholder="Describe the role, responsibilities, and what makes this opportunity great..." 
+                                  rows="4" required></textarea>
+                    </div>
+
+                    <!-- Skills -->
+                    <div class="form-group">
+                        <label>Skills Required <span class="required">*</span></label>
+                        <div class="checklist-section">
+                            <div class="section-header">
+                                <span class="section-title">
+                                    <span class="material-symbols-outlined">psychology</span>
+                                    Select from suggestions
+                                </span>
+                                <span class="count-badge" id="skillsCount">0 selected</span>
+                            </div>
+                            <div class="checklist-grid" id="skillsChecklist">
+                                <?php foreach ($suggestedSkills as $skill): ?>
+                                    <label class="checklist-item">
+                                        <input type="checkbox" name="skills[]" value="<?php echo htmlspecialchars($skill); ?>">
+                                        <span class="item-label"><?php echo htmlspecialchars($skill); ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="custom-input-row">
+                                <input type="text" class="form-control" id="customSkillInput" placeholder="Add custom skill..." style="flex:1;">
+                                <button type="button" class="btn-add" onclick="addCustomItem('skills', 'customSkillInput')">+ Add</button>
+                            </div>
+                            <div class="selected-items-display" id="skillsDisplay">
+                                <span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No skills added yet</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Qualifications -->
+                    <div class="form-group">
+                        <label>Qualifications <span class="required">*</span></label>
+                        <div class="checklist-section">
+                            <div class="section-header">
+                                <span class="section-title">
+                                    <span class="material-symbols-outlined">school</span>
+                                    Select from suggestions
+                                </span>
+                                <span class="count-badge" id="qualificationsCount">0 selected</span>
+                            </div>
+                            <div class="checklist-grid" id="qualificationsChecklist">
+                                <?php foreach ($suggestedQualifications as $qual): ?>
+                                    <label class="checklist-item">
+                                        <input type="checkbox" name="qualifications[]" value="<?php echo htmlspecialchars($qual); ?>">
+                                        <span class="item-label"><?php echo htmlspecialchars($qual); ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="custom-input-row">
+                                <input type="text" class="form-control" id="customQualificationInput" placeholder="Add custom qualification..." style="flex:1;">
+                                <button type="button" class="btn-add" onclick="addCustomItem('qualifications', 'customQualificationInput')">+ Add</button>
+                            </div>
+                            <div class="selected-items-display" id="qualificationsDisplay">
+                                <span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No qualifications added yet</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Experience -->
+                    <div class="form-group">
+                        <label>Experience Required <span class="required">*</span></label>
+                        <div class="checklist-section">
+                            <div class="section-header">
+                                <span class="section-title">
+                                    <span class="material-symbols-outlined">work_history</span>
+                                    Select from suggestions
+                                </span>
+                                <span class="count-badge" id="experienceCount">0 selected</span>
+                            </div>
+                            <div class="checklist-grid" id="experienceChecklist">
+                                <?php foreach ($suggestedExperience as $exp): ?>
+                                    <label class="checklist-item">
+                                        <input type="checkbox" name="experience[]" value="<?php echo htmlspecialchars($exp); ?>">
+                                        <span class="item-label"><?php echo htmlspecialchars($exp); ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="custom-input-row">
+                                <input type="text" class="form-control" id="customExperienceInput" placeholder="Add custom experience..." style="flex:1;">
+                                <button type="button" class="btn-add" onclick="addCustomItem('experience', 'customExperienceInput')">+ Add</button>
+                            </div>
+                            <div class="selected-items-display" id="experienceDisplay">
+                                <span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No experience added yet</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Request Notes -->
+                    <div class="form-group">
+                        <label for="requestNotes">Request Notes</label>
+                        <textarea id="requestNotes" name="request_notes" class="form-control" 
+                                  placeholder="Add any notes or instructions for HR regarding this job request..." rows="2"></textarea>
+                        <div class="helper-text">
+                            <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">info</span>
+                            Optional: Provide additional context for HR
+                        </div>
+                    </div>
+
+                    <!-- Hidden fields for custom items -->
+                    <input type="hidden" name="custom_skills" id="customSkills">
+                    <input type="hidden" name="custom_qualifications" id="customQualifications">
+                    <input type="hidden" name="custom_experience" id="customExperience">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-ai" id="submitBtn">
+                        <span class="material-symbols-outlined">send</span>
+                        Submit Request
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ============================================= JAVASCRIPT ============================================= -->
+    <script>
+    // =============================================
+    // 1. SIDEBAR TOGGLE
+    // =============================================
+    const sidebar = document.getElementById('appSidebar');
+    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+    const isMobile = window.innerWidth <= 768;
+    const savedState = localStorage.getItem('sidebarCollapsed');
+
+    if (savedState === 'true' && !isMobile) {
+        sidebar.classList.add('collapsed');
+        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'chevron_right';
     }
-    
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            if (modal) modal.style.display = 'none';
-            showToast('Session extended!', 'success');
+
+    sidebarToggleBtn.addEventListener('click', function() {
+        if (window.innerWidth <= 768) return;
+        sidebar.classList.toggle('collapsed');
+        const icon = this.querySelector('.material-symbols-outlined');
+        if (icon) {
+            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
         }
-    })
-    .catch(error => {
-        console.log('Extend session error:', error);
+        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
     });
-}
 
-/**
- * Logout immediately
- */
-function logoutNow() {
-    window.location.href = '../../logout.php';
-}
+    // =============================================
+    // 2. MOBILE SIDEBAR
+    // =============================================
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
 
-/**
- * Show toast notification
- */
-function showToast(message, type = 'info') {
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) existingToast.remove();
-    
-    const toast = document.createElement('div');
-    toast.className = 'toast ' + type;
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 1.5rem;
-        right: 1.5rem;
-        padding: 0.875rem 1.5rem;
-        border-radius: 0.75rem;
-        color: white;
-        font-weight: 600;
-        font-size: 0.875rem;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-        z-index: 100000;
-        animation: slideUp 0.4s ease-out;
-    `;
-    if (type === 'success') toast.style.background = '#22c55e';
-    else if (type === 'error') toast.style.background = '#dc2626';
-    else toast.style.background = '#4f46e5';
-    
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(20px)';
-        toast.style.transition = 'all 0.4s ease';
-        setTimeout(() => toast.remove(), 400);
-    }, 3000);
-}
+    function openMobileSidebar() {
+        sidebar.classList.add('mobile-open');
+        sidebarBackdrop.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
 
-// =============================================
-// TRACK USER ACTIVITY
-// =============================================
+    function closeMobileSidebar() {
+        sidebar.classList.remove('mobile-open');
+        sidebarBackdrop.classList.remove('active');
+        document.body.style.overflow = '';
+    }
 
-let activityTimer = null;
+    if (mobileMenuBtn) {
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+    }
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
 
-function resetActivityTimer() {
-    // Reset the server-side timer via AJAX
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reset' })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            // Hide warning modal if shown
-            const modal = document.getElementById('sessionWarningModal');
-            if (modal) modal.style.display = 'none';
-        }
-    })
-    .catch(error => console.log('Reset timer error:', error));
-}
+    // =============================================
+    // 3. PROFILE DROPDOWN
+    // =============================================
+    const profileToggle = document.getElementById('profileToggle');
+    const profileMenu = document.getElementById('profileMenu');
 
-// Track user activity events
-const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
-activityEvents.forEach(event => {
-    document.addEventListener(event, () => {
-        resetActivityTimer();
-    });
-});
-
-// =============================================
-// START SESSION TIMER
-// =============================================
-
-// Update timer every 10 seconds
-sessionTimer = setInterval(updateSessionTimer, 10000);
-
-// Initial update
-updateSessionTimer();
-
-console.log('⏰ Session timeout: 7 minutes');
-console.log('🔄 Activity tracking enabled');
-
-
-
-
-        // Responsive handling
-        let resizeTimer;
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                const width = window.innerWidth;
-                if (width <= 768) {
-                    sidebar.classList.remove('collapsed');
-                } else {
-                    sidebar.classList.remove('mobile-open');
-                    if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
-                    document.body.style.overflow = '';
-                    const saved = localStorage.getItem('sidebarCollapsed');
-                    if (saved === 'true') {
-                        sidebar.classList.add('collapsed');
-                    } else {
-                        sidebar.classList.remove('collapsed');
-                    }
-                }
-            }, 250);
+    if (profileToggle && profileMenu) {
+        profileToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.classList.toggle('open');
+            profileMenu.classList.toggle('open');
         });
 
-        console.log('🏢 ISMERS Agency Management loaded successfully!');
+        document.addEventListener('click', function(e) {
+            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
+            }
+        });
+    }
+
+    // =============================================
+    // 4. AGENCY SELECTION
+    // =============================================
+    document.querySelectorAll('.agency-option input[type="radio"]').forEach(radio => {
+        radio.addEventListener('change', function() {
+            document.querySelectorAll('.agency-option').forEach(opt => {
+                opt.classList.remove('selected');
+            });
+            if (this.checked) {
+                this.closest('.agency-option').classList.add('selected');
+            }
+        });
+        if (radio.checked) {
+            radio.closest('.agency-option').classList.add('selected');
+        }
+    });
+
+    // =============================================
+    // 5. MODAL
+    // =============================================
+    function openModal() {
+        const modal = document.getElementById('postJobModal');
+        if (modal) modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+        const form = document.getElementById('postJobForm');
+        if (form) form.reset();
+        resetChecklists();
+        
+        const firstRadio = document.querySelector('.agency-option input[type="radio"]');
+        if (firstRadio) {
+            firstRadio.checked = true;
+            document.querySelectorAll('.agency-option').forEach(opt => opt.classList.remove('selected'));
+            firstRadio.closest('.agency-option').classList.add('selected');
+        }
+    }
+
+    function openModalWithData(jobId) {
+        openModal();
+    }
+
+    function closeModal() {
+        const modal = document.getElementById('postJobModal');
+        if (modal) modal.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    function resetChecklists() {
+        document.querySelectorAll('.checklist-item input[type="checkbox"]').forEach(cb => {
+            cb.checked = false;
+            cb.closest('.checklist-item').classList.remove('checked');
+        });
+        ['skills', 'qualifications', 'experience'].forEach(type => {
+            const display = document.getElementById(type + 'Display');
+            if (display) {
+                display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
+            }
+            const hidden = document.getElementById('custom' + type.charAt(0).toUpperCase() + type.slice(1));
+            if (hidden) hidden.value = '';
+            const count = document.getElementById(type + 'Count');
+            if (count) count.textContent = '0 selected';
+        });
+    }
+
+    const modalOverlay = document.getElementById('postJobModal');
+    if (modalOverlay) {
+        modalOverlay.addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+    }
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeModal();
+            closeMobileSidebar();
+            dismissAIModal();
+            if (profileToggle) profileToggle.classList.remove('open');
+            if (profileMenu) profileMenu.classList.remove('open');
+        }
+    });
+
+    // =============================================
+    // 6. TOAST SYSTEM - SMALL AND SUBTLE
+    // =============================================
+    function showToast(message, type = 'info') {
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) existingToast.remove();
+        
+        // Also remove any AI success toast
+        const existingAiToast = document.querySelector('.ai-success-toast');
+        if (existingAiToast) existingAiToast.remove();
+
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-10px)';
+            toast.style.transition = 'all 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    // =============================================
+    // 7. AI OPTIMISTIC MODAL
+    // =============================================
+    let aiGeneratedData = null;
+    let isGenerating = false;
+
+    function openAIModal() {
+        const jobTitle = document.getElementById('jobTitle').value.trim();
+        const experienceLevel = document.getElementById('experienceLevel').value;
+        
+        if (!jobTitle) {
+            showToast('Please enter a job title first.', 'error');
+            document.getElementById('jobTitle').focus();
+            return;
+        }
+
+        const modal = document.getElementById('aiOptimisticModal');
+        const loading = document.getElementById('aiDotsLoading');
+        const content = document.getElementById('aiGeneratedContent');
+        const error = document.getElementById('aiError');
+        
+        modal.style.display = 'flex';
+        loading.style.display = 'flex';
+        content.style.display = 'none';
+        error.style.display = 'none';
+        
+        const loadingText = loading.querySelector('.loading-text');
+        const messages = [
+            'Analyzing job requirements',
+            'Generating optimized description',
+            'Curating skills and qualifications',
+            'Calculating market salary range'
+        ];
+        let msgIndex = 0;
+        loadingText.textContent = messages[0];
+        
+        const interval = setInterval(() => {
+            msgIndex = (msgIndex + 1) % messages.length;
+            loadingText.textContent = messages[msgIndex];
+        }, 1800);
+
+        const generateBtn = document.getElementById('aiGenerateBtn');
+        generateBtn.disabled = true;
+        generateBtn.innerHTML = '⏳ Generating...';
+        isGenerating = true;
+
+        const formData = new FormData();
+        formData.append('action', 'generate_ai_job');
+        formData.append('job_title', jobTitle);
+        formData.append('experience', experienceLevel);
+
+        fetch('jobs.php', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(response => response.json())
+        .then(data => {
+            clearInterval(interval);
+            isGenerating = false;
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+
+            if (data.success) {
+                aiGeneratedData = data;
+                
+                document.getElementById('aiProvider').textContent = data.provider || 'Groq';
+                document.getElementById('aiGenDescription').textContent = data.description || 'No description generated.';
+                
+                const skillsContainer = document.getElementById('aiGenSkills');
+                skillsContainer.innerHTML = '';
+                if (data.skills && data.skills.length > 0) {
+                    data.skills.forEach(skill => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.textContent = skill;
+                        skillsContainer.appendChild(tag);
+                    });
+                } else {
+                    skillsContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No skills suggested</span>';
+                }
+                
+                const qualContainer = document.getElementById('aiGenQualifications');
+                qualContainer.innerHTML = '';
+                if (data.qualifications && data.qualifications.length > 0) {
+                    data.qualifications.forEach(qual => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.textContent = qual;
+                        qualContainer.appendChild(tag);
+                    });
+                } else {
+                    qualContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No qualifications suggested</span>';
+                }
+                
+                const expContainer = document.getElementById('aiGenExperience');
+                expContainer.innerHTML = '';
+                if (data.experience && data.experience.length > 0) {
+                    data.experience.forEach(exp => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.textContent = exp;
+                        expContainer.appendChild(tag);
+                    });
+                } else {
+                    expContainer.innerHTML = '<span style="font-size:0.75rem;color:var(--text-on-surface-variant);">No experience suggested</span>';
+                }
+                
+                let salaryDisplay = '₱50,000 - ₱80,000';
+                if (data.salary_min > 0 && data.salary_max > 0) {
+                    salaryDisplay = '₱' + Number(data.salary_min).toLocaleString() + ' - ₱' + Number(data.salary_max).toLocaleString();
+                } else if (data.salary_range) {
+                    salaryDisplay = data.salary_range;
+                }
+                document.getElementById('aiGenSalary').textContent = salaryDisplay;
+                
+                loading.style.display = 'none';
+                content.style.display = 'block';
+                
+                // ✅ FIXED: Small, subtle toast instead of big modal effect
+                showToast('✨ AI suggestions ready!', 'success');
+            } else {
+                loading.style.display = 'none';
+                document.getElementById('aiErrorMessage').textContent = data.error || 'Failed to generate job data.';
+                error.style.display = 'block';
+                showToast('❌ Failed to generate AI data', 'error');
+            }
+        })
+        .catch(error => {
+            clearInterval(interval);
+            isGenerating = false;
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+            
+            loading.style.display = 'none';
+            document.getElementById('aiErrorMessage').textContent = 'Network error. Please check your connection and try again.';
+            error.style.display = 'block';
+            showToast('❌ Network error. Please try again.', 'error');
+        });
+    }
+
+    function dismissAIModal() {
+        const modal = document.getElementById('aiOptimisticModal');
+        modal.style.display = 'none';
+        document.getElementById('aiDotsLoading').style.display = 'flex';
+        document.getElementById('aiGeneratedContent').style.display = 'none';
+        document.getElementById('aiError').style.display = 'none';
+        if (isGenerating) {
+            isGenerating = false;
+            const generateBtn = document.getElementById('aiGenerateBtn');
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:0.875rem;">auto_awesome</span> AI Generate';
+        }
+    }
+
+    function regenerateAI() {
+        document.getElementById('aiDotsLoading').style.display = 'flex';
+        document.getElementById('aiGeneratedContent').style.display = 'none';
+        document.getElementById('aiError').style.display = 'none';
+        openAIModal();
+    }
+
+    function applyAIGeneratedData() {
+        if (!aiGeneratedData) {
+            showToast('No AI data to apply. Generate first.', 'error');
+            return;
+        }
+        
+        if (aiGeneratedData.description) {
+            document.getElementById('jobDescription').value = aiGeneratedData.description;
+        }
+        
+        if (aiGeneratedData.skills && aiGeneratedData.skills.length > 0) {
+            const checkboxes = document.querySelectorAll('#skillsChecklist input[type="checkbox"]');
+            const skillsLower = aiGeneratedData.skills.map(s => s.toLowerCase().trim());
+            
+            checkboxes.forEach(cb => {
+                const cbLower = cb.value.toLowerCase().trim();
+                if (skillsLower.some(s => cbLower.includes(s) || s.includes(cbLower))) {
+                    cb.checked = true;
+                    cb.closest('.checklist-item').classList.add('checked');
+                }
+            });
+            const allChecked = Array.from(document.querySelectorAll('#skillsChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+            const missingSkills = aiGeneratedData.skills.filter(s => 
+                !allChecked.some(checked => s.toLowerCase().trim().includes(checked) || checked.includes(s.toLowerCase().trim()))
+            );
+            if (missingSkills.length > 0) {
+                const display = document.getElementById('skillsDisplay');
+                const emptyMsg = display.querySelector('span');
+                if (emptyMsg && display.children.length === 1) {
+                    display.innerHTML = '';
+                }
+                missingSkills.forEach(skill => {
+                    const tag = document.createElement('span');
+                    tag.className = 'item-tag custom-item';
+                    tag.innerHTML = `${skill} <button type="button" class="remove-item" data-type="skills" data-value="${skill}">×</button>`;
+                    display.appendChild(tag);
+                    tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden('skills');
+                        updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+                    });
+                });
+                updateCustomHidden('skills');
+            }
+            updateDisplay('skills', 'skillsDisplay', 'skillsCount');
+        }
+        
+        if (aiGeneratedData.qualifications && aiGeneratedData.qualifications.length > 0) {
+            const checkboxes = document.querySelectorAll('#qualificationsChecklist input[type="checkbox"]');
+            const qualLower = aiGeneratedData.qualifications.map(q => q.toLowerCase().trim());
+            
+            checkboxes.forEach(cb => {
+                const cbLower = cb.value.toLowerCase().trim();
+                if (qualLower.some(q => cbLower.includes(q) || q.includes(cbLower))) {
+                    cb.checked = true;
+                    cb.closest('.checklist-item').classList.add('checked');
+                }
+            });
+            const allChecked = Array.from(document.querySelectorAll('#qualificationsChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+            const missingQuals = aiGeneratedData.qualifications.filter(q => 
+                !allChecked.some(checked => q.toLowerCase().trim().includes(checked) || checked.includes(q.toLowerCase().trim()))
+            );
+            if (missingQuals.length > 0) {
+                const display = document.getElementById('qualificationsDisplay');
+                const emptyMsg = display.querySelector('span');
+                if (emptyMsg && display.children.length === 1) {
+                    display.innerHTML = '';
+                }
+                missingQuals.forEach(qual => {
+                    const tag = document.createElement('span');
+                    tag.className = 'item-tag custom-item';
+                    tag.innerHTML = `${qual} <button type="button" class="remove-item" data-type="qualifications" data-value="${qual}">×</button>`;
+                    display.appendChild(tag);
+                    tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden('qualifications');
+                        updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+                    });
+                });
+                updateCustomHidden('qualifications');
+            }
+            updateDisplay('qualifications', 'qualificationsDisplay', 'qualificationsCount');
+        }
+        
+        if (aiGeneratedData.experience && aiGeneratedData.experience.length > 0) {
+            const checkboxes = document.querySelectorAll('#experienceChecklist input[type="checkbox"]');
+            const expLower = aiGeneratedData.experience.map(e => e.toLowerCase().trim());
+            
+            checkboxes.forEach(cb => {
+                const cbLower = cb.value.toLowerCase().trim();
+                if (expLower.some(e => cbLower.includes(e) || e.includes(cbLower))) {
+                    cb.checked = true;
+                    cb.closest('.checklist-item').classList.add('checked');
+                }
+            });
+            const allChecked = Array.from(document.querySelectorAll('#experienceChecklist input:checked')).map(cb => cb.value.toLowerCase().trim());
+            const missingExp = aiGeneratedData.experience.filter(e => 
+                !allChecked.some(checked => e.toLowerCase().trim().includes(checked) || checked.includes(e.toLowerCase().trim()))
+            );
+            if (missingExp.length > 0) {
+                const display = document.getElementById('experienceDisplay');
+                const emptyMsg = display.querySelector('span');
+                if (emptyMsg && display.children.length === 1) {
+                    display.innerHTML = '';
+                }
+                missingExp.forEach(exp => {
+                    const tag = document.createElement('span');
+                    tag.className = 'item-tag custom-item';
+                    tag.innerHTML = `${exp} <button type="button" class="remove-item" data-type="experience" data-value="${exp}">×</button>`;
+                    display.appendChild(tag);
+                    tag.querySelector('.remove-item').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden('experience');
+                        updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+                    });
+                });
+                updateCustomHidden('experience');
+            }
+            updateDisplay('experience', 'experienceDisplay', 'experienceCount');
+        }
+        
+        if (aiGeneratedData.salary_min !== undefined && aiGeneratedData.salary_min > 0) {
+            document.getElementById('salaryMin').value = aiGeneratedData.salary_min;
+        }
+        if (aiGeneratedData.salary_max !== undefined && aiGeneratedData.salary_max > 0) {
+            document.getElementById('salaryMax').value = aiGeneratedData.salary_max;
+        }
+        
+        dismissAIModal();
+        showToast('✅ AI suggestions applied successfully!', 'success');
+    }
+
+    function applyAIDescriptionOnly() {
+        if (!aiGeneratedData || !aiGeneratedData.description) {
+            showToast('No description to apply.', 'error');
+            return;
+        }
+        document.getElementById('jobDescription').value = aiGeneratedData.description;
+        dismissAIModal();
+        showToast('✅ Description applied!', 'success');
+    }
+
+    // =============================================
+    // 8. CUSTOM CHECKLIST FUNCTIONS
+    // =============================================
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function updateDisplay(type, displayId, countId) {
+        const checkboxes = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]`);
+        const display = document.getElementById(displayId);
+        const count = document.getElementById(countId);
+        const customHidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+        
+        if (!display || !count) return;
+
+        const selected = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]:checked`);
+        const selectedNames = Array.from(selected).map(cb => cb.value);
+        
+        const customItems = [];
+        display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
+            const text = tag.textContent.replace('×', '').trim();
+            if (text) customItems.push(text);
+        });
+        
+        const allItems = [...selectedNames, ...customItems];
+        
+        document.querySelectorAll(`#${type}Checklist .checklist-item`).forEach(label => {
+            const cb = label.querySelector('input[type="checkbox"]');
+            if (cb && cb.checked) {
+                label.classList.add('checked');
+            } else {
+                label.classList.remove('checked');
+            }
+        });
+
+        if (allItems.length === 0) {
+            display.innerHTML = `<span style="color:var(--text-on-surface-variant); font-size:0.75rem;">No ${type} added yet</span>`;
+        } else {
+            display.innerHTML = allItems.map(name => `
+                <span class="item-tag ${customItems.includes(name) ? 'custom-item' : ''}">
+                    ${escapeHtml(name)}
+                    <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(name)}">×</button>
+                </span>
+            `).join('');
+            
+            display.querySelectorAll('.remove-item').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const type = this.dataset.type;
+                    const value = this.dataset.value;
+                    const isCustom = this.closest('.item-tag').classList.contains('custom-item');
+                    
+                    if (isCustom) {
+                        this.closest('.item-tag').remove();
+                        updateCustomHidden(type);
+                        updateDisplay(type, `${type}Display`, `${type}Count`);
+                    } else {
+                        const checkbox = document.querySelector(`#${type}Checklist input[type="checkbox"][value="${value}"]`);
+                        if (checkbox) {
+                            checkbox.checked = false;
+                            updateDisplay(type, `${type}Display`, `${type}Count`);
+                        }
+                    }
+                });
+            });
+            
+            updateCustomHidden(type);
+        }
+
+        count.textContent = `${allItems.length} selected`;
+    }
+
+    function updateCustomHidden(type) {
+        const display = document.getElementById(`${type}Display`);
+        const hidden = document.getElementById(`custom${type.charAt(0).toUpperCase() + type.slice(1)}`);
+        
+        if (!display || !hidden) return;
+        
+        const customItems = [];
+        display.querySelectorAll('.item-tag.custom-item').forEach(tag => {
+            const text = tag.textContent.replace('×', '').trim();
+            if (text) customItems.push(text);
+        });
+        
+        hidden.value = customItems.join(', ');
+    }
+
+    function addCustomItem(type, inputId) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        
+        const value = input.value.trim();
+        if (!value) {
+            alert('Please enter a value first.');
+            return;
+        }
+        
+        const display = document.getElementById(`${type}Display`);
+        if (display) {
+            const existing = display.querySelectorAll('.item-tag');
+            for (let tag of existing) {
+                if (tag.textContent.replace('×', '').trim().toLowerCase() === value.toLowerCase()) {
+                    alert('This item already exists.');
+                    return;
+                }
+            }
+        }
+        
+        const tag = document.createElement('span');
+        tag.className = 'item-tag custom-item';
+        tag.innerHTML = `${escapeHtml(value)} <button type="button" class="remove-item" data-type="${type}" data-value="${escapeHtml(value)}">×</button>`;
+        
+        const emptyMsg = display.querySelector('span');
+        if (emptyMsg && display.children.length === 1) {
+            display.innerHTML = '';
+        }
+        
+        display.appendChild(tag);
+        
+        tag.querySelector('.remove-item').addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.closest('.item-tag').remove();
+            updateCustomHidden(type);
+            updateDisplay(type, `${type}Display`, `${type}Count`);
+        });
+        
+        updateCustomHidden(type);
+        updateDisplay(type, `${type}Display`, `${type}Count`);
+        input.value = '';
+        input.focus();
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        ['skills', 'qualifications', 'experience'].forEach(type => {
+            const checkboxes = document.querySelectorAll(`#${type}Checklist input[type="checkbox"]`);
+            checkboxes.forEach(cb => {
+                cb.addEventListener('change', function() {
+                    updateDisplay(type, `${type}Display`, `${type}Count`);
+                });
+                const label = cb.closest('.checklist-item');
+                if (label) {
+                    label.addEventListener('click', function(e) {
+                        if (e.target.tagName !== 'INPUT') {
+                            const c = this.querySelector('input[type="checkbox"]');
+                            if (c) {
+                                c.checked = !c.checked;
+                                updateDisplay(type, `${type}Display`, `${type}Count`);
+                            }
+                        }
+                    });
+                }
+            });
+            
+            const inputId = `custom${type.charAt(0).toUpperCase() + type.slice(1)}Input`;
+            const input = document.getElementById(inputId);
+            if (input) {
+                input.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addCustomItem(type, inputId);
+                    }
+                });
+            }
+            
+            updateDisplay(type, `${type}Display`, `${type}Count`);
+        });
+    });
+
+    // =============================================
+    // 9. FORM VALIDATION
+    // =============================================
+    document.getElementById('postJobForm').addEventListener('submit', function(e) {
+        const title = this.querySelector('input[name="title"]');
+        const description = this.querySelector('textarea[name="description"]');
+        const location = this.querySelector('input[name="location"]');
+        const jobType = this.querySelector('select[name="job_type"]');
+        const experienceLevel = this.querySelector('select[name="experience_level"]');
+        const agencySelected = this.querySelector('input[name="agency_id"]:checked');
+        
+        const allSkills = document.querySelectorAll('#skillsDisplay .item-tag');
+        const allQualifications = document.querySelectorAll('#qualificationsDisplay .item-tag');
+        const allExperience = document.querySelectorAll('#experienceDisplay .item-tag');
+        
+        let errors = [];
+
+        [title, description, location, jobType, experienceLevel].forEach(el => {
+            if (el) el.style.borderColor = '';
+        });
+
+        if (!agencySelected) {
+            errors.push('Please select a recruitment agency.');
+        }
+
+        if (!title || !title.value.trim()) {
+            errors.push('Please enter a job title.');
+            if (title) title.style.borderColor = '#dc2626';
+        }
+
+        if (!description || !description.value.trim()) {
+            errors.push('Please enter a job description.');
+            if (description) description.style.borderColor = '#dc2626';
+        }
+
+        if (!location || !location.value.trim()) {
+            errors.push('Please enter a location.');
+            if (location) location.style.borderColor = '#dc2626';
+        }
+
+        if (!jobType || !jobType.value) {
+            errors.push('Please select a job type.');
+            if (jobType) jobType.style.borderColor = '#dc2626';
+        }
+
+        if (!experienceLevel || !experienceLevel.value) {
+            errors.push('Please select an experience level.');
+            if (experienceLevel) experienceLevel.style.borderColor = '#dc2626';
+        }
+
+        if (allSkills.length === 0) {
+            errors.push('Please add at least one skill.');
+        }
+
+        if (allQualifications.length === 0) {
+            errors.push('Please add at least one qualification.');
+        }
+
+        if (allExperience.length === 0) {
+            errors.push('Please add at least one experience requirement.');
+        }
+
+        const salaryMin = parseFloat(this.querySelector('input[name="salary_min"]').value);
+        const salaryMax = parseFloat(this.querySelector('input[name="salary_max"]').value);
+
+        if (salaryMin > 0 && salaryMax > 0 && salaryMin > salaryMax) {
+            errors.push('Minimum salary cannot be greater than maximum salary.');
+        }
+
+        if (errors.length > 0) {
+            e.preventDefault();
+            alert('Please fix the following errors:\n\n• ' + errors.join('\n• '));
+            
+            const firstError = [title, description, location, jobType, experienceLevel].find(el => 
+                el && el.style.borderColor === '#dc2626'
+            );
+            if (firstError) firstError.focus();
+        }
+    });
+
+    // =============================================
+    // 10. CANCEL JOB REQUEST
+    // =============================================
+    function cancelJobRequest(jobId) {
+        if (!confirm('Are you sure you want to cancel this job request? This action cannot be undone.')) return;
+        
+        const formData = new FormData();
+        formData.append('action', 'cancel_request');
+        formData.append('job_id', jobId);
+        
+        fetch('jobs.php', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.text())
+        .then(() => {
+            window.location.reload();
+        })
+        .catch(() => {
+            showToast('Error cancelling job request.', 'error');
+        });
+    }
+
+    // =============================================
+    // 11. RESPONSIVE HANDLING
+    // =============================================
+    let resizeTimer;
+    window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function() {
+            const width = window.innerWidth;
+            if (width <= 768) {
+                sidebar.classList.remove('collapsed');
+            } else {
+                sidebar.classList.remove('mobile-open');
+                if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+                document.body.style.overflow = '';
+                const saved = localStorage.getItem('sidebarCollapsed');
+                if (saved === 'true') {
+                    sidebar.classList.add('collapsed');
+                } else {
+                    sidebar.classList.remove('collapsed');
+                }
+            }
+        }, 250);
+    });
+
+    // =============================================
+    // SESSION ACTIVITY MONITOR (Removed extend_session)
+    // =============================================
+    let sessionTimer = null;
+    let warningShown = false;
+    const SESSION_TIMEOUT = 420; // 7 minutes
+    const WARNING_TIME = 60;
+
+    function updateSessionTimer() {
+        // Just check if session is still valid via simple ping
+        fetch('check_session.php')
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.remaining !== undefined) {
+                    if (data.remaining <= 0) {
+                        window.location.href = '../../login.php?timeout=1';
+                    }
+                }
+            })
+            .catch(() => {});
+    }
+
+    // Simple session ping every 30 seconds
+    sessionTimer = setInterval(updateSessionTimer, 30000);
+
+    console.log('📋 ISMERS Client Job Management with HR Approval Flow loaded successfully!');
+    console.log('🤖 AI Features: Optimistic Modal, Dots Loading, Full Job Data Generation');
+    console.log('📤 Job requests are sent to HR for review (status: pending_review)');
     </script>
-<script src="/CT1/session_guard.js"></script>
+    <script src="/CT1/session_guard.js"></script>
 </body>
 </html>
