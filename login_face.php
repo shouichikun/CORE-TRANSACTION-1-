@@ -85,30 +85,47 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
             position: relative;
         }
 
-        .login-card .login-logo {
+        /* =============================================
+           LOGO STYLES
+           ============================================= */
+        .login-logo {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 1.25rem;
+        }
+
+        .login-logo img {
+            width: 80px;
+            height: 80px;
+            object-fit: contain;
+            display: block;
+        }
+
+        .login-logo .logo-text {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-left: 0.75rem;
+            color: var(--text-on-surface);
+        }
+
+        .login-logo .logo-sub {
+            font-size: 0.875rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        .login-card .login-header {
             text-align: center;
             margin-bottom: 1.5rem;
         }
 
-        .login-card .login-logo .logo-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 4rem;
-            height: 4rem;
-            border-radius: 1rem;
-            background: var(--primary);
-            color: white;
-            font-size: 2rem;
-        }
-
-        .login-card .login-logo h1 {
+        .login-card .login-header h1 {
             font-size: 1.5rem;
             font-weight: 700;
-            margin-top: 0.5rem;
         }
 
-        .login-card .login-logo p {
+        .login-card .login-header p {
             color: var(--text-on-surface-variant);
             font-size: 0.875rem;
         }
@@ -910,8 +927,14 @@ $redirect = isset($_GET['redirect']) ? $_GET['redirect'] : 'dashboard.php';
 <body>
     <div class="login-container">
         <div class="login-card">
+            <!-- ============================================= -->
+            <!-- LOGO - NO ANIMATION -->
+            <!-- ============================================= -->
             <div class="login-logo">
-                <span class="logo-icon">I</span>
+                <img src="logo.png" alt="ISMERS Logo">
+            </div>
+
+            <div class="login-header">
                 <h1>Face Login</h1>
                 <p>Sign in using facial recognition</p>
             </div>
