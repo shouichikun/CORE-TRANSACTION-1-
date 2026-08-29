@@ -1,5 +1,5 @@
 <?php
-// /CT1/api/face/login.php - Face Login API (PostgreSQL Fixed)
+// /api/face/login.php - Face Login API (PostgreSQL Fixed - NO CT1 FOLDER)
 session_start();
 header('Content-Type: application/json');
 
@@ -26,29 +26,17 @@ if (!$user) {
 }
 
 // ✅ FIXED: PostgreSQL boolean handling
-// In PostgreSQL, is_active can be:
-// - boolean true/false
-// - string 't'/'f'
-// - integer 1/0 (if stored as integer)
-// This handles all cases
-
 $isActive = false;
 
-// Check if is_active exists
 if (isset($user['is_active'])) {
     $val = $user['is_active'];
     
-    // Case 1: It's a boolean (true/false)
     if (is_bool($val)) {
         $isActive = $val === true;
-    }
-    // Case 2: It's a string ('t'/'f' or 'true'/'false')
-    else if (is_string($val)) {
+    } else if (is_string($val)) {
         $lower = strtolower($val);
         $isActive = ($lower === 't' || $lower === 'true' || $lower === '1');
-    }
-    // Case 3: It's an integer (1/0)
-    else if (is_numeric($val)) {
+    } else if (is_numeric($val)) {
         $isActive = intval($val) === 1;
     }
 }
@@ -107,9 +95,11 @@ insertRecord($logSql, [
 ]);
 
 // Log activity
-logActivity($userId, 'Face Login', 'users', $userId, 'User logged in via face recognition');
+if (function_exists('logActivity')) {
+    logActivity($userId, 'Face Login', 'users', $userId, 'User logged in via face recognition');
+}
 
-// Return redirect
+// ✅ FIXED: Return redirect WITHOUT /CT1/ prefix
 $redirectPath = getRedirectUrl($user['role']);
 
 echo json_encode([
@@ -124,23 +114,24 @@ echo json_encode([
     'redirect' => $redirectPath
 ]);
 
+// ✅ FIXED: getRedirectUrl - NO /CT1/ prefix
 function getRedirectUrl($role) {
     switch ($role) {
         case 'admin':
-            return '/CT1/portals/admin/dashboard.php';
+            return '/portals/admin/dashboard.php';
         case 'hr_manager':
         case 'recruiter':
-            return '/CT1/portals/hr/dashboard.php';
+            return '/portals/hr/dashboard.php';
         case 'client':
-            return '/CT1/portals/client/dashboard.php';
+            return '/portals/client/dashboard.php';
         case 'employee':
-            return '/CT1/portals/employee/dashboard.php';
+            return '/portals/employee/dashboard.php';
         case 'applicant':
-            return '/CT1/portals/applicant/dashboard.php';
+            return '/portals/applicant/dashboard.php';
         case 'supervisor':
-            return '/CT1/portals/supervisor/dashboard.php';
+            return '/portals/supervisor/dashboard.php';
         default:
-            return '/CT1/index.php';
+            return '/index.php';
     }
 }
 ?>
