@@ -2497,30 +2497,30 @@ $userProfile = getUserProfileData($userId);
         }
     });
 
-    // =============================================
-    // 6. TOAST SYSTEM - SMALL AND SUBTLE
-    // =============================================
-    function showToast(message, type = 'info') {
-        const existingToast = document.querySelector('.toast');
-        if (existingToast) existingToast.remove();
-        
-        // Also remove any AI success toast
-        const existingAiToast = document.querySelector('.ai-success-toast');
-        if (existingAiToast) existingAiToast.remove();
+  // =============================================
+// TOAST SYSTEM - MUST BE DEFINED FIRST
+// =============================================
+function showToast(message, type = 'info') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) existingToast.remove();
+    
+    // Also remove any AI success toast
+    const existingAiToast = document.querySelector('.ai-success-toast');
+    if (existingAiToast) existingAiToast.remove();
 
-        const toast = document.createElement('div');
-        toast.className = 'toast ' + type;
-        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
-        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
-        document.body.appendChild(toast);
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+    toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+    document.body.appendChild(toast);
 
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateY(-10px)';
-            toast.style.transition = 'all 0.3s ease';
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
-    }
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-10px)';
+        toast.style.transition = 'all 0.3s ease';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
 
     // =============================================
     // 7. AI OPTIMISTIC MODAL
