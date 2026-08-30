@@ -5,29 +5,88 @@
 session_start();
 
 // Include configuration file
-// ✅ Initialize session timeout
 require_once '../../app/config.php';
 initSessionTimeout();
 require_once '../../app/ai/AiService.php';
 
-// Include PDF Parser
-require_once '../../vendor/autoload.php';
-
-use Smalot\PdfParser\Parser;
+// =============================================
+// FIX: Check if constants are already defined before defining them
+// =============================================
+if (!defined('MAX_FILE_SIZE')) {
+    define('MAX_FILE_SIZE', 5 * 1024 * 1024); // 5MB
+}
+if (!defined('MAX_USER_STORAGE')) {
+    define('MAX_USER_STORAGE', 20 * 1024 * 1024); // 20MB per user
+}
+if (!defined('ALLOWED_EXTENSIONS')) {
+    define('ALLOWED_EXTENSIONS', ['pdf', 'doc', 'docx', 'txt']);
+}
+if (!defined('ALLOWED_MIME_TYPES')) {
+    define('ALLOWED_MIME_TYPES', [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain'
+    ]);
+}
+if (!defined('MAX_UPLOADS_PER_MINUTE')) {
+    define('MAX_UPLOADS_PER_MINUTE', 3);
+}
 
 // =============================================
-// SECURITY CONSTANTS
+// LOAD PDF PARSER - FIXED WITH FALLBACKS
 // =============================================
-define('MAX_FILE_SIZE', 5 * 1024 * 1024); // 5MB
-define('MAX_USER_STORAGE', 20 * 1024 * 1024); // 20MB per user
-define('ALLOWED_EXTENSIONS', ['pdf', 'doc', 'docx', 'txt']);
-define('ALLOWED_MIME_TYPES', [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain'
-]);
-define('MAX_UPLOADS_PER_MINUTE', 3);
+
+// Try autoloader first
+$autoloadPaths = [
+    __DIR__ . '/../../vendor/autoload.php',
+    __DIR__ . '/../vendor/autoload.php',
+    __DIR__ . '/../../autoload.php',
+    __DIR__ . '/vendor/autoload.php'
+];
+
+$autoloadLoaded = false;
+foreach ($autoloadPaths as $path) {
+    if (file_exists($path)) {
+        require_once $path;
+        $autoloadLoaded = true;
+        break;
+    }
+}
+
+// If autoloader didn't work, try direct includes
+if (!class_exists('Smalot\PdfParser\Parser')) {
+    $directPaths = [
+        __DIR__ . '/../../smalot/pdfparser/src/Parser.php',
+        __DIR__ . '/../../smalot/pdfparser/src/Smalot/PdfParser/Parser.php',
+        __DIR__ . '/../../vendor/smalot/pdfparser/src/Parser.php',
+        __DIR__ . '/../../vendor/smalot/pdfparser/src/Smalot/PdfParser/Parser.php'
+    ];
+    
+    foreach ($directPaths as $path) {
+        if (file_exists($path)) {
+            require_once $path;
+            break;
+        }
+    }
+}
+
+// Also try to include PHPMailer if needed elsewhere
+if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+    $mailPaths = [
+        __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php',
+        __DIR__ . '/../../vendor/phpmailer/phpmailer/src/PHPMailer.php'
+    ];
+    foreach ($mailPaths as $path) {
+        if (file_exists($path)) {
+            require_once $path;
+            break;
+        }
+    }
+}
+
+// Check if PDF parser is available
+$pdfParserAvailable = class_exists('Smalot\PdfParser\Parser');
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -431,22 +490,25 @@ function extractResumeText($filePath) {
             return $text;
         }
         elseif ($extension === 'docx') {
-            $zip = new ZipArchive();
-            if ($zip->open($filePath) === true) {
-                $content = $zip->getFromName('word/document.xml');
-                $zip->close();
-                if ($content) {
-                    $text = strip_tags($content);
-                    $text = preg_replace('/\s+/', ' ', $text);
-                    $text = trim($text);
+            if (class_exists('ZipArchive')) {
+                $zip = new ZipArchive();
+                if ($zip->open($filePath) === true) {
+                    $content = $zip->getFromName('word/document.xml');
+                    $zip->close();
+                    if ($content) {
+                        $text = strip_tags($content);
+                        $text = preg_replace('/\s+/', ' ', $text);
+                        $text = trim($text);
+                    }
                 }
             }
             return $text;
         }
         elseif ($extension === 'doc') {
-            if (exec("which antiword")) {
-                $text = shell_exec("antiword " . escapeshellarg($filePath));
-            } else {
+            if (function_exists('exec') && exec("which antiword 2>/dev/null")) {
+                $text = shell_exec("antiword " . escapeshellarg($filePath) . " 2>/dev/null");
+            }
+            if (empty($text)) {
                 $text = file_get_contents($filePath);
                 $text = preg_replace('/[^\x20-\x7E\x0A\x0D]/', ' ', $text);
                 $text = preg_replace('/\s+/', ' ', $text);
@@ -3259,6 +3321,6 @@ ensureUploadLogsTable();
         console.log('🔒 Secure upload: MIME validation, signature check, content scanning');
         console.log('🎯 3-Step Progress Modal enabled');
     </script>
-<script src="/CT1/session_guard.js"></script>
+<script src="/session_guard.js"></script>
 </body>
 </html>
