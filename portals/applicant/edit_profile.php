@@ -55,12 +55,12 @@ foreach ($autoloadPaths as $path) {
 }
 
 // If autoloader didn't work, try direct includes
-if (!class_exists('Smalot\PdfParser\Parser')) {
+if (!class_exists('\Smalot\PdfParser\Parser') && !class_exists('Smalot\PdfParser\Parser')) {
     $directPaths = [
-        __DIR__ . '/../../smalot/pdfparser/src/Parser.php',
-        __DIR__ . '/../../smalot/pdfparser/src/Smalot/PdfParser/Parser.php',
         __DIR__ . '/../../vendor/smalot/pdfparser/src/Parser.php',
-        __DIR__ . '/../../vendor/smalot/pdfparser/src/Smalot/PdfParser/Parser.php'
+        __DIR__ . '/../../vendor/smalot/pdfparser/src/Smalot/PdfParser/Parser.php',
+        __DIR__ . '/../../smalot/pdfparser/src/Parser.php',
+        __DIR__ . '/../../smalot/pdfparser/src/Smalot/PdfParser/Parser.php'
     ];
     
     foreach ($directPaths as $path) {
@@ -86,7 +86,7 @@ if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
 }
 
 // Check if PDF parser is available
-$pdfParserAvailable = class_exists('Smalot\PdfParser\Parser');
+$pdfParserAvailable = class_exists('\Smalot\PdfParser\Parser') || class_exists('Smalot\PdfParser\Parser');
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
@@ -482,12 +482,50 @@ function extractResumeText($filePath) {
     
     try {
         if ($extension === 'pdf') {
-            $parser = new Parser();
-            $pdf = $parser->parseFile($filePath);
-            $text = $pdf->getText();
-            $text = preg_replace('/\s+/', ' ', $text);
-            $text = trim($text);
-            return $text;
+            // Try using the Parser with full namespace
+            if (class_exists('\Smalot\PdfParser\Parser')) {
+                $parser = new \Smalot\PdfParser\Parser();
+                $pdf = $parser->parseFile($filePath);
+                $text = $pdf->getText();
+                $text = preg_replace('/\s+/', ' ', $text);
+                $text = trim($text);
+                return $text;
+            }
+            
+            // Try without leading backslash
+            if (class_exists('Smalot\PdfParser\Parser')) {
+                $parser = new \Smalot\PdfParser\Parser();
+                $pdf = $parser->parseFile($filePath);
+                $text = $pdf->getText();
+                $text = preg_replace('/\s+/', ' ', $text);
+                $text = trim($text);
+                return $text;
+            }
+            
+            // If class doesn't exist, try direct include
+            $possiblePaths = [
+                __DIR__ . '/../../vendor/smalot/pdfparser/src/Parser.php',
+                __DIR__ . '/../../vendor/smalot/pdfparser/src/Smalot/PdfParser/Parser.php',
+                __DIR__ . '/../../smalot/pdfparser/src/Parser.php',
+                __DIR__ . '/../../smalot/pdfparser/src/Smalot/PdfParser/Parser.php'
+            ];
+            
+            foreach ($possiblePaths as $path) {
+                if (file_exists($path)) {
+                    require_once $path;
+                    if (class_exists('\Smalot\PdfParser\Parser')) {
+                        $parser = new \Smalot\PdfParser\Parser();
+                        $pdf = $parser->parseFile($filePath);
+                        $text = $pdf->getText();
+                        $text = preg_replace('/\s+/', ' ', $text);
+                        $text = trim($text);
+                        return $text;
+                    }
+                }
+            }
+            
+            error_log("PDF Parser could not be loaded for file: " . $filePath);
+            return null;
         }
         elseif ($extension === 'docx') {
             if (class_exists('ZipArchive')) {
@@ -855,7 +893,7 @@ if ($applicantId) {
 }
 
 // Check if PDF parser is available
-$pdfParserAvailable = class_exists('Smalot\PdfParser\Parser');
+$pdfParserAvailable = class_exists('\Smalot\PdfParser\Parser') || class_exists('Smalot\PdfParser\Parser');
 
 if (isset($_SESSION['ai_filled_data']) && !isset($_GET['ai_filled'])) {
     unset($_SESSION['ai_filled_data']);
