@@ -25,7 +25,7 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
 // =============================================
-// GET CLIENT PROFILE - IMPORTANT: Get client.id
+// GET CLIENT PROFILE - Get the correct client.id
 // =============================================
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
@@ -39,7 +39,10 @@ if (!$client) {
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = (int)($client['id'] ?? 0); // ✅ THIS IS THE CORRECT client_id for job_orders
+$clientId = (int)($client['id'] ?? 0);  // ✅ This must be the client.id from the clients table
+
+// DEBUG - Check what client_id we're using
+error_log("DEBUG - Client ID: " . $clientId . " for user: " . $userId);
 
 // =============================================
 // DEBUG: Check if client exists and has offers
@@ -55,11 +58,15 @@ error_log("User ID: " . $userId);
 // =============================================
 $filter = $_GET['filter'] ?? 'all';
 
-// ✅ FIXED: Use the correct client_id from clients table
-$sql = "SELECT o.*, 
-        u.first_name, u.last_name, u.email,
+// ✅ FIXED: Properly select job_title from job_orders
+$sql = "SELECT 
+        o.*, 
+        u.first_name, 
+        u.last_name, 
+        u.email,
         a.id as application_id,
-        jo.title as job_title,
+        jo.id as job_id,
+        jo.title as job_title,           -- ✅ This is the job title
         jo.location as job_location,
         jo.job_type as job_type,
         ag.agency_name,
@@ -69,28 +76,11 @@ $sql = "SELECT o.*,
         JOIN applications a ON o.application_id = a.id
         JOIN applicants ap ON a.applicant_id = ap.id
         JOIN users u ON ap.user_id = u.id
-        JOIN job_orders jo ON a.job_order_id = jo.id
+        JOIN job_orders jo ON a.job_order_id = jo.id   -- ✅ This joins to get job title
         LEFT JOIN recruitment_agencies ag ON jo.agency_id = ag.id
-        WHERE jo.client_id = $1";  // ✅ $clientId from clients.id
+        WHERE jo.client_id = $1";
 
 $params = [$clientId];
-
-// If no offers found and clientId is 0, try to find the client_id from job_orders
-if (empty($offers) && $clientId == 0) {
-    // Try to find the client_id from job_orders using user_id
-    $fallbackClient = getRecord("
-        SELECT c.id FROM clients c
-        JOIN job_orders jo ON jo.client_id = c.id
-        WHERE c.user_id = $1
-        LIMIT 1
-    ", [$userId]);
-    
-    if ($fallbackClient && isset($fallbackClient['id'])) {
-        $clientId = (int)$fallbackClient['id'];
-        $params = [$clientId];
-        // Re-run the query with the found client_id
-    }
-}
 
 if ($filter !== 'all') {
     $sql .= " AND o.status = $2";
@@ -108,6 +98,18 @@ $sql .= " ORDER BY
     o.created_at DESC";
 
 $offers = getRecords($sql, $params);
+// TEMPORARY DEBUG - Check what job titles exist
+$debugJobs = getRecords("SELECT id, title, client_id FROM job_orders WHERE client_id = $1 LIMIT 5", [$clientId]);
+if (!empty($debugJobs)) {
+    error_log("DEBUG - Job titles found: " . json_encode($debugJobs));
+} else {
+    error_log("DEBUG - No job orders found for client_id: " . $clientId);
+}
+
+// Also check the actual offers data
+if (!empty($offers)) {
+    error_log("DEBUG - First offer: " . json_encode($offers[0]));
+}
 
 // If still no offers, try a direct query to see what's in the offers table
 if (empty($offers)) {
