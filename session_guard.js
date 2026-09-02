@@ -55,7 +55,7 @@
                     You have been inactive for too long. Please log in again to continue.
                 </p>
                 <div class="session-modal-btns">
-                    <button class="session-btn-danger" onclick="window.location.href='/logout.php'">Logout</button>
+                    <button class="session-btn-danger" onclick="window.location.href='logout.php'">Logout</button>
                 </div>
             </div>
         </div>
