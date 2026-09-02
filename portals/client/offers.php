@@ -1542,6 +1542,6 @@ function getOfferStatusLabel($status) {
         console.log('📋 ISMERS Client Job Offers loaded successfully!');
         console.log('📊 Total offers: <?php echo count($offers); ?>');
     </script>
-    <script src="/CT1/session_guard.js"></script>
+    <script src="/session_guard.js"></script>
 </body>
 </html>
