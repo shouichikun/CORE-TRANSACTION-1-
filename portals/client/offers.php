@@ -87,6 +87,20 @@ $sql .= " ORDER BY
 
 $offers = getRecords($sql, $params);
 
+// =============================================
+// DEBUG - Check what's in the offers array
+// =============================================
+// Uncomment this to see what's being returned
+/*
+error_log("=== OFFERS DEBUG ===");
+error_log("Total offers: " . count($offers));
+if (!empty($offers)) {
+    error_log("First offer: " . print_r($offers[0], true));
+    error_log("Job title: " . ($offers[0]['job_title'] ?? 'NULL'));
+    error_log("Job ID: " . ($offers[0]['job_id'] ?? 'NULL'));
+}
+*/
+
 // Get status counts for filter
 $statusCounts = ['all' => count($offers)];
 $statuses = ['pending', 'accepted', 'rejected', 'withdrawn'];
@@ -1500,7 +1514,7 @@ function formatCurrency($amount) {
                         $statusClass = $isPending ? 'badge-pending' : ($isAccepted ? 'badge-accepted' : ($isRejected ? 'badge-rejected' : 'badge-withdrawn'));
                         $statusLabel = ucfirst($offer['status'] ?? 'Pending');
                         $applicantName = htmlspecialchars(($offer['first_name'] ?? '') . ' ' . ($offer['last_name'] ?? ''));
-                        // ✅ FIXED: Use the job_title from the query, fallback to 'Position' if empty
+                        // ✅ FIXED: Get job title from the offer array
                         $jobTitle = !empty($offer['job_title']) ? htmlspecialchars($offer['job_title']) : 'Position';
                         $location = htmlspecialchars($offer['job_location'] ?? 'Remote');
                         $jobType = htmlspecialchars($offer['job_type'] ?? 'Full-time');
@@ -1929,32 +1943,15 @@ function formatCurrency($amount) {
         });
 
         // =============================================
-        // 8. SESSION ACTIVITY MONITOR
+        // 8. SESSION ACTIVITY MONITOR - FIXED: removed check_session.php
         // =============================================
-        let sessionTimer = null;
-        const SESSION_TIMEOUT = 420; // 7 minutes
-        const WARNING_TIME = 60;
-
-        function updateSessionTimer() {
-            fetch('check_session.php')
-                .then(response => response.json())
-                .then(data => {
-                    if (data && data.remaining !== undefined) {
-                        if (data.remaining <= 0) {
-                            window.location.href = '../../login.php?timeout=1';
-                        }
-                    }
-                })
-                .catch(() => {});
-        }
-
-        sessionTimer = setInterval(updateSessionTimer, 30000);
         console.log('📋 ISMERS Client Job Offers loaded successfully!');
         console.log('📊 Total offers: <?php echo count($offers); ?>');
         
         // Debug: Log the first offer's job_title
         <?php if (!empty($offers)): ?>
         console.log('📝 First offer job_title:', '<?php echo addslashes($offers[0]['job_title'] ?? 'NULL'); ?>');
+        console.log('📝 First offer full data:', <?php echo json_encode($offers[0]); ?>);
         <?php endif; ?>
     </script>
     <script src="/session_guard.js"></script>
