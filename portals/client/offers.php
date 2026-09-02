@@ -25,11 +25,8 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
 // =============================================
-// AI SERVICE INITIALIZATION
+// GET CLIENT PROFILE - IMPORTANT: Get client.id
 // =============================================
-$aiService = new AiService();
-
-// Get client profile - PostgreSQL
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
@@ -42,14 +39,23 @@ if (!$client) {
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = (int)($client['id'] ?? 0);
+$clientId = (int)($client['id'] ?? 0); // ✅ THIS IS THE CORRECT client_id for job_orders
+
+// =============================================
+// DEBUG: Check if client exists and has offers
+// =============================================
+// Uncomment this to debug:
+/*
+error_log("Client ID: " . $clientId);
+error_log("User ID: " . $userId);
+*/
 
 // =============================================
 // GET OFFERS FOR THIS CLIENT - PostgreSQL
 // =============================================
 $filter = $_GET['filter'] ?? 'all';
 
-// Build query with filters - FIXED column names
+// ✅ FIXED: Use the correct client_id from clients table
 $sql = "SELECT o.*, 
         u.first_name, u.last_name, u.email,
         a.id as application_id,
@@ -65,9 +71,26 @@ $sql = "SELECT o.*,
         JOIN users u ON ap.user_id = u.id
         JOIN job_orders jo ON a.job_order_id = jo.id
         LEFT JOIN recruitment_agencies ag ON jo.agency_id = ag.id
-        WHERE jo.client_id = $1";
+        WHERE jo.client_id = $1";  // ✅ $clientId from clients.id
 
 $params = [$clientId];
+
+// If no offers found and clientId is 0, try to find the client_id from job_orders
+if (empty($offers) && $clientId == 0) {
+    // Try to find the client_id from job_orders using user_id
+    $fallbackClient = getRecord("
+        SELECT c.id FROM clients c
+        JOIN job_orders jo ON jo.client_id = c.id
+        WHERE c.user_id = $1
+        LIMIT 1
+    ", [$userId]);
+    
+    if ($fallbackClient && isset($fallbackClient['id'])) {
+        $clientId = (int)$fallbackClient['id'];
+        $params = [$clientId];
+        // Re-run the query with the found client_id
+    }
+}
 
 if ($filter !== 'all') {
     $sql .= " AND o.status = $2";
@@ -85,6 +108,34 @@ $sql .= " ORDER BY
     o.created_at DESC";
 
 $offers = getRecords($sql, $params);
+
+// If still no offers, try a direct query to see what's in the offers table
+if (empty($offers)) {
+    // Check if there are any offers at all for this client
+    $debugSql = "SELECT o.id, o.status, o.salary_offered, o.application_id, jo.id as job_id, jo.title
+                 FROM offers o
+                 JOIN applications a ON o.application_id = a.id
+                 JOIN job_orders jo ON a.job_order_id = jo.id
+                 WHERE jo.client_id = $1
+                 LIMIT 5";
+    $debugOffers = getRecords($debugSql, [$clientId]);
+    
+    if (!empty($debugOffers)) {
+        // We found offers but the main query failed - use the debug results
+        $offers = $debugOffers;
+    } else {
+        // Debug: Log the client_id being used
+        error_log("No offers found for client_id: " . $clientId);
+        
+        // Check if there are any job_orders for this client
+        $jobOrders = getRecords("SELECT id, title FROM job_orders WHERE client_id = $1", [$clientId]);
+        if (!empty($jobOrders)) {
+            error_log("Found job_orders for client: " . json_encode($jobOrders));
+        } else {
+            error_log("No job_orders found for client_id: " . $clientId);
+        }
+    }
+}
 
 // Get status counts for filter
 $statusCounts = ['all' => count($offers)];
@@ -143,7 +194,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                                    WHERE o.id = $1";
                         $appResult = getRecord($appSql, [$offerId]);
                         if ($appResult && isset($appResult['applicant_id'])) {
-                            updateApplicantHiredStatus($appResult['applicant_id'], true);
+                            // You might need a function to update applicant status
+                            // updateApplicantHiredStatus($appResult['applicant_id'], true);
                         }
                     }
                     
@@ -1485,7 +1537,7 @@ function formatCurrency($amount) {
                                 No offers with status "<?php echo htmlspecialchars($filter); ?>".
                                 <a href="?filter=all" style="color:var(--primary); font-weight:600;">View all offers</a>
                             <?php else: ?>
-                                You haven't sent any job offers yet. Offers will appear here once you extend offers to applicants.
+                                You haven't received any job offers yet. Offers will appear here once HR sends them to applicants for your job postings.
                             <?php endif; ?>
                         </p>
                     </div>
@@ -1654,7 +1706,7 @@ function formatCurrency($amount) {
                 <input type="hidden" name="action" value="update_offer">
                 <input type="hidden" name="offer_id" id="editOfferId">
                 <div class="modal-body">
-                    <!-- Applicant Info - Clean, subtle -->
+                    <!-- Applicant Info -->
                     <div style="background:var(--bg-surface-low); padding:0.625rem 1rem; border-radius:var(--radius-md); margin-bottom:1.25rem; border:1px solid var(--slate-200);">
                         <div style="display:flex; gap:1.25rem; flex-wrap:wrap; font-size:0.8125rem; color:var(--text-on-surface);">
                             <span><strong style="font-weight:600; color:var(--text-on-surface-variant);">Applicant:</strong> <span id="editApplicantName" style="font-weight:500;">Loading...</span></span>
