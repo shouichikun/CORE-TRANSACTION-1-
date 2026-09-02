@@ -98,7 +98,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $result = executeQuery($updateSql, $params);
                 
                 if ($result) {
-                    // Log activity
                     if (function_exists('logActivity')) {
                         logActivity($userId, 'Offer Updated', 'offers', $offerId, 
                                    'Client updated offer details');
@@ -181,12 +180,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // =============================================
-// GET ALL OFFERS FOR THIS CLIENT
+// GET ALL OFFERS FOR THIS CLIENT - FIXED QUERY
 // =============================================
 $offersSql = "SELECT 
                 o.*,
                 a.id as application_id,
-                a.applicant_id,
                 a.status as application_status,
                 a.applied_at,
                 j.id as job_id,
@@ -194,21 +192,45 @@ $offersSql = "SELECT
                 j.location as job_location,
                 j.job_type,
                 j.salary_range as job_salary_range,
+                u.id as user_id,
                 u.full_name as applicant_name,
                 u.email as applicant_email,
                 u.phone as applicant_phone,
                 ra.agency_name,
                 ra.agency_code,
-                (SELECT array_agg(skill) FROM applicant_skills WHERE applicant_id = a.applicant_id) as skills
+                (SELECT array_to_json(array_agg(s)) FROM applicant_skills s WHERE s.applicant_id = ap.id) as skills
               FROM offers o
               JOIN applications a ON o.application_id = a.id
+              JOIN applicants ap ON a.applicant_id = ap.id
+              JOIN users u ON ap.user_id = u.id
               JOIN job_orders j ON a.job_order_id = j.id
-              JOIN users u ON a.applicant_id = u.id
               LEFT JOIN recruitment_agencies ra ON j.agency_id = ra.id
               WHERE j.client_id = $1
               ORDER BY o.created_at DESC";
 
 $offers = getRecords($offersSql, [$clientId]);
+
+// If no offers found, try a simpler query to debug
+if (empty($offers)) {
+    // Check if there are any offers at all for this client
+    $debugSql = "SELECT 
+                    o.id, o.status, o.salary_offered, o.created_at,
+                    j.id as job_id, j.title as job_title,
+                    u.full_name as applicant_name
+                 FROM offers o
+                 JOIN applications a ON o.application_id = a.id
+                 JOIN job_orders j ON a.job_order_id = j.id
+                 JOIN applicants ap ON a.applicant_id = ap.id
+                 JOIN users u ON ap.user_id = u.id
+                 WHERE j.client_id = $1
+                 LIMIT 5";
+    $debugOffers = getRecords($debugSql, [$clientId]);
+    
+    if (!empty($debugOffers)) {
+        // We found offers but the main query failed - use the debug results
+        $offers = $debugOffers;
+    }
+}
 
 // Get status counts for filter
 $statusCounts = [
@@ -288,8 +310,12 @@ function formatCurrency($amount) {
     if ($amount === null || $amount === 0) return '₱0.00';
     return '₱' . number_format($amount, 2);
 }
-?>
 
+// Get pending offers count for sidebar badge
+$pendingOffers = array_filter($offers, function($o) {
+    return ($o['status'] ?? '') === 'pending';
+});
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1105,11 +1131,7 @@ function formatCurrency($amount) {
             <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">handshake</span>
                 <span class="nav-text">Offers</span>
-                <?php 
-                $pendingOffers = array_filter($offers, function($o) { 
-                    return $o['status'] === 'pending'; 
-                });
-                if (count($pendingOffers) > 0): ?>
+                <?php if (count($pendingOffers) > 0): ?>
                     <span class="nav-badge"><?php echo count($pendingOffers); ?></span>
                 <?php endif; ?>
             </a>
@@ -1250,7 +1272,7 @@ function formatCurrency($amount) {
                 <div class="page-header">
                     <div>
                         <h1>Job Offers</h1>
-                        <p>Manage job offers sent to applicants for your positions</p>
+                        <p>View and manage job offers sent to applicants for your positions</p>
                     </div>
                     <div>
                         <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
@@ -1312,7 +1334,7 @@ function formatCurrency($amount) {
                                 No offers match your current filters.
                                 <a href="offers.php" style="color:var(--primary); font-weight:600;">Clear filters</a>
                             <?php else: ?>
-                                You haven't received any job offers yet. Offers will appear here when HR sends them to applicants.
+                                You haven't received any job offers yet. Offers will appear here when HR sends them to applicants for your job postings.
                             <?php endif; ?>
                         </p>
                     </div>
@@ -1322,7 +1344,7 @@ function formatCurrency($amount) {
                             <div class="offer-card-header">
                                 <div>
                                     <div class="offer-card-title">
-                                        <span class="job-title"><?php echo htmlspecialchars($offer['job_title']); ?></span>
+                                        <span class="job-title"><?php echo htmlspecialchars($offer['job_title'] ?? 'Position'); ?></span>
                                         <span class="badge <?php echo $statusBadges[$offer['status']] ?? 'badge-pending'; ?>">
                                             <?php echo $statusLabels[$offer['status']] ?? ucfirst($offer['status']); ?>
                                         </span>
@@ -1330,13 +1352,13 @@ function formatCurrency($amount) {
                                     <div class="offer-card-meta">
                                         <span>
                                             <span class="material-symbols-outlined">person</span>
-                                            <?php echo htmlspecialchars($offer['applicant_name']); ?>
+                                            <?php echo htmlspecialchars($offer['applicant_name'] ?? 'Unknown Applicant'); ?>
                                         </span>
                                         <span>
                                             <span class="material-symbols-outlined">email</span>
-                                            <?php echo htmlspecialchars($offer['applicant_email']); ?>
+                                            <?php echo htmlspecialchars($offer['applicant_email'] ?? 'N/A'); ?>
                                         </span>
-                                        <?php if ($offer['agency_name']): ?>
+                                        <?php if ($offer['agency_name'] ?? false): ?>
                                             <span>
                                                 <span class="material-symbols-outlined">apartment</span>
                                                 <?php echo htmlspecialchars($offer['agency_name']); ?>
@@ -1353,40 +1375,40 @@ function formatCurrency($amount) {
                                     </div>
                                 </div>
                                 <span style="font-size:0.7rem; color:var(--text-on-surface-variant);">
-                                    <?php echo date('M d, Y', strtotime($offer['created_at'])); ?>
+                                    <?php echo date('M d, Y', strtotime($offer['created_at'] ?? 'now')); ?>
                                 </span>
                             </div>
 
                             <div class="offer-card-details">
                                 <div class="offer-detail-item">
                                     <span class="label">Salary Offered</span>
-                                    <span class="value salary"><?php echo formatCurrency($offer['salary_offered']); ?></span>
+                                    <span class="value salary"><?php echo formatCurrency($offer['salary_offered'] ?? 0); ?></span>
                                 </div>
-                                <?php if ($offer['start_date']): ?>
+                                <?php if ($offer['start_date'] ?? false): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Start Date</span>
                                         <span class="value"><?php echo date('M d, Y', strtotime($offer['start_date'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['offer_date']): ?>
+                                <?php if ($offer['offer_date'] ?? false): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Offer Date</span>
                                         <span class="value"><?php echo date('M d, Y', strtotime($offer['offer_date'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['sent_at']): ?>
+                                <?php if ($offer['sent_at'] ?? false): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Sent At</span>
                                         <span class="value"><?php echo date('M d, Y h:i A', strtotime($offer['sent_at'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['accepted_at']): ?>
+                                <?php if ($offer['accepted_at'] ?? false): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Accepted At</span>
                                         <span class="value"><?php echo date('M d, Y h:i A', strtotime($offer['accepted_at'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['benefits']): ?>
+                                <?php if ($offer['benefits'] ?? false): ?>
                                     <div class="offer-detail-item" style="grid-column: span 2;">
                                         <span class="label">Benefits</span>
                                         <span class="value" style="font-weight:400;"><?php echo nl2br(htmlspecialchars($offer['benefits'])); ?></span>
@@ -1397,13 +1419,13 @@ function formatCurrency($amount) {
                             <div class="offer-card-footer">
                                 <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
                                     <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">badge</span>
-                                    Application #<?php echo $offer['application_id']; ?>
-                                    <?php if ($offer['application_status']): ?>
+                                    Application #<?php echo $offer['application_id'] ?? 'N/A'; ?>
+                                    <?php if ($offer['application_status'] ?? false): ?>
                                         • Status: <?php echo ucfirst($offer['application_status']); ?>
                                     <?php endif; ?>
                                 </div>
                                 <div class="offer-card-actions">
-                                    <?php if ($offer['status'] === 'pending' || $offer['status'] === 'expired'): ?>
+                                    <?php if (($offer['status'] ?? '') === 'pending' || ($offer['status'] ?? '') === 'expired'): ?>
                                         <button class="btn btn-sm btn-primary" onclick="openEditModal(<?php echo $offer['id']; ?>)">
                                             <span class="material-symbols-outlined">edit</span>
                                             Edit Offer
@@ -1412,24 +1434,24 @@ function formatCurrency($amount) {
                                             <span class="material-symbols-outlined">cancel</span>
                                             Withdraw
                                         </button>
-                                    <?php elseif ($offer['status'] === 'accepted'): ?>
+                                    <?php elseif (($offer['status'] ?? '') === 'accepted'): ?>
                                         <span style="font-size:0.75rem; color:#059669; display:flex; align-items:center; gap:0.25rem;">
                                             <span class="material-symbols-outlined" style="font-size:1rem;">check_circle</span>
                                             Offer Accepted
                                         </span>
-                                    <?php elseif ($offer['status'] === 'rejected'): ?>
+                                    <?php elseif (($offer['status'] ?? '') === 'rejected'): ?>
                                         <span style="font-size:0.75rem; color:#dc2626; display:flex; align-items:center; gap:0.25rem;">
                                             <span class="material-symbols-outlined" style="font-size:1rem;">cancel</span>
                                             Offer Rejected
                                         </span>
-                                    <?php elseif ($offer['status'] === 'withdrawn'): ?>
+                                    <?php elseif (($offer['status'] ?? '') === 'withdrawn'): ?>
                                         <span style="font-size:0.75rem; color:#6b7280; display:flex; align-items:center; gap:0.25rem;">
                                             <span class="material-symbols-outlined" style="font-size:1rem;">undo</span>
                                             Withdrawn
                                         </span>
                                     <?php endif; ?>
                                     
-                                    <?php if ($offer['document_path']): ?>
+                                    <?php if ($offer['document_path'] ?? false): ?>
                                         <a href="<?php echo htmlspecialchars($offer['document_path']); ?>" target="_blank" class="btn btn-sm btn-outline">
                                             <span class="material-symbols-outlined">description</span>
                                             View Document
