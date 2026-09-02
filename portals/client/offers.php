@@ -196,40 +196,43 @@ $offersSql = "SELECT
                 u.full_name as applicant_name,
                 u.email as applicant_email,
                 u.phone as applicant_phone,
+                u.first_name,
+                u.last_name,
                 ra.agency_name,
                 ra.agency_code,
-                (SELECT array_to_json(array_agg(s)) FROM applicant_skills s WHERE s.applicant_id = ap.id) as skills
+                c.company_name as client_company_name,
+                (SELECT string_agg(s.skill_name, ', ') FROM applicant_skills s WHERE s.applicant_id = ap.id) as skills
               FROM offers o
               JOIN applications a ON o.application_id = a.id
               JOIN applicants ap ON a.applicant_id = ap.id
               JOIN users u ON ap.user_id = u.id
               JOIN job_orders j ON a.job_order_id = j.id
               LEFT JOIN recruitment_agencies ra ON j.agency_id = ra.id
+              JOIN clients c ON j.client_id = c.id
               WHERE j.client_id = $1
               ORDER BY o.created_at DESC";
 
 $offers = getRecords($offersSql, [$clientId]);
 
-// If no offers found, try a simpler query to debug
+// If no offers found, try a simpler query
 if (empty($offers)) {
-    // Check if there are any offers at all for this client
     $debugSql = "SELECT 
-                    o.id, o.status, o.salary_offered, o.created_at,
-                    j.id as job_id, j.title as job_title,
-                    u.full_name as applicant_name
+                    o.id, o.status, o.salary_offered, o.created_at, o.offer_date, o.start_date, o.benefits, o.document_path,
+                    o.application_id,
+                    j.id as job_id, j.title as job_title, j.location as job_location, j.job_type,
+                    u.full_name as applicant_name, u.email as applicant_email,
+                    ra.agency_name,
+                    c.company_name as client_company_name
                  FROM offers o
                  JOIN applications a ON o.application_id = a.id
                  JOIN job_orders j ON a.job_order_id = j.id
                  JOIN applicants ap ON a.applicant_id = ap.id
                  JOIN users u ON ap.user_id = u.id
+                 LEFT JOIN recruitment_agencies ra ON j.agency_id = ra.id
+                 JOIN clients c ON j.client_id = c.id
                  WHERE j.client_id = $1
-                 LIMIT 5";
-    $debugOffers = getRecords($debugSql, [$clientId]);
-    
-    if (!empty($debugOffers)) {
-        // We found offers but the main query failed - use the debug results
-        $offers = $debugOffers;
-    }
+                 ORDER BY o.created_at DESC";
+    $offers = getRecords($debugSql, [$clientId]);
 }
 
 // Get status counts for filter
@@ -273,8 +276,8 @@ if (!empty($search)) {
 // Status labels and badges
 $statusLabels = [
     'pending' => 'Pending',
-    'accepted' => 'Accepted ✅',
-    'rejected' => 'Rejected ❌',
+    'accepted' => 'Accepted',
+    'rejected' => 'Rejected',
     'withdrawn' => 'Withdrawn',
     'expired' => 'Expired'
 ];
@@ -285,14 +288,6 @@ $statusBadges = [
     'rejected' => 'badge-rejected',
     'withdrawn' => 'badge-withdrawn',
     'expired' => 'badge-expired'
-];
-
-$statusColors = [
-    'pending' => '#f59e0b',
-    'accepted' => '#059669',
-    'rejected' => '#dc2626',
-    'withdrawn' => '#6b7280',
-    'expired' => '#dc2626'
 ];
 
 // Display flash messages
@@ -326,7 +321,7 @@ $pendingOffers = array_filter($offers, function($o) {
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* =============================================
-           TOAST - SMALL AND SUBTLE
+           TOAST
            ============================================= */
         .toast {
             position: fixed;
@@ -354,6 +349,9 @@ $pendingOffers = array_filter($offers, function($o) {
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
+        /* =============================================
+           ROOT VARIABLES
+           ============================================= */
         :root {
             --bg-background: #f4f6fa;
             --bg-surface: #ffffff;
@@ -387,54 +385,49 @@ $pendingOffers = array_filter($offers, function($o) {
             --sidebar-collapsed: 72px;
         }
 
-        .badge-success { background: #d1fae5; color: #059669; }
-        .badge-danger { background: #fee2e2; color: #dc2626; }
-        .badge-warning { background: #fef3c7; color: #d97706; }
-        .badge-secondary { background: #f1f5f9; color: #64748b; }
+        /* =============================================
+           BADGES
+           ============================================= */
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-accepted { background: #d1fae5; color: #059669; }
+        .badge-rejected { background: #fee2e2; color: #dc2626; }
+        .badge-withdrawn { background: #f1f5f9; color: #64748b; }
+        .badge-expired { background: #fecaca; color: #dc2626; }
 
-        .ai-badge {
+        /* =============================================
+           BUTTONS
+           ============================================= */
+        .btn {
             display: inline-flex;
             align-items: center;
-            gap: 0.25rem;
-            padding: 0.125rem 0.5rem;
-            border-radius: 12px;
-            font-size: 0.55rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #7c3aed, #4f46e5);
-            color: white;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-        }
-        .ai-badge .material-symbols-outlined { font-size: 0.7rem; }
-
-        .btn-ai {
-            background: linear-gradient(135deg, #7c3aed, #4f46e5);
-            color: white;
-            box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
-        }
-        .btn-ai:hover {
-            background: linear-gradient(135deg, #6d28d9, #4338ca);
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-lg);
-        }
-        .btn-ai .material-symbols-outlined { font-size: 1rem; }
-        .btn-ai:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
+            gap: 0.5rem;
+            padding: 0.5rem 1.25rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.8125rem;
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
             font-family: var(--font-sans);
-            background: var(--bg-background);
-            color: var(--text-on-surface);
-            line-height: 1.6;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: row;
-            overflow: hidden;
-            height: 100vh;
+            text-decoration: none;
         }
-        a { text-decoration: none; color: inherit; }
+        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79, 70, 229, 0.15); }
+        .btn-primary:hover { background: var(--on-primary-fixed-variant); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+        .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
+        .btn-outline:hover { background: var(--primary-container); }
+        .btn-ghost { background: transparent; color: var(--text-on-surface-variant); }
+        .btn-ghost:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
+        .btn-success { background: #059669; color: white; }
+        .btn-success:hover { background: #047857; transform: translateY(-1px); box-shadow: var(--shadow-md); }
+        .btn-danger { background: #dc2626; color: white; }
+        .btn-danger:hover { background: #b91c1c; transform: translateY(-1px); box-shadow: var(--shadow-md); }
+        .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.6875rem; border-radius: 0.375rem; }
+        .btn .material-symbols-outlined { font-size: 1.125rem; }
+        .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* ===== SIDEBAR ===== */
+        /* =============================================
+           SIDEBAR
+           ============================================= */
         .dashboard-sidebar {
             position: fixed;
             top: 0;
@@ -507,7 +500,7 @@ $pendingOffers = array_filter($offers, function($o) {
             flex-shrink: 0;
         }
         .sidebar-brand-icon .material-symbols-outlined { font-size: 1.5rem; }
-        .sidebar-brand-text { font-size: 1rem; font-weight: 700; color: var(--slate-900); letter-spacing: -0.025em; }
+        .sidebar-brand-text { font-size: 1rem; font-weight: 700; color: #0f172a; letter-spacing: -0.025em; }
         .sidebar-brand-category { font-size: 0.7rem; font-weight: 500; color: var(--slate-500); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.1rem; }
         .sidebar-nav { flex: 1; overflow-y: auto; padding: 1rem 0.75rem; }
         .sidebar-nav .nav-label {
@@ -543,6 +536,7 @@ $pendingOffers = array_filter($offers, function($o) {
             padding: 0.1rem 0.5rem;
             border-radius: 50px;
         }
+
         .sidebar-footer {
             padding: 0.75rem 0.75rem;
             border-top: 1px solid var(--slate-200);
@@ -740,7 +734,6 @@ $pendingOffers = array_filter($offers, function($o) {
         .main-scroll { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
         .main-scroll .container { max-width: 96rem; margin: 0 auto; }
 
-        /* ===== BREADCRUMB ===== */
         .breadcrumb-bar {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -781,31 +774,30 @@ $pendingOffers = array_filter($offers, function($o) {
         .page-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text-on-surface); letter-spacing: -0.025em; }
         .page-header p { font-size: 0.875rem; color: var(--text-on-surface-variant); margin-top: 0.125rem; }
 
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 1.25rem;
-            border-radius: 0.5rem;
+        .badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: var(--radius-full);
+            font-size: 0.625rem;
             font-weight: 600;
-            font-size: 0.8125rem;
-            border: none;
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            font-family: var(--font-sans);
-            text-decoration: none;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
         }
-        .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(79, 70, 229, 0.15); }
-        .btn-primary:hover { background: var(--on-primary-fixed-variant); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-        .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
-        .btn-outline:hover { background: var(--primary-container); }
-        .btn-ghost { background: transparent; color: var(--text-on-surface-variant); }
-        .btn-ghost:hover { background: var(--bg-surface-low); color: var(--text-on-surface); }
-        .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.6875rem; border-radius: 0.375rem; }
-        .btn .material-symbols-outlined { font-size: 1.125rem; }
-        .btn-sm .material-symbols-outlined { font-size: 0.875rem; }
 
-        /* ===== OFFER FILTERS ===== */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-on-surface-variant);
+        }
+        .empty-state .material-symbols-outlined {
+            font-size: 4rem;
+            color: var(--slate-300);
+            display: block;
+            margin-bottom: 0.75rem;
+        }
+        .empty-state h3 { font-size: 1.125rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
+        .empty-state p { font-size: 0.8125rem; }
+
         .offer-filters {
             display: flex;
             gap: 0.5rem;
@@ -843,7 +835,38 @@ $pendingOffers = array_filter($offers, function($o) {
         }
         .filter-btn.active .count { background: rgba(255, 255, 255, 0.25); }
 
-        /* ===== OFFER CARDS ===== */
+        .search-bar {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            margin-bottom: 1.25rem;
+        }
+        .search-bar .form-control {
+            flex: 1;
+            max-width: 400px;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            border: 1.5px solid var(--slate-200);
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-family: var(--font-sans);
+            transition: all var(--transition-fast);
+            background: var(--bg-surface);
+            color: var(--text-on-surface);
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+        .form-control::placeholder { color: var(--text-on-surface-variant); opacity: 0.6; }
+        textarea.form-control { resize: vertical; min-height: 80px; }
+        select.form-control { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%234a5168' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.75rem center; padding-right: 2.5rem; }
+
+        /* Offer Cards */
         .offer-card {
             background: var(--bg-surface);
             border-radius: var(--radius-xl);
@@ -852,7 +875,6 @@ $pendingOffers = array_filter($offers, function($o) {
             margin-bottom: 0.75rem;
             transition: all var(--transition-fast);
             box-shadow: var(--shadow-xs);
-            position: relative;
         }
         .offer-card:hover { box-shadow: var(--shadow-md); border-color: var(--slate-300); }
 
@@ -864,11 +886,6 @@ $pendingOffers = array_filter($offers, function($o) {
             flex-wrap: wrap;
         }
 
-        .offer-card-left {
-            flex: 1;
-            min-width: 200px;
-        }
-
         .offer-card-title {
             font-size: 1rem;
             font-weight: 700;
@@ -877,126 +894,51 @@ $pendingOffers = array_filter($offers, function($o) {
             align-items: center;
             gap: 0.5rem;
             flex-wrap: wrap;
-            margin-bottom: 0.375rem;
         }
-
-        .offer-card-title .offer-badge {
-            font-size: 0.6rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-            padding: 0.125rem 0.5rem;
-            border-radius: var(--radius-full);
-        }
-
-        .offer-card-applicant {
-            font-size: 0.9375rem;
-            font-weight: 600;
+        .offer-card-title .job-title {
             color: var(--text-on-surface);
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .offer-card-applicant .material-symbols-outlined {
-            font-size: 1rem;
-            color: var(--primary);
         }
 
         .offer-card-meta {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.75rem 1.25rem;
+            gap: 0.75rem;
             margin-top: 0.375rem;
             font-size: 0.75rem;
             color: var(--text-on-surface-variant);
         }
+        .offer-card-meta .material-symbols-outlined { font-size: 0.875rem; vertical-align: middle; }
 
-        .offer-card-meta .meta-item {
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-
-        .offer-card-meta .meta-item .material-symbols-outlined {
-            font-size: 0.875rem;
-        }
-
-        .offer-card-salary {
-            margin-top: 0.625rem;
-            padding: 0.5rem 0.75rem;
-            background: var(--primary-container);
-            border-radius: var(--radius-sm);
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-weight: 700;
-            font-size: 0.9375rem;
-            color: var(--primary);
-        }
-
-        .offer-card-salary .material-symbols-outlined {
-            font-size: 1.125rem;
-            color: var(--primary);
-        }
-
-        .offer-card-actions {
-            display: flex;
-            gap: 0.375rem;
+        .offer-card-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
             margin-top: 0.75rem;
-            flex-wrap: wrap;
-            align-items: center;
+            padding: 0.75rem 1rem;
+            background: var(--bg-surface-low);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--slate-100);
         }
 
-        .offer-card-actions .status-select {
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.375rem;
-            border: 1.5px solid var(--slate-200);
-            font-size: 0.6875rem;
-            font-family: var(--font-sans);
-            background: var(--bg-surface);
-            color: var(--text-on-surface);
-            cursor: pointer;
-        }
-
-        .offer-card-actions .status-select:focus {
-            outline: none;
-            border-color: var(--primary);
-        }
-
-        .offer-card-right {
+        .offer-detail-item {
             display: flex;
             flex-direction: column;
-            align-items: flex-end;
-            gap: 0.5rem;
-            flex-shrink: 0;
         }
-
-        .offer-status-badge {
-            display: inline-block;
-            padding: 0.1875rem 0.75rem;
-            border-radius: var(--radius-full);
-            font-size: 0.6875rem;
+        .offer-detail-item .label {
+            font-size: 0.625rem;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .offer-card-agency {
-            font-size: 0.6875rem;
+            letter-spacing: 0.04em;
             color: var(--text-on-surface-variant);
-            background: var(--bg-surface-low);
-            padding: 0.0625rem 0.5rem;
-            border-radius: var(--radius-full);
-            display: inline-flex;
-            align-items: center;
-            gap: 0.25rem;
-            margin-top: 0.25rem;
         }
-
-        .offer-card-agency .material-symbols-outlined {
+        .offer-detail-item .value {
             font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+        }
+        .offer-detail-item .value.salary {
             color: var(--primary);
+            font-size: 1rem;
         }
 
         .offer-card-footer {
@@ -1010,52 +952,190 @@ $pendingOffers = array_filter($offers, function($o) {
             gap: 0.5rem;
         }
 
-        .offer-card-stats {
+        .offer-card-actions {
             display: flex;
-            gap: 1.25rem;
-            font-size: 0.75rem;
-            color: var(--text-on-surface-variant);
-        }
-
-        .offer-card-stats span {
-            display: flex;
+            gap: 0.375rem;
+            flex-wrap: wrap;
             align-items: center;
-            gap: 0.25rem;
         }
 
-        .offer-card-stats .material-symbols-outlined {
+        .offer-card-actions .btn {
+            font-size: 0.6875rem;
+            padding: 0.25rem 0.625rem;
+        }
+
+        .offer-card-actions .btn .material-symbols-outlined {
             font-size: 0.875rem;
         }
 
-        .badge {
+        .status-badge-lg {
             display: inline-block;
-            padding: 0.125rem 0.625rem;
+            padding: 0.25rem 0.875rem;
             border-radius: var(--radius-full);
-            font-size: 0.625rem;
+            font-size: 0.75rem;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.03em;
         }
-        .badge-pending { background: #fef3c7; color: #d97706; }
-        .badge-accepted { background: #d1fae5; color: #059669; }
-        .badge-rejected { background: #fee2e2; color: #dc2626; }
-        .badge-withdrawn { background: #f1f5f9; color: #64748b; }
 
-        .badge-lg { padding: 0.25rem 0.875rem; font-size: 0.75rem; }
+        .offer-applicant {
+            font-weight: 600;
+            color: var(--text-on-surface);
+            font-size: 0.9375rem;
+        }
 
-        .empty-state {
-            text-align: center;
-            padding: 3rem 1.5rem;
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: var(--bg-surface);
+            border-radius: var(--radius-2xl);
+            max-width: 720px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: var(--shadow-xl);
+            animation: modalIn 0.3s ease;
+        }
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.95) translateY(10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .modal-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--slate-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            background: var(--bg-surface);
+            z-index: 10;
+        }
+        .modal-header h2 { font-size: 1.25rem; font-weight: 700; }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
             color: var(--text-on-surface-variant);
+            padding: 0.25rem;
+            border-radius: 0.375rem;
+            transition: all var(--transition-fast);
         }
-        .empty-state .material-symbols-outlined {
-            font-size: 3rem;
-            color: var(--slate-300);
+        .modal-close:hover { background: var(--bg-surface-low); }
+        .modal-body { padding: 1.5rem; }
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--slate-200);
+            display: flex;
+            gap: 0.75rem;
+            justify-content: flex-end;
+            position: sticky;
+            bottom: 0;
+            background: var(--bg-surface);
+            z-index: 10;
+        }
+
+        .form-group { margin-bottom: 1.25rem; }
+        .form-group label {
             display: block;
-            margin-bottom: 0.75rem;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text-on-surface);
+            margin-bottom: 0.375rem;
         }
-        .empty-state h3 { font-size: 1rem; font-weight: 700; color: var(--text-on-surface); margin-bottom: 0.25rem; }
-        .empty-state p { font-size: 0.8125rem; }
+        .form-group label .required { color: #dc2626; margin-left: 0.125rem; }
+        .form-group .helper-text {
+            font-size: 0.75rem;
+            color: var(--text-on-surface-variant);
+            margin-top: 0.25rem;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        @media (max-width: 480px) { .form-row { grid-template-columns: 1fr; } }
+
+        .info-box {
+            background: var(--bg-surface-low);
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius-md);
+            margin-bottom: 1rem;
+            border: 1px solid var(--slate-200);
+        }
+        .info-box .info-row {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            font-size: 0.875rem;
+        }
+        .info-box .info-row .info-label {
+            font-weight: 600;
+            color: var(--text-on-surface-variant);
+            min-width: 80px;
+        }
+        .info-box .info-row .info-value {
+            color: var(--text-on-surface);
+            font-weight: 500;
+        }
+
+        /* Responsive */
+        @media (min-width: 768px) {
+            .sidebar-backdrop { display: none !important; }
+            .mobile-menu-btn { display: none !important; }
+            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-sm); height: 100vh; }
+            .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
+            .main-wrapper { margin-left: var(--sidebar-width); }
+            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+        }
+        @media (max-width: 767px) {
+            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
+            .dashboard-sidebar.mobile-open { transform: translateX(0); }
+            .sidebar-toggle-btn { display: none !important; }
+            .mobile-menu-btn { display: flex; }
+            .main-wrapper { margin-left: 0 !important; }
+            .main-scroll { padding: 1rem; }
+            .top-header-left .separator { display: none; }
+            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
+            .offer-card-header { flex-direction: column; }
+            .offer-card-details { grid-template-columns: 1fr; }
+            .offer-card-footer { flex-direction: column; align-items: stretch; }
+            .offer-card-actions { justify-content: flex-start; }
+            .search-bar .form-control { max-width: 100%; }
+            .info-box .info-row { flex-direction: column; gap: 0.25rem; }
+        }
+        @media (max-width: 480px) {
+            .main-scroll { padding: 0.75rem; }
+            .breadcrumb-bar { padding: 0.625rem 0.875rem; }
+            .page-header h1 { font-size: 1.25rem; }
+            .offer-card { padding: 1rem; }
+            .offer-card-meta { flex-direction: column; gap: 0.25rem; }
+            .offer-filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.25rem; -webkit-overflow-scrolling: touch; }
+            .filter-btn { font-size: 0.6875rem; padding: 0.25rem 0.75rem; }
+            .modal { max-height: 95vh; margin: 0.5rem; }
+            .modal-footer { flex-direction: column; }
+            .modal-footer .btn { width: 100%; justify-content: center; }
+        }
+        .main-scroll::-webkit-scrollbar { width: 5px; }
+        .main-scroll::-webkit-scrollbar-track { background: transparent; }
+        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
+        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
 
         .avatar-small {
             width: 2rem;
@@ -1078,70 +1158,15 @@ $pendingOffers = array_filter($offers, function($o) {
             object-fit: cover;
         }
 
-        @media (min-width: 768px) {
-            .sidebar-backdrop { display: none !important; }
-            .mobile-menu-btn { display: none !important; }
-            .dashboard-sidebar { position: fixed; transform: translateX(0) !important; box-shadow: var(--shadow-sm); height: 100vh; }
-            .dashboard-sidebar.mobile-hidden { transform: translateX(0) !important; }
-            .main-wrapper { margin-left: var(--sidebar-width); }
-            .dashboard-sidebar.collapsed ~ .main-wrapper { margin-left: var(--sidebar-collapsed); }
+        .badge-lg {
+            padding: 0.25rem 0.875rem;
+            font-size: 0.75rem;
         }
-        @media (max-width: 767px) {
-            .dashboard-sidebar { position: fixed; width: var(--sidebar-width); transform: translateX(-100%); box-shadow: var(--shadow-lg); }
-            .dashboard-sidebar.mobile-open { transform: translateX(0); }
-            .sidebar-toggle-btn { display: none !important; }
-            .mobile-menu-btn { display: flex; }
-            .main-wrapper { margin-left: 0 !important; }
-            .main-scroll { padding: 1rem; }
-            .top-header-left .separator { display: none; }
-            .profile-dropdown-toggle .profile-name, .profile-dropdown-toggle .profile-role { display: none; }
-            .offer-card-header { flex-direction: column; }
-            .offer-card-right { align-items: flex-start; width: 100%; }
-            .offer-card-actions { flex-direction: column; width: 100%; }
-            .offer-card-actions .status-select { width: 100%; }
-            .offer-card-actions .btn { width: 100%; justify-content: center; }
-        }
-        @media (max-width: 480px) {
-            .main-scroll { padding: 0.75rem; }
-            .breadcrumb-bar { padding: 0.625rem 0.875rem; }
-            .page-header h1 { font-size: 1.25rem; }
-            .offer-card { padding: 1rem; }
-            .offer-card-meta { flex-direction: column; gap: 0.25rem; }
-            .offer-card-stats { flex-direction: column; gap: 0.25rem; }
-            .offer-filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.25rem; -webkit-overflow-scrolling: touch; }
-            .filter-btn { font-size: 0.6875rem; padding: 0.25rem 0.75rem; }
-        }
-
-        .main-scroll::-webkit-scrollbar { width: 5px; }
-        .main-scroll::-webkit-scrollbar-track { background: transparent; }
-        .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
-        .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
-
-        /* ===== TOAST SYSTEM ===== */
-        .toast {
-            position: fixed;
-            top: 1rem;
-            right: 1rem;
-            padding: 0.75rem 1.25rem;
-            border-radius: 0.5rem;
-            color: white;
-            font-weight: 600;
-            font-size: 0.8125rem;
-            box-shadow: var(--shadow-lg);
-            z-index: 10000;
-            animation: slideDown 0.35s ease-out;
-            max-width: 380px;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-        .toast.success { background: #059669; }
-        .toast.error { background: #dc2626; }
-        .toast.info { background: var(--primary); }
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-20px) scale(0.96); }
-            to { opacity: 1; transform: translateY(0) scale(1); }
-        }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-accepted { background: #d1fae5; color: #059669; }
+        .badge-rejected { background: #fee2e2; color: #dc2626; }
+        .badge-withdrawn { background: #f1f5f9; color: #64748b; }
+        .badge-expired { background: #fecaca; color: #dc2626; }
     </style>
 </head>
 <body>
@@ -1397,7 +1422,7 @@ $pendingOffers = array_filter($offers, function($o) {
                                             <span class="material-symbols-outlined">email</span>
                                             <?php echo htmlspecialchars($offer['applicant_email'] ?? 'N/A'); ?>
                                         </span>
-                                        <?php if ($offer['agency_name'] ?? false): ?>
+                                        <?php if (!empty($offer['agency_name'])): ?>
                                             <span>
                                                 <span class="material-symbols-outlined">apartment</span>
                                                 <?php echo htmlspecialchars($offer['agency_name']); ?>
@@ -1411,6 +1436,12 @@ $pendingOffers = array_filter($offers, function($o) {
                                             <span class="material-symbols-outlined">work</span>
                                             <?php echo htmlspecialchars($offer['job_type'] ?? 'Full-time'); ?>
                                         </span>
+                                        <?php if (!empty($offer['application_id'])): ?>
+                                            <span>
+                                                <span class="material-symbols-outlined">badge</span>
+                                                App #<?php echo $offer['application_id']; ?>
+                                            </span>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                                 <span style="font-size:0.7rem; color:var(--text-on-surface-variant);">
@@ -1423,31 +1454,31 @@ $pendingOffers = array_filter($offers, function($o) {
                                     <span class="label">Salary Offered</span>
                                     <span class="value salary"><?php echo formatCurrency($offer['salary_offered'] ?? 0); ?></span>
                                 </div>
-                                <?php if ($offer['start_date'] ?? false): ?>
+                                <?php if (!empty($offer['start_date'])): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Start Date</span>
                                         <span class="value"><?php echo date('M d, Y', strtotime($offer['start_date'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['offer_date'] ?? false): ?>
+                                <?php if (!empty($offer['offer_date'])): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Offer Date</span>
                                         <span class="value"><?php echo date('M d, Y', strtotime($offer['offer_date'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['sent_at'] ?? false): ?>
+                                <?php if (!empty($offer['sent_at'])): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Sent At</span>
                                         <span class="value"><?php echo date('M d, Y h:i A', strtotime($offer['sent_at'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['accepted_at'] ?? false): ?>
+                                <?php if (!empty($offer['accepted_at'])): ?>
                                     <div class="offer-detail-item">
                                         <span class="label">Accepted At</span>
                                         <span class="value"><?php echo date('M d, Y h:i A', strtotime($offer['accepted_at'])); ?></span>
                                     </div>
                                 <?php endif; ?>
-                                <?php if ($offer['benefits'] ?? false): ?>
+                                <?php if (!empty($offer['benefits'])): ?>
                                     <div class="offer-detail-item" style="grid-column: span 2;">
                                         <span class="label">Benefits</span>
                                         <span class="value" style="font-weight:400;"><?php echo nl2br(htmlspecialchars($offer['benefits'])); ?></span>
@@ -1457,17 +1488,16 @@ $pendingOffers = array_filter($offers, function($o) {
 
                             <div class="offer-card-footer">
                                 <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
-                                    <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">badge</span>
-                                    Application #<?php echo $offer['application_id'] ?? 'N/A'; ?>
-                                    <?php if ($offer['application_status'] ?? false): ?>
-                                        • Status: <?php echo ucfirst($offer['application_status']); ?>
+                                    <?php if (!empty($offer['application_status'])): ?>
+                                        <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">check_circle</span>
+                                        Application: <?php echo ucfirst($offer['application_status']); ?>
                                     <?php endif; ?>
                                 </div>
                                 <div class="offer-card-actions">
                                     <?php if (($offer['status'] ?? '') === 'pending' || ($offer['status'] ?? '') === 'expired'): ?>
-                                        <button class="btn btn-sm btn-primary" onclick="openEditModal(<?php echo $offer['id']; ?>)">
+                                        <button class="btn btn-sm btn-primary" onclick="openEditModal(<?php echo $offer['id']; ?>, <?php echo htmlspecialchars(json_encode($offer)); ?>)">
                                             <span class="material-symbols-outlined">edit</span>
-                                            Edit Offer
+                                            Edit
                                         </button>
                                         <button class="btn btn-sm btn-danger" onclick="withdrawOffer(<?php echo $offer['id']; ?>)">
                                             <span class="material-symbols-outlined">cancel</span>
@@ -1490,10 +1520,10 @@ $pendingOffers = array_filter($offers, function($o) {
                                         </span>
                                     <?php endif; ?>
                                     
-                                    <?php if ($offer['document_path'] ?? false): ?>
+                                    <?php if (!empty($offer['document_path'])): ?>
                                         <a href="<?php echo htmlspecialchars($offer['document_path']); ?>" target="_blank" class="btn btn-sm btn-outline">
                                             <span class="material-symbols-outlined">description</span>
-                                            View Document
+                                            Document
                                         </a>
                                     <?php endif; ?>
                                 </div>
@@ -1516,11 +1546,12 @@ $pendingOffers = array_filter($offers, function($o) {
                 <input type="hidden" name="action" value="update_offer">
                 <input type="hidden" name="offer_id" id="editOfferId">
                 <div class="modal-body">
-                    <div style="background:var(--bg-surface-low); padding:0.75rem; border-radius:var(--radius-md); margin-bottom:1rem;">
-                        <div style="display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.875rem;">
-                            <span><strong>Applicant:</strong> <span id="editApplicantName"></span></span>
-                            <span><strong>Job:</strong> <span id="editJobTitle"></span></span>
-                            <span><strong>Agency:</strong> <span id="editAgencyName"></span></span>
+                    <!-- Info Box - Shows applicant and job details -->
+                    <div class="info-box">
+                        <div class="info-row">
+                            <span><span class="info-label">Applicant:</span> <span class="info-value" id="editApplicantName">-</span></span>
+                            <span><span class="info-label">Job:</span> <span class="info-value" id="editJobTitle">-</span></span>
+                            <span><span class="info-label">Agency:</span> <span class="info-value" id="editAgencyName">-</span></span>
                         </div>
                     </div>
 
@@ -1530,26 +1561,27 @@ $pendingOffers = array_filter($offers, function($o) {
                                placeholder="e.g., 50000" min="0" step="0.01" required>
                     </div>
 
-                    <div class="form-group">
-                        <label for="editStartDate">Start Date</label>
-                        <input type="date" id="editStartDate" name="start_date" class="form-control">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="editStartDate">Start Date</label>
+                            <input type="date" id="editStartDate" name="start_date" class="form-control">
+                        </div>
+                        <div class="form-group">
+                            <label for="editStatus">Status</label>
+                            <select id="editStatus" name="status" class="form-control">
+                                <option value="pending">Pending</option>
+                                <option value="accepted">Accepted</option>
+                                <option value="rejected">Rejected</option>
+                                <option value="withdrawn">Withdrawn</option>
+                                <option value="expired">Expired</option>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="form-group">
                         <label for="editBenefits">Benefits</label>
                         <textarea id="editBenefits" name="benefits" class="form-control" 
                                   placeholder="List the benefits offered (e.g., Health insurance, 13th month pay, etc.)" rows="3"></textarea>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="editStatus">Status</label>
-                        <select id="editStatus" name="status" class="form-control">
-                            <option value="pending">Pending</option>
-                            <option value="accepted">Accepted</option>
-                            <option value="rejected">Rejected</option>
-                            <option value="withdrawn">Withdrawn</option>
-                            <option value="expired">Expired</option>
-                        </select>
                     </div>
 
                     <div class="form-group">
@@ -1664,17 +1696,23 @@ $pendingOffers = array_filter($offers, function($o) {
     }
 
     // =============================================
-    // EDIT OFFER MODAL
+    // EDIT OFFER MODAL - FIXED
     // =============================================
     const offersData = <?php echo json_encode($offers); ?>;
 
-    function openEditModal(offerId) {
-        const offer = offersData.find(o => o.id === offerId);
+    function openEditModal(offerId, offerData) {
+        // If offerData is not passed, find it from the array
+        let offer = offerData;
+        if (!offer || typeof offer === 'string') {
+            offer = offersData.find(o => o.id === offerId);
+        }
+        
         if (!offer) {
             showToast('Offer not found.', 'error');
             return;
         }
 
+        // Set form values
         document.getElementById('editOfferId').value = offer.id;
         document.getElementById('editApplicantName').textContent = offer.applicant_name || 'N/A';
         document.getElementById('editJobTitle').textContent = offer.job_title || 'N/A';
@@ -1685,6 +1723,7 @@ $pendingOffers = array_filter($offers, function($o) {
         document.getElementById('editStatus').value = offer.status || 'pending';
         document.getElementById('editDocumentPath').value = offer.document_path || '';
 
+        // Show modal
         const modal = document.getElementById('editOfferModal');
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
