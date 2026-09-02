@@ -1,20 +1,12 @@
 <?php
-// portals/client/offers.php - AI-Powered Client Job Offers Management
+// portals/client/offers.php
 session_start();
 
-// ✅ Initialize session timeout
 require_once '../../app/config.php';
 initSessionTimeout();
-require_once '../../app/ai/AiService.php';
 
-// Check if user is logged in
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
-    header('Location: ../../login.php');
-    exit;
-}
-
-// Check if user has client role
-if ($_SESSION['role'] !== 'client') {
+// Check if user is logged in and is client
+if (!isset($_SESSION['user_id']) || !isset($_SESSION['role']) || $_SESSION['role'] !== 'client') {
     header('Location: ../../login.php');
     exit;
 }
@@ -24,12 +16,7 @@ $firstName = $_SESSION['first_name'] ?? 'Client User';
 $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'client';
 
-// =============================================
-// AI SERVICE INITIALIZATION
-// =============================================
-$aiService = new AiService();
-
-// Get client profile - PostgreSQL
+// Get client profile
 $client = getRecord("
     SELECT c.*, u.email as user_email, u.full_name
     FROM clients c
@@ -44,62 +31,7 @@ if (!$client) {
 $companyName = $client['company_name'] ?? 'Your Company';
 $clientId = (int)($client['id'] ?? 0);
 
-// =============================================
-// GET OFFERS FOR THIS CLIENT - PostgreSQL
-// =============================================
-$filter = $_GET['filter'] ?? 'all';
-
-// Build query with filters - FIXED column names
-$sql = "SELECT o.*, 
-        u.first_name, u.last_name, u.email,
-        a.id as application_id,
-        jo.title as job_title,
-        jo.location as job_location,
-        jo.job_type as job_type,
-        ag.agency_name,
-        ag.agency_code,
-        jo.client_id
-        FROM offers o
-        JOIN applications a ON o.application_id = a.id
-        JOIN applicants ap ON a.applicant_id = ap.id
-        JOIN users u ON ap.user_id = u.id
-        JOIN job_orders jo ON a.job_order_id = jo.id
-        LEFT JOIN recruitment_agencies ag ON jo.agency_id = ag.id
-        WHERE jo.client_id = $1";
-
-$params = [$clientId];
-
-if ($filter !== 'all') {
-    $sql .= " AND o.status = $2";
-    $params[] = $filter;
-}
-
-$sql .= " ORDER BY 
-    CASE o.status 
-        WHEN 'pending' THEN 1 
-        WHEN 'accepted' THEN 2 
-        WHEN 'rejected' THEN 3 
-        WHEN 'withdrawn' THEN 4 
-        ELSE 5 
-    END, 
-    o.created_at DESC";
-
-$offers = getRecords($sql, $params);
-
-// Get status counts for filter
-$statusCounts = ['all' => count($offers)];
-$statuses = ['pending', 'accepted', 'rejected', 'withdrawn'];
-foreach ($statuses as $status) {
-    $countResult = getRecord("
-        SELECT COUNT(*) as count FROM offers o
-        JOIN applications a ON o.application_id = a.id
-        JOIN job_orders jo ON a.job_order_id = jo.id
-        WHERE jo.client_id = $1 AND o.status = $2
-    ", [$clientId, $status]);
-    $statusCounts[$status] = isset($countResult['count']) ? (int)$countResult['count'] : 0;
-}
-
-// Get pending agency count for sidebar badge
+// Get pending agency count for sidebar
 $pendingAgencyCount = 0;
 if ($clientId > 0) {
     $pendingAgencies = getRecord("
@@ -113,93 +45,276 @@ if ($clientId > 0) {
 $userProfile = getUserProfileData($userId);
 
 // =============================================
-// HANDLE OFFER STATUS UPDATE
+// HANDLE OFFER UPDATE
 // =============================================
-$message = '';
-$messageType = '';
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    if ($_POST['action'] === 'update_offer_status') {
-        $offerId = intval($_POST['offer_id'] ?? 0);
-        $newStatus = trim($_POST['new_status'] ?? '');
+    
+    // Update offer
+    if ($_POST['action'] === 'update_offer') {
+        $offerId = (int)($_POST['offer_id'] ?? 0);
+        $salaryOffered = floatval($_POST['salary_offered'] ?? 0);
+        $startDate = trim($_POST['start_date'] ?? '');
+        $benefits = trim($_POST['benefits'] ?? '');
+        $status = trim($_POST['status'] ?? 'pending');
+        $documentPath = trim($_POST['document_path'] ?? '');
         
-        if ($offerId > 0 && in_array($newStatus, ['accepted', 'rejected', 'withdrawn'])) {
-            // Verify ownership
+        // Validate
+        $errors = [];
+        if ($offerId <= 0) $errors[] = 'Invalid offer ID.';
+        if ($salaryOffered <= 0) $errors[] = 'Please enter a valid salary amount.';
+        
+        // Convert empty date to null for PostgreSQL
+        if ($startDate === '') {
+            $startDate = null;
+        }
+        
+        if (empty($errors)) {
+            // Check if offer belongs to this client
             $checkSql = "SELECT o.id FROM offers o
                          JOIN applications a ON o.application_id = a.id
-                         JOIN job_orders jo ON a.job_order_id = jo.id
-                         WHERE o.id = $1 AND jo.client_id = $2";
+                         JOIN job_orders j ON a.job_order_id = j.id
+                         WHERE o.id = $1 AND j.client_id = $2";
             $check = getRecord($checkSql, [$offerId, $clientId]);
             
             if ($check) {
-                $updateSql = "UPDATE offers SET status = $1, updated_at = NOW() WHERE id = $2";
-                $result = updateRecord($updateSql, [$newStatus, $offerId]);
+                $updateSql = "UPDATE offers SET 
+                              salary_offered = $1, 
+                              start_date = $2, 
+                              benefits = $3, 
+                              status = $4,
+                              document_path = $5,
+                              updated_at = NOW()
+                              WHERE id = $6";
+                
+                $params = [
+                    $salaryOffered,
+                    $startDate,
+                    $benefits,
+                    $status,
+                    $documentPath ?: null,
+                    $offerId
+                ];
+                
+                $result = executeQuery($updateSql, $params);
                 
                 if ($result) {
-                    // If accepted, mark applicant as hired
-                    if ($newStatus === 'accepted') {
-                        $appSql = "SELECT a.applicant_id FROM offers o
-                                   JOIN applications a ON o.application_id = a.id
-                                   WHERE o.id = $1";
-                        $appResult = getRecord($appSql, [$offerId]);
-                        if ($appResult && isset($appResult['applicant_id'])) {
-                            updateApplicantHiredStatus($appResult['applicant_id'], true);
-                        }
+                    if (function_exists('logActivity')) {
+                        logActivity($userId, 'Offer Updated', 'offers', $offerId, 
+                                   'Client updated offer details');
                     }
                     
                     $_SESSION['flash'] = [
                         'type' => 'success',
-                        'message' => 'Offer status updated successfully!'
+                        'message' => '✅ Offer updated successfully!'
                     ];
                 } else {
                     $_SESSION['flash'] = [
                         'type' => 'error',
-                        'message' => 'Error updating offer status.'
+                        'message' => 'Failed to update offer. Please try again.'
                     ];
                 }
             } else {
                 $_SESSION['flash'] = [
                     'type' => 'error',
-                    'message' => 'Offer not found or access denied.'
+                    'message' => 'Offer not found or you don\'t have permission to edit it.'
                 ];
             }
-            header('Location: offers.php?filter=' . $filter);
-            exit;
+        } else {
+            $_SESSION['flash'] = [
+                'type' => 'error',
+                'message' => implode('<br>', $errors)
+            ];
         }
+        
+        header('Location: offers.php');
+        exit;
+    }
+    
+    // Withdraw offer
+    if ($_POST['action'] === 'withdraw_offer') {
+        $offerId = (int)($_POST['offer_id'] ?? 0);
+        
+        if ($offerId > 0) {
+            // Check if offer belongs to this client
+            $checkSql = "SELECT o.id, o.status FROM offers o
+                         JOIN applications a ON o.application_id = a.id
+                         JOIN job_orders j ON a.job_order_id = j.id
+                         WHERE o.id = $1 AND j.client_id = $2";
+            $check = getRecord($checkSql, [$offerId, $clientId]);
+            
+            if ($check && $check['status'] !== 'accepted' && $check['status'] !== 'withdrawn') {
+                $updateSql = "UPDATE offers SET 
+                              status = 'withdrawn', 
+                              updated_at = NOW()
+                              WHERE id = $1";
+                
+                $result = executeQuery($updateSql, [$offerId]);
+                
+                if ($result) {
+                    if (function_exists('logActivity')) {
+                        logActivity($userId, 'Offer Withdrawn', 'offers', $offerId, 
+                                   'Client withdrew offer');
+                    }
+                    
+                    $_SESSION['flash'] = [
+                        'type' => 'success',
+                        'message' => '✅ Offer withdrawn successfully!'
+                    ];
+                } else {
+                    $_SESSION['flash'] = [
+                        'type' => 'error',
+                        'message' => 'Failed to withdraw offer.'
+                    ];
+                }
+            } else {
+                $_SESSION['flash'] = [
+                    'type' => 'error',
+                    'message' => 'Cannot withdraw this offer. It may have been accepted or already withdrawn.'
+                ];
+            }
+        }
+        
+        header('Location: offers.php');
+        exit;
     }
 }
+
+// =============================================
+// GET ALL OFFERS FOR THIS CLIENT - FIXED QUERY
+// =============================================
+$offersSql = "SELECT 
+                o.*,
+                a.id as application_id,
+                a.status as application_status,
+                a.applied_at,
+                j.id as job_id,
+                j.title as job_title,
+                j.location as job_location,
+                j.job_type,
+                j.salary_range as job_salary_range,
+                u.id as user_id,
+                u.full_name as applicant_name,
+                u.email as applicant_email,
+                u.phone as applicant_phone,
+                ra.agency_name,
+                ra.agency_code,
+                (SELECT array_to_json(array_agg(s)) FROM applicant_skills s WHERE s.applicant_id = ap.id) as skills
+              FROM offers o
+              JOIN applications a ON o.application_id = a.id
+              JOIN applicants ap ON a.applicant_id = ap.id
+              JOIN users u ON ap.user_id = u.id
+              JOIN job_orders j ON a.job_order_id = j.id
+              LEFT JOIN recruitment_agencies ra ON j.agency_id = ra.id
+              WHERE j.client_id = $1
+              ORDER BY o.created_at DESC";
+
+$offers = getRecords($offersSql, [$clientId]);
+
+// If no offers found, try a simpler query to debug
+if (empty($offers)) {
+    // Check if there are any offers at all for this client
+    $debugSql = "SELECT 
+                    o.id, o.status, o.salary_offered, o.created_at,
+                    j.id as job_id, j.title as job_title,
+                    u.full_name as applicant_name
+                 FROM offers o
+                 JOIN applications a ON o.application_id = a.id
+                 JOIN job_orders j ON a.job_order_id = j.id
+                 JOIN applicants ap ON a.applicant_id = ap.id
+                 JOIN users u ON ap.user_id = u.id
+                 WHERE j.client_id = $1
+                 LIMIT 5";
+    $debugOffers = getRecords($debugSql, [$clientId]);
+    
+    if (!empty($debugOffers)) {
+        // We found offers but the main query failed - use the debug results
+        $offers = $debugOffers;
+    }
+}
+
+// Get status counts for filter
+$statusCounts = [
+    'all' => count($offers),
+    'pending' => 0,
+    'accepted' => 0,
+    'rejected' => 0,
+    'withdrawn' => 0,
+    'expired' => 0
+];
+
+foreach ($offers as $offer) {
+    $status = $offer['status'] ?? 'pending';
+    if (isset($statusCounts[$status])) {
+        $statusCounts[$status]++;
+    }
+}
+
+// Get filter parameter
+$filter = $_GET['filter'] ?? 'all';
+$search = trim($_GET['search'] ?? '');
+
+// Filter offers
+$filteredOffers = $offers;
+if ($filter !== 'all') {
+    $filteredOffers = array_filter($offers, function($offer) use ($filter) {
+        return ($offer['status'] ?? '') === $filter;
+    });
+}
+
+if (!empty($search)) {
+    $filteredOffers = array_filter($filteredOffers, function($offer) use ($search) {
+        $searchLower = strtolower($search);
+        return strpos(strtolower($offer['applicant_name'] ?? ''), $searchLower) !== false ||
+               strpos(strtolower($offer['job_title'] ?? ''), $searchLower) !== false ||
+               strpos(strtolower($offer['agency_name'] ?? ''), $searchLower) !== false;
+    });
+}
+
+// Status labels and badges
+$statusLabels = [
+    'pending' => 'Pending',
+    'accepted' => 'Accepted ✅',
+    'rejected' => 'Rejected ❌',
+    'withdrawn' => 'Withdrawn',
+    'expired' => 'Expired'
+];
+
+$statusBadges = [
+    'pending' => 'badge-pending',
+    'accepted' => 'badge-accepted',
+    'rejected' => 'badge-rejected',
+    'withdrawn' => 'badge-withdrawn',
+    'expired' => 'badge-expired'
+];
+
+$statusColors = [
+    'pending' => '#f59e0b',
+    'accepted' => '#059669',
+    'rejected' => '#dc2626',
+    'withdrawn' => '#6b7280',
+    'expired' => '#dc2626'
+];
 
 // Display flash messages
 $flashMessage = '';
 $flashType = '';
+
 if (isset($_SESSION['flash'])) {
     $flashMessage = $_SESSION['flash']['message'] ?? '';
     $flashType = $_SESSION['flash']['type'] ?? 'info';
     unset($_SESSION['flash']);
 }
 
-// =============================================
-// HELPER: Get status badge class
-// =============================================
-function getOfferStatusBadge($status) {
-    $badges = [
-        'pending' => 'badge-warning',
-        'accepted' => 'badge-success',
-        'rejected' => 'badge-danger',
-        'withdrawn' => 'badge-secondary'
-    ];
-    return $badges[$status] ?? 'badge-secondary';
+// Format currency
+function formatCurrency($amount) {
+    if ($amount === null || $amount === 0) return '₱0.00';
+    return '₱' . number_format($amount, 2);
 }
 
-function getOfferStatusLabel($status) {
-    $labels = [
-        'pending' => 'Pending',
-        'accepted' => 'Accepted',
-        'rejected' => 'Rejected',
-        'withdrawn' => 'Withdrawn'
-    ];
-    return $labels[$status] ?? ucfirst($status);
-}
+// Get pending offers count for sidebar badge
+$pendingOffers = array_filter($offers, function($o) {
+    return ($o['status'] ?? '') === 'pending';
+});
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1053,8 +1168,11 @@ function getOfferStatusLabel($status) {
                 <span class="nav-text">My Jobs</span>
             </a>
             <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
-                <span class="material-symbols-outlined">description</span>
+                <span class="material-symbols-outlined">handshake</span>
                 <span class="nav-text">Offers</span>
+                <?php if (count($pendingOffers) > 0): ?>
+                    <span class="nav-badge"><?php echo count($pendingOffers); ?></span>
+                <?php endif; ?>
             </a>
             <a href="agency_application.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agency_applications.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">apartment</span>
@@ -1070,6 +1188,10 @@ function getOfferStatusLabel($status) {
             <a href="applicants.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'applicants.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">person_search</span>
                 <span class="nav-text">Applicants</span>
+            </a>
+            <a href="agreements.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'agreements.php' ? 'active' : ''; ?>">
+                <span class="material-symbols-outlined">contract</span>
+                <span class="nav-text">Agreements</span>
             </a>
             <a href="invoices.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'invoices.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">receipt</span>
@@ -1093,7 +1215,6 @@ function getOfferStatusLabel($status) {
                 <span class="nav-text">Settings</span>
             </a>
         </nav>
-        <!-- ===== SIDEBAR FOOTER ===== -->
         <div class="sidebar-footer">
             <div class="user-card">
                 <?php if (!empty($userProfile['profile_picture']) && file_exists('../../' . $userProfile['profile_picture'])): ?>
@@ -1123,10 +1244,6 @@ function getOfferStatusLabel($status) {
                 </button>
                 <span class="separator">|</span>
                 <span style="font-weight:600; font-size:0.8125rem; color:var(--text-on-surface);">Offers</span>
-                <span class="ai-badge" style="margin-left:0.5rem;">
-                    <span class="material-symbols-outlined">auto_awesome</span>
-                    AI Powered
-                </span>
             </div>
             <div class="profile-dropdown-wrapper">
                 <button class="profile-dropdown-toggle" id="profileToggle" aria-label="Profile menu">
@@ -1180,12 +1297,14 @@ function getOfferStatusLabel($status) {
                 <!-- Breadcrumb -->
                 <div class="breadcrumb-bar">
                     <div class="breadcrumb-view">
-                        <span class="material-symbols-outlined">description</span>
+                        <span class="material-symbols-outlined">handshake</span>
                         <span>Job Offers</span>
-                        <span style="font-weight:400;">●</span>
-                        <span style="font-weight:400;"><?php echo htmlspecialchars($companyName); ?></span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">●</span>
+                        <span style="font-weight:400; color:var(--text-on-surface-variant);">
+                            <?php echo htmlspecialchars($companyName); ?>
+                        </span>
                     </div>
-                    <span class="breadcrumb-meta">Total Offers: <?php echo count($offers); ?></span>
+                    <span class="breadcrumb-meta">Total: <?php echo count($offers); ?> offers</span>
                 </div>
 
                 <!-- Page Header -->
@@ -1194,179 +1313,190 @@ function getOfferStatusLabel($status) {
                         <h1>Job Offers</h1>
                         <p>View and manage job offers sent to applicants for your positions</p>
                     </div>
+                    <div>
+                        <span style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                            <?php echo count($pendingOffers); ?> pending offers
+                        </span>
+                    </div>
                 </div>
 
-                <!-- Offer Filters -->
+                <!-- Search Bar -->
+                <div class="search-bar">
+                    <form method="GET" action="" style="display:flex; gap:0.5rem; width:100%;">
+                        <input type="text" name="search" class="form-control" 
+                               placeholder="Search by applicant name, job title, or agency..." 
+                               value="<?php echo htmlspecialchars($search); ?>">
+                        <button type="submit" class="btn btn-primary btn-sm">
+                            <span class="material-symbols-outlined">search</span>
+                            Search
+                        </button>
+                        <?php if (!empty($search) || $filter !== 'all'): ?>
+                            <a href="offers.php" class="btn btn-ghost btn-sm">
+                                <span class="material-symbols-outlined">close</span>
+                                Clear
+                            </a>
+                        <?php endif; ?>
+                    </form>
+                </div>
+
+                <!-- Filters -->
                 <div class="offer-filters">
-                    <a href="?filter=all" class="filter-btn <?php echo $filter === 'all' ? 'active' : ''; ?>">
+                    <a href="?filter=all<?php echo !empty($search) ? '&search=' . urlencode($search) : ''; ?>" 
+                       class="filter-btn <?php echo $filter === 'all' ? 'active' : ''; ?>">
                         All <span class="count"><?php echo $statusCounts['all']; ?></span>
                     </a>
-                    <a href="?filter=pending" class="filter-btn <?php echo $filter === 'pending' ? 'active' : ''; ?>">
+                    <a href="?filter=pending<?php echo !empty($search) ? '&search=' . urlencode($search) : ''; ?>" 
+                       class="filter-btn <?php echo $filter === 'pending' ? 'active' : ''; ?>">
                         Pending <span class="count"><?php echo $statusCounts['pending']; ?></span>
                     </a>
-                    <a href="?filter=accepted" class="filter-btn <?php echo $filter === 'accepted' ? 'active' : ''; ?>">
+                    <a href="?filter=accepted<?php echo !empty($search) ? '&search=' . urlencode($search) : ''; ?>" 
+                       class="filter-btn <?php echo $filter === 'accepted' ? 'active' : ''; ?>">
                         Accepted <span class="count"><?php echo $statusCounts['accepted']; ?></span>
                     </a>
-                    <a href="?filter=rejected" class="filter-btn <?php echo $filter === 'rejected' ? 'active' : ''; ?>">
+                    <a href="?filter=rejected<?php echo !empty($search) ? '&search=' . urlencode($search) : ''; ?>" 
+                       class="filter-btn <?php echo $filter === 'rejected' ? 'active' : ''; ?>">
                         Rejected <span class="count"><?php echo $statusCounts['rejected']; ?></span>
                     </a>
-                    <a href="?filter=withdrawn" class="filter-btn <?php echo $filter === 'withdrawn' ? 'active' : ''; ?>">
+                    <a href="?filter=withdrawn<?php echo !empty($search) ? '&search=' . urlencode($search) : ''; ?>" 
+                       class="filter-btn <?php echo $filter === 'withdrawn' ? 'active' : ''; ?>">
                         Withdrawn <span class="count"><?php echo $statusCounts['withdrawn']; ?></span>
                     </a>
                 </div>
 
                 <!-- Offer Listings -->
-                <?php if (empty($offers)): ?>
+                <?php if (empty($filteredOffers)): ?>
                     <div class="empty-state">
-                        <span class="material-symbols-outlined">description</span>
+                        <span class="material-symbols-outlined">handshake</span>
                         <h3>No offers found</h3>
                         <p>
-                            <?php if ($filter !== 'all'): ?>
-                                No offers with status "<?php echo htmlspecialchars($filter); ?>".
-                                <a href="?filter=all" style="color:var(--primary); font-weight:600;">View all offers</a>
+                            <?php if ($filter !== 'all' || !empty($search)): ?>
+                                No offers match your current filters.
+                                <a href="offers.php" style="color:var(--primary); font-weight:600;">Clear filters</a>
                             <?php else: ?>
-                                You haven't sent any job offers yet. Offers will appear here once you extend offers to applicants.
+                                You haven't received any job offers yet. Offers will appear here when HR sends them to applicants for your job postings.
                             <?php endif; ?>
                         </p>
                     </div>
                 <?php else: ?>
-                    <?php foreach ($offers as $offer): 
-                        $isPending = $offer['status'] === 'pending';
-                        $isAccepted = $offer['status'] === 'accepted';
-                        $isRejected = $offer['status'] === 'rejected';
-                        $isWithdrawn = $offer['status'] === 'withdrawn';
-                        $statusClass = $isPending ? 'badge-pending' : ($isAccepted ? 'badge-accepted' : ($isRejected ? 'badge-rejected' : 'badge-withdrawn'));
-                        $statusLabel = ucfirst($offer['status'] ?? 'Pending');
-                        $applicantName = htmlspecialchars(($offer['first_name'] ?? '') . ' ' . ($offer['last_name'] ?? ''));
-                        $jobTitle = htmlspecialchars($offer['job_title'] ?? 'Position');
-                        $location = htmlspecialchars($offer['job_location'] ?? 'Remote');
-                        $jobType = htmlspecialchars($offer['job_type'] ?? 'Full-time');
-                        // ✅ FIXED: Use correct column name 'salary_offered'
-                        $salary = !empty($offer['salary_offered']) ? '₱' . number_format($offer['salary_offered'], 2) : 'N/A';
-                        $agency = htmlspecialchars($offer['agency_name'] ?? '');
-                    ?>
-                        <div class="offer-card" id="offer-<?php echo $offer['id']; ?>">
+                    <?php foreach ($filteredOffers as $offer): ?>
+                        <div class="offer-card">
                             <div class="offer-card-header">
-                                <div class="offer-card-left">
+                                <div>
                                     <div class="offer-card-title">
-                                        <?php echo $jobTitle; ?>
-                                        <span class="badge <?php echo $statusClass; ?> badge-lg">
-                                            <?php echo $statusLabel; ?>
+                                        <span class="job-title"><?php echo htmlspecialchars($offer['job_title'] ?? 'Position'); ?></span>
+                                        <span class="badge <?php echo $statusBadges[$offer['status']] ?? 'badge-pending'; ?>">
+                                            <?php echo $statusLabels[$offer['status']] ?? ucfirst($offer['status']); ?>
                                         </span>
-                                        <?php if ($isPending): ?>
-                                            <span style="font-size:0.6rem; color:var(--text-on-surface-variant); font-weight:400;">
-                                                ⏳ Awaiting response
+                                    </div>
+                                    <div class="offer-card-meta">
+                                        <span>
+                                            <span class="material-symbols-outlined">person</span>
+                                            <?php echo htmlspecialchars($offer['applicant_name'] ?? 'Unknown Applicant'); ?>
+                                        </span>
+                                        <span>
+                                            <span class="material-symbols-outlined">email</span>
+                                            <?php echo htmlspecialchars($offer['applicant_email'] ?? 'N/A'); ?>
+                                        </span>
+                                        <?php if ($offer['agency_name'] ?? false): ?>
+                                            <span>
+                                                <span class="material-symbols-outlined">apartment</span>
+                                                <?php echo htmlspecialchars($offer['agency_name']); ?>
                                             </span>
                                         <?php endif; ?>
-                                    </div>
-                                    
-                                    <div class="offer-card-applicant">
-                                        <span class="material-symbols-outlined">person</span>
-                                        <?php echo $applicantName ?: 'Unknown Applicant'; ?>
-                                        <span style="font-size:0.75rem; font-weight:400; color:var(--text-on-surface-variant);">
-                                            <?php echo htmlspecialchars($offer['email'] ?? ''); ?>
-                                        </span>
-                                    </div>
-
-                                    <div class="offer-card-meta">
-                                        <span class="meta-item">
+                                        <span>
                                             <span class="material-symbols-outlined">location_on</span>
-                                            <?php echo $location; ?>
+                                            <?php echo htmlspecialchars($offer['job_location'] ?? 'Remote'); ?>
                                         </span>
-                                        <span class="meta-item">
+                                        <span>
                                             <span class="material-symbols-outlined">work</span>
-                                            <?php echo $jobType; ?>
-                                        </span>
-                                        <span class="meta-item">
-                                            <span class="material-symbols-outlined">calendar_today</span>
-                                            Offered: <?php echo date('M d, Y', strtotime($offer['created_at'] ?? 'now')); ?>
+                                            <?php echo htmlspecialchars($offer['job_type'] ?? 'Full-time'); ?>
                                         </span>
                                     </div>
+                                </div>
+                                <span style="font-size:0.7rem; color:var(--text-on-surface-variant);">
+                                    <?php echo date('M d, Y', strtotime($offer['created_at'] ?? 'now')); ?>
+                                </span>
+                            </div>
 
-                                    <div class="offer-card-salary">
-                                        <span class="material-symbols-outlined">payments</span>
-                                        Salary Offered: <?php echo $salary; ?>
+                            <div class="offer-card-details">
+                                <div class="offer-detail-item">
+                                    <span class="label">Salary Offered</span>
+                                    <span class="value salary"><?php echo formatCurrency($offer['salary_offered'] ?? 0); ?></span>
+                                </div>
+                                <?php if ($offer['start_date'] ?? false): ?>
+                                    <div class="offer-detail-item">
+                                        <span class="label">Start Date</span>
+                                        <span class="value"><?php echo date('M d, Y', strtotime($offer['start_date'])); ?></span>
                                     </div>
-
-                                    <?php if ($agency): ?>
-                                        <div class="offer-card-agency">
-                                            <span class="material-symbols-outlined">apartment</span>
-                                            Agency: <?php echo $agency; ?>
-                                        </div>
-                                    <?php endif; ?>
-
-                                    <?php if (!empty($offer['document_path'])): ?>
-                                        <div style="margin-top:0.375rem;">
-                                            <a href="<?php echo htmlspecialchars($offer['document_path']); ?>" target="_blank" class="btn btn-sm btn-outline">
-                                                <span class="material-symbols-outlined" style="font-size:0.875rem;">description</span>
-                                                View Offer Letter
-                                            </a>
-                                        </div>
-                                    <?php endif; ?>
-                                </div>
-
-                                <div class="offer-card-right">
-                                    <?php if ($isPending): ?>
-                                        <div style="display:flex; gap:0.375rem; flex-wrap:wrap;">
-                                            <form method="POST" style="display:inline;">
-                                                <input type="hidden" name="action" value="update_offer_status">
-                                                <input type="hidden" name="offer_id" value="<?php echo $offer['id']; ?>">
-                                                <input type="hidden" name="new_status" value="accepted">
-                                                <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Accept this offer? This will mark the applicant as hired.')">
-                                                    <span class="material-symbols-outlined" style="font-size:0.875rem;">check</span>
-                                                    Accept
-                                                </button>
-                                            </form>
-                                            <form method="POST" style="display:inline;">
-                                                <input type="hidden" name="action" value="update_offer_status">
-                                                <input type="hidden" name="offer_id" value="<?php echo $offer['id']; ?>">
-                                                <input type="hidden" name="new_status" value="rejected">
-                                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Reject this offer?')">
-                                                    <span class="material-symbols-outlined" style="font-size:0.875rem;">close</span>
-                                                    Reject
-                                                </button>
-                                            </form>
-                                        </div>
-                                        <span style="font-size:0.65rem; color:var(--text-on-surface-variant);">⏳ Awaiting decision</span>
-                                    <?php elseif ($isAccepted): ?>
-                                        <span style="font-size:0.75rem; color:#059669; font-weight:600; display:flex; align-items:center; gap:0.25rem;">
-                                            <span class="material-symbols-outlined" style="font-size:1rem;">check_circle</span>
-                                            Accepted ✓
-                                        </span>
-                                    <?php elseif ($isRejected): ?>
-                                        <span style="font-size:0.75rem; color:#dc2626; font-weight:600; display:flex; align-items:center; gap:0.25rem;">
-                                            <span class="material-symbols-outlined" style="font-size:1rem;">cancel</span>
-                                            Rejected ✗
-                                        </span>
-                                    <?php elseif ($isWithdrawn): ?>
-                                        <span style="font-size:0.75rem; color:#64748b; font-weight:600; display:flex; align-items:center; gap:0.25rem;">
-                                            <span class="material-symbols-outlined" style="font-size:1rem;">block</span>
-                                            Withdrawn
-                                        </span>
-                                    <?php endif; ?>
-                                </div>
+                                <?php endif; ?>
+                                <?php if ($offer['offer_date'] ?? false): ?>
+                                    <div class="offer-detail-item">
+                                        <span class="label">Offer Date</span>
+                                        <span class="value"><?php echo date('M d, Y', strtotime($offer['offer_date'])); ?></span>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($offer['sent_at'] ?? false): ?>
+                                    <div class="offer-detail-item">
+                                        <span class="label">Sent At</span>
+                                        <span class="value"><?php echo date('M d, Y h:i A', strtotime($offer['sent_at'])); ?></span>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($offer['accepted_at'] ?? false): ?>
+                                    <div class="offer-detail-item">
+                                        <span class="label">Accepted At</span>
+                                        <span class="value"><?php echo date('M d, Y h:i A', strtotime($offer['accepted_at'])); ?></span>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($offer['benefits'] ?? false): ?>
+                                    <div class="offer-detail-item" style="grid-column: span 2;">
+                                        <span class="label">Benefits</span>
+                                        <span class="value" style="font-weight:400;"><?php echo nl2br(htmlspecialchars($offer['benefits'])); ?></span>
+                                    </div>
+                                <?php endif; ?>
                             </div>
 
                             <div class="offer-card-footer">
-                                <div class="offer-card-stats">
-                                    <?php if ($isAccepted): ?>
-                                        <span style="color:#059669;">
-                                            <span class="material-symbols-outlined">check_circle</span>
-                                            Applicant hired
-                                        </span>
-                                    <?php endif; ?>
-                                    <?php if (!empty($offer['application_id'])): ?>
-                                        <span>
-                                            <span class="material-symbols-outlined">info</span>
-                                            Application #<?php echo $offer['application_id']; ?>
-                                        </span>
+                                <div style="font-size:0.75rem; color:var(--text-on-surface-variant);">
+                                    <span class="material-symbols-outlined" style="font-size:0.875rem; vertical-align:middle;">badge</span>
+                                    Application #<?php echo $offer['application_id'] ?? 'N/A'; ?>
+                                    <?php if ($offer['application_status'] ?? false): ?>
+                                        • Status: <?php echo ucfirst($offer['application_status']); ?>
                                     <?php endif; ?>
                                 </div>
-                                <?php if ($isPending): ?>
-                                    <span style="font-size:0.7rem; color:var(--text-on-surface-variant);">
-                                        ⏳ Waiting for applicant response
-                                    </span>
-                                <?php endif; ?>
+                                <div class="offer-card-actions">
+                                    <?php if (($offer['status'] ?? '') === 'pending' || ($offer['status'] ?? '') === 'expired'): ?>
+                                        <button class="btn btn-sm btn-primary" onclick="openEditModal(<?php echo $offer['id']; ?>)">
+                                            <span class="material-symbols-outlined">edit</span>
+                                            Edit Offer
+                                        </button>
+                                        <button class="btn btn-sm btn-danger" onclick="withdrawOffer(<?php echo $offer['id']; ?>)">
+                                            <span class="material-symbols-outlined">cancel</span>
+                                            Withdraw
+                                        </button>
+                                    <?php elseif (($offer['status'] ?? '') === 'accepted'): ?>
+                                        <span style="font-size:0.75rem; color:#059669; display:flex; align-items:center; gap:0.25rem;">
+                                            <span class="material-symbols-outlined" style="font-size:1rem;">check_circle</span>
+                                            Offer Accepted
+                                        </span>
+                                    <?php elseif (($offer['status'] ?? '') === 'rejected'): ?>
+                                        <span style="font-size:0.75rem; color:#dc2626; display:flex; align-items:center; gap:0.25rem;">
+                                            <span class="material-symbols-outlined" style="font-size:1rem;">cancel</span>
+                                            Offer Rejected
+                                        </span>
+                                    <?php elseif (($offer['status'] ?? '') === 'withdrawn'): ?>
+                                        <span style="font-size:0.75rem; color:#6b7280; display:flex; align-items:center; gap:0.25rem;">
+                                            <span class="material-symbols-outlined" style="font-size:1rem;">undo</span>
+                                            Withdrawn
+                                        </span>
+                                    <?php endif; ?>
+                                    
+                                    <?php if ($offer['document_path'] ?? false): ?>
+                                        <a href="<?php echo htmlspecialchars($offer['document_path']); ?>" target="_blank" class="btn btn-sm btn-outline">
+                                            <span class="material-symbols-outlined">description</span>
+                                            View Document
+                                        </a>
+                                    <?php endif; ?>
+                                </div>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -1375,172 +1505,292 @@ function getOfferStatusLabel($status) {
         </main>
     </div>
 
+    <!-- ===== EDIT OFFER MODAL ===== -->
+    <div class="modal-overlay" id="editOfferModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Edit Job Offer</h2>
+                <button class="modal-close" onclick="closeEditModal()">×</button>
+            </div>
+            <form method="POST" action="" id="editOfferForm">
+                <input type="hidden" name="action" value="update_offer">
+                <input type="hidden" name="offer_id" id="editOfferId">
+                <div class="modal-body">
+                    <div style="background:var(--bg-surface-low); padding:0.75rem; border-radius:var(--radius-md); margin-bottom:1rem;">
+                        <div style="display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.875rem;">
+                            <span><strong>Applicant:</strong> <span id="editApplicantName"></span></span>
+                            <span><strong>Job:</strong> <span id="editJobTitle"></span></span>
+                            <span><strong>Agency:</strong> <span id="editAgencyName"></span></span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="editSalaryOffered">Salary Offered <span class="required">*</span></label>
+                        <input type="number" id="editSalaryOffered" name="salary_offered" class="form-control" 
+                               placeholder="e.g., 50000" min="0" step="0.01" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="editStartDate">Start Date</label>
+                        <input type="date" id="editStartDate" name="start_date" class="form-control">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="editBenefits">Benefits</label>
+                        <textarea id="editBenefits" name="benefits" class="form-control" 
+                                  placeholder="List the benefits offered (e.g., Health insurance, 13th month pay, etc.)" rows="3"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="editStatus">Status</label>
+                        <select id="editStatus" name="status" class="form-control">
+                            <option value="pending">Pending</option>
+                            <option value="accepted">Accepted</option>
+                            <option value="rejected">Rejected</option>
+                            <option value="withdrawn">Withdrawn</option>
+                            <option value="expired">Expired</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="editDocumentPath">Document Path (Optional)</label>
+                        <input type="text" id="editDocumentPath" name="document_path" class="form-control" 
+                               placeholder="e.g., /uploads/offers/offer_123.pdf">
+                        <div class="helper-text">Path to the offer document file</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost" onclick="closeEditModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="editSubmitBtn">
+                        <span class="material-symbols-outlined">save</span>
+                        Update Offer
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- ============================================= JAVASCRIPT ============================================= -->
     <script>
-        // =============================================
-        // 1. SIDEBAR TOGGLE
-        // =============================================
-        const sidebar = document.getElementById('appSidebar');
-        const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
-        const isMobile = window.innerWidth <= 768;
-        const savedState = localStorage.getItem('sidebarCollapsed');
+    // =============================================
+    // TOAST SYSTEM
+    // =============================================
+    function showToast(message, type = 'info') {
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) existingToast.remove();
+        
+        const toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
+        toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
+        document.body.appendChild(toast);
 
-        if (savedState === 'true' && !isMobile) {
-            sidebar.classList.add('collapsed');
-            const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
-            if (icon) icon.textContent = 'chevron_right';
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-10px)';
+            toast.style.transition = 'all 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    // =============================================
+    // SIDEBAR TOGGLE
+    // =============================================
+    const sidebar = document.getElementById('appSidebar');
+    const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
+    const isMobile = window.innerWidth <= 768;
+    const savedState = localStorage.getItem('sidebarCollapsed');
+
+    if (savedState === 'true' && !isMobile) {
+        sidebar.classList.add('collapsed');
+        const icon = sidebarToggleBtn.querySelector('.material-symbols-outlined');
+        if (icon) icon.textContent = 'chevron_right';
+    }
+
+    sidebarToggleBtn.addEventListener('click', function() {
+        if (window.innerWidth <= 768) return;
+        sidebar.classList.toggle('collapsed');
+        const icon = this.querySelector('.material-symbols-outlined');
+        if (icon) {
+            icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
         }
+        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    });
 
-        sidebarToggleBtn.addEventListener('click', function() {
-            if (window.innerWidth <= 768) return;
-            sidebar.classList.toggle('collapsed');
-            const icon = this.querySelector('.material-symbols-outlined');
-            if (icon) {
-                icon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+    // =============================================
+    // MOBILE SIDEBAR
+    // =============================================
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+
+    function openMobileSidebar() {
+        sidebar.classList.add('mobile-open');
+        sidebarBackdrop.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeMobileSidebar() {
+        sidebar.classList.remove('mobile-open');
+        sidebarBackdrop.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    if (mobileMenuBtn) {
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+    }
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
+
+    // =============================================
+    // PROFILE DROPDOWN
+    // =============================================
+    const profileToggle = document.getElementById('profileToggle');
+    const profileMenu = document.getElementById('profileMenu');
+
+    if (profileToggle && profileMenu) {
+        profileToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            this.classList.toggle('open');
+            profileMenu.classList.toggle('open');
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                profileToggle.classList.remove('open');
+                profileMenu.classList.remove('open');
             }
-            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
         });
+    }
 
-        // =============================================
-        // 2. MOBILE SIDEBAR
-        // =============================================
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    // =============================================
+    // EDIT OFFER MODAL
+    // =============================================
+    const offersData = <?php echo json_encode($offers); ?>;
 
-        function openMobileSidebar() {
-            sidebar.classList.add('mobile-open');
-            sidebarBackdrop.classList.add('active');
-            document.body.style.overflow = 'hidden';
+    function openEditModal(offerId) {
+        const offer = offersData.find(o => o.id === offerId);
+        if (!offer) {
+            showToast('Offer not found.', 'error');
+            return;
         }
 
-        function closeMobileSidebar() {
-            sidebar.classList.remove('mobile-open');
-            sidebarBackdrop.classList.remove('active');
-            document.body.style.overflow = '';
-        }
+        document.getElementById('editOfferId').value = offer.id;
+        document.getElementById('editApplicantName').textContent = offer.applicant_name || 'N/A';
+        document.getElementById('editJobTitle').textContent = offer.job_title || 'N/A';
+        document.getElementById('editAgencyName').textContent = offer.agency_name || 'N/A';
+        document.getElementById('editSalaryOffered').value = offer.salary_offered || '';
+        document.getElementById('editStartDate').value = offer.start_date || '';
+        document.getElementById('editBenefits').value = offer.benefits || '';
+        document.getElementById('editStatus').value = offer.status || 'pending';
+        document.getElementById('editDocumentPath').value = offer.document_path || '';
 
-        if (mobileMenuBtn) {
-            mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        }
-        if (sidebarBackdrop) {
-            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
-        }
+        const modal = document.getElementById('editOfferModal');
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
 
-        document.querySelectorAll('.sidebar-main-link').forEach(link => {
-            link.addEventListener('click', function() {
-                if (window.innerWidth <= 768) {
-                    closeMobileSidebar();
-                }
-            });
+    function closeEditModal() {
+        const modal = document.getElementById('editOfferModal');
+        modal.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    const editModalOverlay = document.getElementById('editOfferModal');
+    if (editModalOverlay) {
+        editModalOverlay.addEventListener('click', function(e) {
+            if (e.target === this) closeEditModal();
         });
+    }
 
-        // =============================================
-        // 3. PROFILE DROPDOWN
-        // =============================================
-        const profileToggle = document.getElementById('profileToggle');
-        const profileMenu = document.getElementById('profileMenu');
-
-        if (profileToggle && profileMenu) {
-            profileToggle.addEventListener('click', function(e) {
-                e.stopPropagation();
-                this.classList.toggle('open');
-                profileMenu.classList.toggle('open');
-            });
-
-            document.addEventListener('click', function(e) {
-                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                    profileToggle.classList.remove('open');
-                    profileMenu.classList.remove('open');
-                }
-            });
+    // =============================================
+    // WITHDRAW OFFER
+    // =============================================
+    function withdrawOffer(offerId) {
+        if (!confirm('Are you sure you want to withdraw this offer? This action cannot be undone.')) {
+            return;
         }
 
-        // =============================================
-        // 4. TOAST SYSTEM
-        // =============================================
-        function showToast(message, type = 'info') {
-            const existingToast = document.querySelector('.toast');
-            if (existingToast) existingToast.remove();
+        const formData = new FormData();
+        formData.append('action', 'withdraw_offer');
+        formData.append('offer_id', offerId);
 
-            const toast = document.createElement('div');
-            toast.className = 'toast ' + type;
-            const iconMap = { 'success': 'check_circle', 'error': 'error', 'info': 'info' };
-            toast.innerHTML = `<span class="material-symbols-outlined">${iconMap[type] || 'info'}</span> ${message}`;
-            document.body.appendChild(toast);
+        fetch('offers.php', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.text())
+        .then(() => {
+            window.location.reload();
+        })
+        .catch(() => {
+            showToast('Error withdrawing offer.', 'error');
+        });
+    }
 
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                toast.style.transform = 'translateY(-10px)';
-                toast.style.transition = 'all 0.3s ease';
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
+    // =============================================
+    // FORM VALIDATION
+    // =============================================
+    document.getElementById('editOfferForm').addEventListener('submit', function(e) {
+        const salary = document.getElementById('editSalaryOffered');
+        const submitBtn = document.getElementById('editSubmitBtn');
+        let errors = [];
+
+        if (!salary || parseFloat(salary.value) <= 0) {
+            errors.push('Please enter a valid salary amount.');
+            if (salary) salary.style.borderColor = '#dc2626';
         }
 
-        // =============================================
-        // 5. RESPONSIVE HANDLING
-        // =============================================
-        let resizeTimer;
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {
-                const width = window.innerWidth;
-                if (width <= 768) {
-                    sidebar.classList.remove('collapsed');
+        if (errors.length > 0) {
+            e.preventDefault();
+            alert('Please fix the following errors:\n\n• ' + errors.join('\n• '));
+            if (salary && salary.style.borderColor === '#dc2626') salary.focus();
+        } else {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="material-symbols-outlined">hourglass_top</span> Updating...';
+        }
+    });
+
+    // =============================================
+    // RESPONSIVE HANDLING
+    // =============================================
+    let resizeTimer;
+    window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function() {
+            const width = window.innerWidth;
+            if (width <= 768) {
+                sidebar.classList.remove('collapsed');
+            } else {
+                sidebar.classList.remove('mobile-open');
+                if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+                document.body.style.overflow = '';
+                const saved = localStorage.getItem('sidebarCollapsed');
+                if (saved === 'true') {
+                    sidebar.classList.add('collapsed');
                 } else {
-                    sidebar.classList.remove('mobile-open');
-                    if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
-                    document.body.style.overflow = '';
-                    const saved = localStorage.getItem('sidebarCollapsed');
-                    if (saved === 'true') {
-                        sidebar.classList.add('collapsed');
-                    } else {
-                        sidebar.classList.remove('collapsed');
-                    }
+                    sidebar.classList.remove('collapsed');
                 }
-            }, 250);
-        });
+            }
+        }, 250);
+    });
 
-        // =============================================
-        // 6. CONFIRMATION DIALOGS
-        // =============================================
-        document.querySelectorAll('form[action*="update_offer_status"]').forEach(form => {
-            form.addEventListener('submit', function(e) {
-                const action = this.querySelector('input[name="new_status"]')?.value;
-                if (action === 'accepted') {
-                    if (!confirm('Are you sure you want to accept this offer? This will mark the applicant as hired.')) {
-                        e.preventDefault();
-                    }
-                } else if (action === 'rejected') {
-                    if (!confirm('Are you sure you want to reject this offer?')) {
-                        e.preventDefault();
-                    }
-                }
-            });
-        });
-
-        // =============================================
-        // SESSION ACTIVITY MONITOR
-        // =============================================
-        let sessionTimer = null;
-        const SESSION_TIMEOUT = 420; // 7 minutes
-        const WARNING_TIME = 60;
-
-        function updateSessionTimer() {
-            fetch('check_session.php')
-                .then(response => response.json())
-                .then(data => {
-                    if (data && data.remaining !== undefined) {
-                        if (data.remaining <= 0) {
-                            window.location.href = '../../login.php?timeout=1';
-                        }
-                    }
-                })
-                .catch(() => {});
+    // ESC key to close modals
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeEditModal();
+            closeMobileSidebar();
+            if (profileToggle) profileToggle.classList.remove('open');
+            if (profileMenu) profileMenu.classList.remove('open');
         }
+    });
 
-        sessionTimer = setInterval(updateSessionTimer, 30000);
-        console.log('📋 ISMERS Client Job Offers loaded successfully!');
-        console.log('📊 Total offers: <?php echo count($offers); ?>');
+    console.log('📋 ISMERS Client Offers Management loaded successfully!');
+    console.log('📊 Total offers: <?php echo count($offers); ?>');
+    console.log('⏳ Pending offers: <?php echo count($pendingOffers); ?>');
     </script>
     <script src="/session_guard.js"></script>
 </body>
