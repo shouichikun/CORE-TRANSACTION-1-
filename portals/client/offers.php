@@ -49,7 +49,7 @@ $clientId = (int)($client['id'] ?? 0);
 // =============================================
 $filter = $_GET['filter'] ?? 'all';
 
-// Build query with filters
+// Build query with filters - FIXED column names
 $sql = "SELECT o.*, 
         u.first_name, u.last_name, u.email,
         a.id as application_id,
@@ -58,7 +58,7 @@ $sql = "SELECT o.*,
         jo.job_type as job_type,
         ag.agency_name,
         ag.agency_code,
-        (SELECT COUNT(*) FROM offers WHERE application_id = a.id AND status = 'accepted') as offer_accepted_count
+        jo.client_id
         FROM offers o
         JOIN applications a ON o.application_id = a.id
         JOIN applicants ap ON a.applicant_id = ap.id
@@ -762,6 +762,7 @@ function getOfferStatusLabel($status) {
             align-items: center;
             gap: 0.5rem;
             flex-wrap: wrap;
+            margin-bottom: 0.375rem;
         }
 
         .offer-card-title .offer-badge {
@@ -1240,7 +1241,8 @@ function getOfferStatusLabel($status) {
                         $jobTitle = htmlspecialchars($offer['job_title'] ?? 'Position');
                         $location = htmlspecialchars($offer['job_location'] ?? 'Remote');
                         $jobType = htmlspecialchars($offer['job_type'] ?? 'Full-time');
-                        $salary = !empty($offer['salary_amount']) ? '₱' . number_format($offer['salary_amount'], 2) : 'N/A';
+                        // ✅ FIXED: Use correct column name 'salary_offered'
+                        $salary = !empty($offer['salary_offered']) ? '₱' . number_format($offer['salary_offered'], 2) : 'N/A';
                         $agency = htmlspecialchars($offer['agency_name'] ?? '');
                     ?>
                         <div class="offer-card" id="offer-<?php echo $offer['id']; ?>">
@@ -1277,14 +1279,8 @@ function getOfferStatusLabel($status) {
                                         </span>
                                         <span class="meta-item">
                                             <span class="material-symbols-outlined">calendar_today</span>
-                                            Offered: <?php echo date('M d, Y', strtotime($offer['created_at'])); ?>
+                                            Offered: <?php echo date('M d, Y', strtotime($offer['created_at'] ?? 'now')); ?>
                                         </span>
-                                        <?php if (!empty($offer['expires_at'])): ?>
-                                            <span class="meta-item">
-                                                <span class="material-symbols-outlined">schedule</span>
-                                                Expires: <?php echo date('M d, Y', strtotime($offer['expires_at'])); ?>
-                                            </span>
-                                        <?php endif; ?>
                                     </div>
 
                                     <div class="offer-card-salary">
@@ -1299,9 +1295,9 @@ function getOfferStatusLabel($status) {
                                         </div>
                                     <?php endif; ?>
 
-                                    <?php if (!empty($offer['offer_letter'])): ?>
+                                    <?php if (!empty($offer['document_path'])): ?>
                                         <div style="margin-top:0.375rem;">
-                                            <a href="<?php echo htmlspecialchars($offer['offer_letter']); ?>" target="_blank" class="btn btn-sm btn-outline">
+                                            <a href="<?php echo htmlspecialchars($offer['document_path']); ?>" target="_blank" class="btn btn-sm btn-outline">
                                                 <span class="material-symbols-outlined" style="font-size:0.875rem;">description</span>
                                                 View Offer Letter
                                             </a>
@@ -1363,12 +1359,6 @@ function getOfferStatusLabel($status) {
                                         <span>
                                             <span class="material-symbols-outlined">info</span>
                                             Application #<?php echo $offer['application_id']; ?>
-                                        </span>
-                                    <?php endif; ?>
-                                    <?php if (($offer['offer_accepted_count'] ?? 0) > 0): ?>
-                                        <span style="color:var(--primary);">
-                                            <span class="material-symbols-outlined">history</span>
-                                            <?php echo $offer['offer_accepted_count']; ?> previous offer(s)
                                         </span>
                                     <?php endif; ?>
                                 </div>
