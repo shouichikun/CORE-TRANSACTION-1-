@@ -1180,6 +1180,17 @@ $userProfile = getUserProfileData($userId);
                 <span class="material-symbols-outlined">support_agent</span>
                 <span class="nav-text">Support</span>
             </a>
+            <a href="offers.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'offers.php' ? 'active' : ''; ?>">
+    <span class="material-symbols-outlined">handshake</span>
+    <span class="nav-text">Offers</span>
+    <?php 
+    // Show badge for pending offers
+    $pendingOffersCount = 0;
+    // You'll need to calculate this in each page
+    if ($pendingOffersCount > 0): ?>
+        <span class="nav-badge"><?php echo $pendingOffersCount; ?></span>
+    <?php endif; ?>
+</a>
             <a href="reports.php" class="sidebar-main-link <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'active' : ''; ?>">
                 <span class="material-symbols-outlined">analytics</span>
                 <span class="nav-text">Reports</span>
