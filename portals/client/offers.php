@@ -39,19 +39,7 @@ if (!$client) {
 }
 
 $companyName = $client['company_name'] ?? 'Your Company';
-$clientId = (int)($client['id'] ?? 0);  // ✅ This must be the client.id from the clients table
-
-// DEBUG - Check what client_id we're using
-error_log("DEBUG - Client ID: " . $clientId . " for user: " . $userId);
-
-// =============================================
-// DEBUG: Check if client exists and has offers
-// =============================================
-// Uncomment this to debug:
-/*
-error_log("Client ID: " . $clientId);
-error_log("User ID: " . $userId);
-*/
+$clientId = (int)($client['id'] ?? 0);
 
 // =============================================
 // GET OFFERS FOR THIS CLIENT - PostgreSQL
@@ -66,7 +54,7 @@ $sql = "SELECT
         u.email,
         a.id as application_id,
         jo.id as job_id,
-        jo.title as job_title,           -- ✅ This is the job title
+        jo.title as job_title,
         jo.location as job_location,
         jo.job_type as job_type,
         ag.agency_name,
@@ -76,7 +64,7 @@ $sql = "SELECT
         JOIN applications a ON o.application_id = a.id
         JOIN applicants ap ON a.applicant_id = ap.id
         JOIN users u ON ap.user_id = u.id
-        JOIN job_orders jo ON a.job_order_id = jo.id   -- ✅ This joins to get job title
+        JOIN job_orders jo ON a.job_order_id = jo.id
         LEFT JOIN recruitment_agencies ag ON jo.agency_id = ag.id
         WHERE jo.client_id = $1";
 
@@ -98,46 +86,6 @@ $sql .= " ORDER BY
     o.created_at DESC";
 
 $offers = getRecords($sql, $params);
-// TEMPORARY DEBUG - Check what job titles exist
-$debugJobs = getRecords("SELECT id, title, client_id FROM job_orders WHERE client_id = $1 LIMIT 5", [$clientId]);
-if (!empty($debugJobs)) {
-    error_log("DEBUG - Job titles found: " . json_encode($debugJobs));
-} else {
-    error_log("DEBUG - No job orders found for client_id: " . $clientId);
-}
-
-// Also check the actual offers data
-if (!empty($offers)) {
-    error_log("DEBUG - First offer: " . json_encode($offers[0]));
-}
-
-// If still no offers, try a direct query to see what's in the offers table
-if (empty($offers)) {
-    // Check if there are any offers at all for this client
-    $debugSql = "SELECT o.id, o.status, o.salary_offered, o.application_id, jo.id as job_id, jo.title
-                 FROM offers o
-                 JOIN applications a ON o.application_id = a.id
-                 JOIN job_orders jo ON a.job_order_id = jo.id
-                 WHERE jo.client_id = $1
-                 LIMIT 5";
-    $debugOffers = getRecords($debugSql, [$clientId]);
-    
-    if (!empty($debugOffers)) {
-        // We found offers but the main query failed - use the debug results
-        $offers = $debugOffers;
-    } else {
-        // Debug: Log the client_id being used
-        error_log("No offers found for client_id: " . $clientId);
-        
-        // Check if there are any job_orders for this client
-        $jobOrders = getRecords("SELECT id, title FROM job_orders WHERE client_id = $1", [$clientId]);
-        if (!empty($jobOrders)) {
-            error_log("Found job_orders for client: " . json_encode($jobOrders));
-        } else {
-            error_log("No job_orders found for client_id: " . $clientId);
-        }
-    }
-}
 
 // Get status counts for filter
 $statusCounts = ['all' => count($offers)];
@@ -1552,7 +1500,8 @@ function formatCurrency($amount) {
                         $statusClass = $isPending ? 'badge-pending' : ($isAccepted ? 'badge-accepted' : ($isRejected ? 'badge-rejected' : 'badge-withdrawn'));
                         $statusLabel = ucfirst($offer['status'] ?? 'Pending');
                         $applicantName = htmlspecialchars(($offer['first_name'] ?? '') . ' ' . ($offer['last_name'] ?? ''));
-                        $jobTitle = htmlspecialchars($offer['job_title'] ?? 'Position');
+                        // ✅ FIXED: Use the job_title from the query, fallback to 'Position' if empty
+                        $jobTitle = !empty($offer['job_title']) ? htmlspecialchars($offer['job_title']) : 'Position';
                         $location = htmlspecialchars($offer['job_location'] ?? 'Remote');
                         $jobType = htmlspecialchars($offer['job_type'] ?? 'Full-time');
                         $salary = !empty($offer['salary_offered']) ? '₱' . number_format($offer['salary_offered'], 2) : 'N/A';
@@ -2002,6 +1951,11 @@ function formatCurrency($amount) {
         sessionTimer = setInterval(updateSessionTimer, 30000);
         console.log('📋 ISMERS Client Job Offers loaded successfully!');
         console.log('📊 Total offers: <?php echo count($offers); ?>');
+        
+        // Debug: Log the first offer's job_title
+        <?php if (!empty($offers)): ?>
+        console.log('📝 First offer job_title:', '<?php echo addslashes($offers[0]['job_title'] ?? 'NULL'); ?>');
+        <?php endif; ?>
     </script>
     <script src="/session_guard.js"></script>
 </body>
