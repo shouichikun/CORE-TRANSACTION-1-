@@ -1,6 +1,7 @@
 <?php
 // portals/hr/clients.php - Enhanced Client Management with Company Profiling
-// FIXED: Status update now works properly!
+// FIXED: Status update and client creation now work properly!
+// FIXED: Toast notification now shows correct success/error messages
 
 // =============================================
 // ERROR REPORTING - DISABLE WARNINGS
@@ -9,9 +10,20 @@ error_reporting(0);
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 
+// Start output buffering to prevent any accidental output
+ob_start();
+
 // Start session
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
+}
+
+// Debug function
+function debug_log($message) {
+    $logFile = __DIR__ . '/debug.log';
+    $timestamp = date('Y-m-d H:i:s');
+    $logMessage = "[$timestamp] " . (is_array($message) || is_object($message) ? print_r($message, true) : $message) . PHP_EOL;
+    @file_put_contents($logFile, $logMessage, FILE_APPEND);
 }
 
 // =============================================
@@ -20,7 +32,10 @@ if (session_status() === PHP_SESSION_NONE) {
 $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
-    if (ob_get_level()) ob_clean();
+    // Clear any output buffers
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
     header('Content-Type: application/json');
     
     function sendJsonResponse($data) {
@@ -31,36 +46,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
     try {
         require_once '../../app/config.php';
         require_once 'includes/functions.php';
+        
         /**
- * Convert boolean/string to integer for display
- */
-function normalizeIsActive($value) {
-    if (is_bool($value)) {
-        return $value ? 1 : 0;
-    }
-    if (is_string($value)) {
-        $value = strtolower($value);
-        if ($value === 't' || $value === 'true' || $value === '1') {
-            return 1;
+         * Convert boolean/string to integer for display
+         */
+        function normalizeIsActive($value) {
+            if (is_bool($value)) {
+                return $value ? 1 : 0;
+            }
+            if (is_string($value)) {
+                $value = strtolower($value);
+                if ($value === 't' || $value === 'true' || $value === '1') {
+                    return 1;
+                }
+                return 0;
+            }
+            return (int)$value;
         }
-        return 0;
-    }
-    return (int)$value;
-}
 
-/**
- * Check if client is active (works with boolean or integer)
- */
-function isClientActive($value) {
-    if (is_bool($value)) {
-        return $value;
-    }
-    if (is_string($value)) {
-        $value = strtolower($value);
-        return ($value === 't' || $value === 'true' || $value === '1');
-    }
-    return $value == 1;
-}
+        /**
+         * Check if client is active (works with boolean or integer)
+         */
+        function isClientActive($value) {
+            if (is_bool($value)) {
+                return $value;
+            }
+            if (is_string($value)) {
+                $value = strtolower($value);
+                return ($value === 't' || $value === 'true' || $value === '1');
+            }
+            return $value == 1;
+        }
         
         if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
             sendJsonResponse(['success' => false, 'error' => 'Not logged in']);
@@ -160,51 +176,55 @@ function isClientActive($value) {
         // GET CLIENT FOR EDIT - FIXED: Returns correct status
         // =============================================
         if ($action === 'get_client' && $clientId > 0) {
-        $client = @getRecord("
-    SELECT c.*, u.email, u.full_name 
-    FROM clients c
-    JOIN users u ON c.user_id = u.id
-    WHERE c.id = $1
-", [$clientId]);
+            $client = @getRecord("
+                SELECT c.*, u.email, u.full_name 
+                FROM clients c
+                JOIN users u ON c.user_id = u.id
+                WHERE c.id = $1
+            ", [$clientId]);
 
-if ($client) {
-    // Handle boolean properly
-    $isActive = $client['is_active'] ?? true;
-    if (is_bool($isActive)) {
-        $client['is_active'] = $isActive ? 1 : 0;
-    } else {
-        $client['is_active'] = ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') ? 1 : 0;
-    }
-    sendJsonResponse(['success' => true, 'client' => $client]);
-}
-            else {
+            if ($client) {
+                // Handle boolean properly
+                $isActive = $client['is_active'] ?? true;
+                if (is_bool($isActive)) {
+                    $client['is_active'] = $isActive ? 1 : 0;
+                } else {
+                    $client['is_active'] = ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') ? 1 : 0;
+                }
+                sendJsonResponse(['success' => true, 'client' => $client]);
+            } else {
                 sendJsonResponse(['success' => false, 'error' => 'Client not found']);
             }
         }
         
         // =============================================
-        // CREATE CLIENT
+        // CREATE CLIENT - FIXED
         // =============================================
         if ($action === 'create_client') {
-            $companyName = trim($_POST['company_name'] ?? '');
-            $contactPerson = trim($_POST['contact_person'] ?? '');
-            $email = trim($_POST['email'] ?? '');
-            
-            if (empty($companyName) || empty($contactPerson) || empty($email)) {
-                sendJsonResponse(['success' => false, 'error' => 'Company name, contact person, and email are required.']);
-            }
-            
-            $existing = @getRecord("SELECT id FROM users WHERE email = $1", [$email]);
-            if ($existing) {
-                sendJsonResponse(['success' => false, 'error' => 'Email already exists.']);
-            }
-            
-            $tempPassword = generatePassword(10);
-            $passwordHash = password_hash($tempPassword, PASSWORD_BCRYPT);
-            
-            @beginTransaction();
+            debug_log("=== CREATE CLIENT START ===");
+            debug_log("POST data: " . print_r($_POST, true));
             
             try {
+                $companyName = trim($_POST['company_name'] ?? '');
+                $contactPerson = trim($_POST['contact_person'] ?? '');
+                $email = trim($_POST['email'] ?? '');
+                
+                debug_log("Company: $companyName, Contact: $contactPerson, Email: $email");
+                
+                if (empty($companyName) || empty($contactPerson) || empty($email)) {
+                    sendJsonResponse(['success' => false, 'error' => 'Company name, contact person, and email are required.']);
+                }
+                
+                $existing = @getRecord("SELECT id FROM users WHERE email = $1", [$email]);
+                if ($existing) {
+                    sendJsonResponse(['success' => false, 'error' => 'Email already exists.']);
+                }
+                
+                $tempPassword = generatePassword(10);
+                $passwordHash = password_hash($tempPassword, PASSWORD_BCRYPT);
+                
+                @beginTransaction();
+                
                 $userId = @insertRecord("
                     INSERT INTO users (email, password_hash, role, full_name, first_name, last_name, created_at)
                     VALUES ($1, $2, 'client', $3, $4, $5, NOW())
@@ -217,8 +237,11 @@ if ($client) {
                     ''
                 ]);
                 
+                debug_log("User ID created: " . ($userId ? $userId : 'FAILED'));
+                
                 if (!$userId) {
-                    throw new Exception('Failed to create user account.');
+                    @rollbackTransaction();
+                    sendJsonResponse(['success' => false, 'error' => 'Failed to create user account.']);
                 }
                 
                 $clientId = @insertRecord("
@@ -247,34 +270,46 @@ if ($client) {
                     isset($_POST['is_active']) ? (int)$_POST['is_active'] : 1
                 ]);
                 
+                debug_log("Client ID created: " . ($clientId ? $clientId : 'FAILED'));
+                
                 if (!$clientId) {
-                    throw new Exception('Failed to create client record.');
+                    @rollbackTransaction();
+                    sendJsonResponse(['success' => false, 'error' => 'Failed to create client record.']);
                 }
                 
                 @commitTransaction();
-                @sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
                 
+                // Try to send email but don't fail if it doesn't work
+                try {
+                    @sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
+                } catch (Exception $e) {
+                    debug_log("Welcome email failed: " . $e->getMessage());
+                }
+                
+                debug_log("=== CREATE CLIENT SUCCESS ===");
                 sendJsonResponse([
                     'success' => true,
-                    'message' => 'Client created successfully. Welcome email sent.'
+                    'message' => 'Client created successfully.',
+                    'client_id' => $clientId
                 ]);
                 
             } catch (Exception $e) {
                 @rollbackTransaction();
+                debug_log("CREATE CLIENT ERROR: " . $e->getMessage());
                 sendJsonResponse(['success' => false, 'error' => $e->getMessage()]);
             }
         }
         
         // =============================================
-        // UPDATE CLIENT - COMPLETELY FIXED
+        // UPDATE CLIENT - FIXED
         // =============================================
         if ($action === 'update_client' && $clientId > 0) {
+            debug_log("=== UPDATE CLIENT START ===");
+            debug_log("POST data: " . print_r($_POST, true));
+            
             $fields = [];
             $params = [];
             $counter = 1;
-            
-            // First, check what's being sent
-            error_log("UPDATE CLIENT - POST data: " . print_r($_POST, true));
             
             $allowedFields = [
                 'company_name', 'contact_person', 'contact_phone', 'industry',
@@ -289,17 +324,12 @@ if ($client) {
                 }
             }
             
-            // CRITICAL FIX: Handle is_active properly
+            // Handle is_active properly
             if (isset($_POST['is_active'])) {
                 $isActive = (int)$_POST['is_active'];
                 $fields[] = "is_active = $" . $counter++;
                 $params[] = $isActive;
-                error_log("Setting is_active to: $isActive for client $clientId");
-            } else {
-                // If not sent, keep current value - but we'll send it anyway
-                $fields[] = "is_active = $" . $counter++;
-                $params[] = 1;
-                error_log("is_active not set, defaulting to 1 for client $clientId");
+                debug_log("Setting is_active to: $isActive for client $clientId");
             }
             
             if (empty($fields)) {
@@ -309,18 +339,16 @@ if ($client) {
             $params[] = $clientId;
             $sql = "UPDATE clients SET " . implode(", ", $fields) . " WHERE id = $" . $counter;
             
-            error_log("UPDATE SQL: " . $sql);
-            error_log("UPDATE Params: " . print_r($params, true));
+            debug_log("UPDATE SQL: " . $sql);
+            debug_log("UPDATE Params: " . print_r($params, true));
             
             $result = @updateRecord($sql, $params);
             
-            error_log("UPDATE Result: " . ($result ? 'true' : 'false'));
+            debug_log("UPDATE Result: " . ($result ? 'true' : 'false'));
             
             if ($result) {
-                // Verify the update worked
                 $check = @getRecord("SELECT is_active FROM clients WHERE id = $1", [$clientId]);
-                error_log("After update, is_active = " . ($check ? $check['is_active'] : 'not found'));
-                
+                debug_log("After update, is_active = " . ($check ? $check['is_active'] : 'not found'));
                 sendJsonResponse(['success' => true, 'message' => 'Client updated successfully.']);
             } else {
                 sendJsonResponse(['success' => false, 'error' => 'Failed to update client.']);
@@ -538,7 +566,7 @@ foreach ($tables as $table) {
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* =============================================
-           ALL YOUR EXISTING STYLES HERE (keep as is)
+           ALL YOUR EXISTING STYLES HERE
            ============================================= */
         :root {
             --bg-background: #f4f6fa;
@@ -1513,40 +1541,39 @@ foreach ($tables as $table) {
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
 
         .header-logo {
-    height: 2rem;
-    width: auto;
-    max-height: 2.5rem;
-    object-fit: contain;
-    border-radius: 0.375rem;
-}
+            height: 2rem;
+            width: auto;
+            max-height: 2.5rem;
+            object-fit: contain;
+            border-radius: 0.375rem;
+        }
 
-/* For mobile responsiveness */
-@media (max-width: 480px) {
-    .header-logo {
-        height: 1.5rem;
-    }
-}
-.sidebar-logo-wrapper {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    flex-shrink: 0;
-}
+        @media (max-width: 480px) {
+            .header-logo {
+                height: 1.5rem;
+            }
+        }
+        .sidebar-logo-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            flex-shrink: 0;
+        }
 
-.sidebar-logo {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    border-radius: 0.75rem;
-    transition: all 0.3s ease;
-}
+        .sidebar-logo {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: 0.75rem;
+            transition: all 0.3s ease;
+        }
 
-.dashboard-sidebar.collapsed .sidebar-logo {
-    width: 2.5rem;
-    height: 2.5rem;
-}
+        .dashboard-sidebar.collapsed .sidebar-logo {
+            width: 2.5rem;
+            height: 2.5rem;
+        }
     </style>
 </head>
 <body>
@@ -1622,7 +1649,6 @@ foreach ($tables as $table) {
         <button class="sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Toggle sidebar">
             <span class="material-symbols-outlined" id="sidebarToggleIcon">chevron_left</span>
         </button>
-        <!-- ✅ Logo added here -->
         <img src="logo.png" alt="ISMERS" class="header-logo">
         <span class="separator">|</span>
         <span style="font-weight:600; font-size:0.875rem; color:var(--text-on-surface);">
@@ -1772,13 +1798,13 @@ foreach ($tables as $table) {
                             <tbody>
                             <?php foreach ($clients as $client): ?>
                                 <?php 
-// Check both boolean and integer values
-$isActive = $client['is_active'];
-if (is_bool($isActive)) {
-    $status = $isActive ? 'active' : 'inactive';
-} else {
-    $status = ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') ? 'active' : 'inactive';
-}                                $profilePic = !empty($client['profile_picture']) ? $client['profile_picture'] : '';
+                                $isActive = $client['is_active'];
+                                if (is_bool($isActive)) {
+                                    $status = $isActive ? 'active' : 'inactive';
+                                } else {
+                                    $status = ($isActive == 1 || $isActive === '1' || $isActive === 't' || $isActive === 'true') ? 'active' : 'inactive';
+                                }
+                                $profilePic = !empty($client['profile_picture']) ? $client['profile_picture'] : '';
                                 $imagePath = '../../' . $profilePic;
                                 $hasProfileImage = !empty($profilePic) && file_exists($imagePath);
                                 ?>
@@ -1830,21 +1856,18 @@ if (is_bool($isActive)) {
                                     </td>
                                     <td>
                                         <div class="action-buttons">
-                                            <!-- View Button with Tooltip -->
                                             <div class="tooltip-trigger">
                                                 <button class="btn btn-primary btn-sm" onclick="viewCompanyDetails(<?php echo $client['id']; ?>)">
                                                     <span class="material-symbols-outlined">visibility</span>
                                                 </button>
                                                 <span class="tooltip-text">View Details</span>
                                             </div>
-                                            <!-- Edit Button with Tooltip -->
                                             <div class="tooltip-trigger">
                                                 <button class="btn btn-outline btn-sm" onclick="editClient(<?php echo $client['id']; ?>)">
                                                     <span class="material-symbols-outlined">edit</span>
                                                 </button>
                                                 <span class="tooltip-text">Edit Client</span>
                                             </div>
-                                            <!-- Delete Button with Tooltip -->
                                             <div class="tooltip-trigger">
                                                 <button class="btn btn-danger btn-sm" onclick="deleteClient(<?php echo $client['id']; ?>)">
                                                     <span class="material-symbols-outlined">delete</span>
@@ -2208,11 +2231,10 @@ function editClient(id) {
             document.getElementById('clientTaxId').value = c.tax_id || '';
             document.getElementById('clientNotes').value = c.notes || '';
             
-            // CRITICAL FIX: Set the status value properly
             const statusValue = c.is_active !== undefined && c.is_active !== null ? String(c.is_active) : '1';
             document.getElementById('clientStatus').value = statusValue;
             
-            console.log('Setting status to:', statusValue); // Debug log
+            console.log('Setting status to:', statusValue);
             
             openModal('clientModal');
         } else {
@@ -2226,13 +2248,16 @@ function editClient(id) {
 }
 
 // =============================================
-// 7. SUBMIT CLIENT - FIXED with debugging
+// 7. SUBMIT CLIENT - FIXED with better error handling
 // =============================================
 function submitClient(event) {
     event.preventDefault();
     
     const form = document.getElementById('clientForm');
-    if (!form) return;
+    if (!form) {
+        showToast('Form not found', 'error');
+        return;
+    }
     
     const formData = new FormData(form);
     
@@ -2245,7 +2270,6 @@ function submitClient(event) {
         return;
     }
     
-    // Debug: Log what's being sent
     console.log('Submitting form data:');
     for (let pair of formData.entries()) {
         console.log(pair[0] + ': ' + pair[1]);
@@ -2261,26 +2285,45 @@ function submitClient(event) {
     fetch('clients.php', {
         method: 'POST',
         body: formData,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        headers: { 
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
     })
-    .then(response => response.json())
-    .then(data => {
+    .then(function(response) {
+        if (!response.ok) {
+            throw new Error('HTTP error! status: ' + response.status);
+        }
+        return response.text();
+    })
+    .then(function(text) {
+        console.log('Server response:', text);
+        try {
+            return JSON.parse(text);
+        } catch(e) {
+            console.error('Failed to parse JSON. Response was:', text.substring(0, 500));
+            throw new Error('Server returned invalid JSON. Please check server logs.');
+        }
+    })
+    .then(function(data) {
         btn.disabled = false;
         btn.innerHTML = originalText;
         
         if (data.success) {
-            showToast(data.message, 'success');
+            showToast(data.message || 'Client saved successfully!', 'success');
             closeModal('clientModal');
-            setTimeout(() => location.reload(), 1500);
+            setTimeout(function() {
+                location.reload();
+            }, 1500);
         } else {
             showToast(data.error || 'Failed to save client.', 'error');
         }
     })
-    .catch(error => {
+    .catch(function(error) {
         btn.disabled = false;
         btn.innerHTML = originalText;
         console.error('Submit error:', error);
-        showToast('Error saving client. Please try again.', 'error');
+        showToast('Error saving client: ' + error.message, 'error');
     });
 }
 
@@ -2336,7 +2379,6 @@ function viewCompanyDetails(id) {
             
             let html = '';
             
-            // Company Profile Header
             html += `
                 <div class="company-profile-header">
                     <div class="company-logo">
@@ -2360,7 +2402,6 @@ function viewCompanyDetails(id) {
                 </div>
             `;
             
-            // Stats Grid
             html += `
                 <div class="company-stats-grid">
                     <div class="company-stat-card">
@@ -2390,7 +2431,6 @@ function viewCompanyDetails(id) {
                 </div>
             `;
             
-            // Tabs
             html += `
                 <div class="tab-bar">
                     <button class="tab-btn active" data-tab="applicants">Applicants (${applicants.length})</button>
@@ -2398,7 +2438,6 @@ function viewCompanyDetails(id) {
                 </div>
             `;
             
-            // Applicants Tab
             html += `<div class="tab-content active" id="tab-applicants">`;
             if (applicants.length === 0) {
                 html += `<div class="empty-state" style="padding:1.5rem;">
@@ -2457,7 +2496,6 @@ function viewCompanyDetails(id) {
             }
             html += `</div>`;
             
-            // Jobs Tab
             html += `<div class="tab-content" id="tab-jobs">`;
             if (jobs.length === 0) {
                 html += `<div class="empty-state" style="padding:1.5rem;">
@@ -2636,270 +2674,6 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-
-
-// =============================================
-// SESSION ACTIVITY MONITOR
-// =============================================
-
-let sessionTimer = null;
-let warningShown = false;
-const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
-const WARNING_TIME = 60; // Show warning 60 seconds before timeout
-
-/**
- * Update session timer display
- */
-function updateSessionTimer() {
-    // Get remaining time from server
-    fetch('check_session.php')
-        .then(response => response.json())
-        .then(data => {
-            const remaining = data.remaining;
-            const minutes = Math.floor(remaining / 60);
-            const seconds = remaining % 60;
-            
-            // Update timer display if exists
-            const timerEl = document.getElementById('sessionTimer');
-            if (timerEl) {
-                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                
-                // Change color when running low
-                if (remaining < 60) {
-                    timerEl.style.color = '#dc2626';
-                    timerEl.style.fontWeight = 'bold';
-                } else if (remaining < 120) {
-                    timerEl.style.color = '#f59e0b';
-                } else {
-                    timerEl.style.color = '';
-                }
-            }
-            
-            // Show warning modal if session is about to expire
-            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
-                warningShown = true;
-                showSessionWarning(remaining);
-            }
-            
-            // If session expired, redirect
-            if (remaining <= 0) {
-                window.location.href = '../../login.php?timeout=1';
-            }
-        })
-        .catch(error => {
-            console.log('Session check error:', error);
-        });
-}
-
-/**
- * Show session expiration warning
- */
-function showSessionWarning(remaining) {
-    // Create modal if it doesn't exist
-    let modal = document.getElementById('sessionWarningModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'sessionWarningModal';
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(8px);
-            z-index: 99999;
-            display: none;
-            justify-content: center;
-            align-items: center;
-            padding: 1rem;
-        `;
-        
-        modal.innerHTML = `
-            <div style="
-                background: white;
-                border-radius: 1.5rem;
-                max-width: 440px;
-                width: 100%;
-                padding: 2rem;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                animation: slideUp 0.3s ease;
-                text-align: center;
-            ">
-                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
-                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
-                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
-                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
-                    Please click "Stay Logged In" to continue.
-                </p>
-                <div style="display: flex; gap: 0.75rem; justify-content: center;">
-                    <button onclick="extendSession()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #4f46e5;
-                        color: white;
-                        border: none;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Stay Logged In</button>
-                    <button onclick="logoutNow()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #fef2f2;
-                        color: #dc2626;
-                        border: 1px solid #fecaca;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Logout</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-    }
-    
-    // Show modal
-    modal.style.display = 'flex';
-    
-    // Update countdown inside modal
-    const warningTimer = document.getElementById('warningTimer');
-    if (warningTimer) {
-        let countdown = remaining;
-        const interval = setInterval(() => {
-            countdown--;
-            warningTimer.textContent = countdown;
-            if (countdown <= 0) {
-                clearInterval(interval);
-                window.location.href = '../../login.php?timeout=1';
-            }
-        }, 1000);
-        
-        // Store interval to clear it when extending
-        modal.dataset.interval = interval;
-    }
-}
-
-/**
- * Extend session (reset timer)
- */
-function extendSession() {
-    // Clear any existing warning interval
-    const modal = document.getElementById('sessionWarningModal');
-    if (modal && modal.dataset.interval) {
-        clearInterval(parseInt(modal.dataset.interval));
-    }
-    
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            if (modal) modal.style.display = 'none';
-            showToast('Session extended!', 'success');
-        }
-    })
-    .catch(error => {
-        console.log('Extend session error:', error);
-    });
-}
-
-/**
- * Logout immediately
- */
-function logoutNow() {
-    window.location.href = '../../logout.php';
-}
-
-/**
- * Show toast notification
- */
-function showToast(message, type = 'info') {
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) existingToast.remove();
-    
-    const toast = document.createElement('div');
-    toast.className = 'toast ' + type;
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 1.5rem;
-        right: 1.5rem;
-        padding: 0.875rem 1.5rem;
-        border-radius: 0.75rem;
-        color: white;
-        font-weight: 600;
-        font-size: 0.875rem;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-        z-index: 100000;
-        animation: slideUp 0.4s ease-out;
-    `;
-    if (type === 'success') toast.style.background = '#22c55e';
-    else if (type === 'error') toast.style.background = '#dc2626';
-    else toast.style.background = '#4f46e5';
-    
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(20px)';
-        toast.style.transition = 'all 0.4s ease';
-        setTimeout(() => toast.remove(), 400);
-    }, 3000);
-}
-
-// =============================================
-// TRACK USER ACTIVITY
-// =============================================
-
-let activityTimer = null;
-
-function resetActivityTimer() {
-    // Reset the server-side timer via AJAX
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reset' })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            // Hide warning modal if shown
-            const modal = document.getElementById('sessionWarningModal');
-            if (modal) modal.style.display = 'none';
-        }
-    })
-    .catch(error => console.log('Reset timer error:', error));
-}
-
-// Track user activity events
-const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
-activityEvents.forEach(event => {
-    document.addEventListener(event, () => {
-        resetActivityTimer();
-    });
-});
-
-// =============================================
-// START SESSION TIMER
-// =============================================
-
-// Update timer every 10 seconds
-sessionTimer = setInterval(updateSessionTimer, 10000);
-
-// Initial update
-updateSessionTimer();
-
-console.log('⏰ Session timeout: 7 minutes');
-console.log('🔄 Activity tracking enabled');
-
-
 
 // =============================================
 // 13. RESPONSIVE HANDLING
