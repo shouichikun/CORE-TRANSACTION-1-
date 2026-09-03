@@ -278,7 +278,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
                 $emailSent = false;
                 try {
                     // Only load PHPMailer if we're going to send email
-                    if (file_exists(__DIR__ . '/../../PHPMailer-master/src/PHPMailer.php')) {
+                    $phpmailerPath = __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php';
+                    if (file_exists($phpmailerPath)) {
                         require_once __DIR__ . '/../../PHPMailer-master/src/Exception.php';
                         require_once __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php';
                         require_once __DIR__ . '/../../PHPMailer-master/src/SMTP.php';
@@ -290,7 +291,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
                             debug_log("Welcome email failed to send to: $email");
                         }
                     } else {
-                        debug_log("PHPMailer not found at: " . __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php');
+                        debug_log("PHPMailer not found at: $phpmailerPath");
                     }
                 } catch (Exception $e) {
                     debug_log("Welcome email exception: " . $e->getMessage());
@@ -428,7 +429,7 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 
 // =============================================
-// PHPMailer Function - Only define if files exist
+// PHPMailer Function - FIXED: No 'use' statements inside function
 // =============================================
 function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
     // Check if PHPMailer files exist
@@ -439,13 +440,9 @@ function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
     }
     
     try {
-        // Use the correct namespace
-        use PHPMailer\PHPMailer\PHPMailer;
-        use PHPMailer\PHPMailer\SMTP;
-        use PHPMailer\PHPMailer\Exception;
-        
-        $mail = new PHPMailer(true);
-        $mail->SMTPDebug = SMTP::DEBUG_OFF;
+        // Use fully qualified class names (no 'use' statements needed)
+        $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+        $mail->SMTPDebug = \PHPMailer\PHPMailer\SMTP::DEBUG_OFF;
         $mail->isSMTP();
         $mail->Host = SMTP_HOST;
         $mail->SMTPAuth = true;
@@ -461,7 +458,7 @@ function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
         $mail->AltBody = "Welcome to ISMERS! Your account for $companyName has been created. Email: $to, Password: $tempPassword";
         $mail->send();
         return true;
-    } catch (Exception $e) {
+    } catch (\PHPMailer\PHPMailer\Exception $e) {
         debug_log("PHPMailer Error: " . $e->getMessage());
         return false;
     }
@@ -2680,6 +2677,6 @@ window.addEventListener('resize', function() {
 
 console.log('🏢 ISMERS Enhanced Clients Management loaded successfully!');
 </script>
-<script src="/CT1/session_guard.js"></script>
+<script src="/session_guard.js"></script>
 </body>
 </html>
