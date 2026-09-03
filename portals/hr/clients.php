@@ -2,6 +2,8 @@
 // portals/hr/clients.php - Enhanced Client Management with Company Profiling
 // FIXED: Status update and client creation now work properly!
 // FIXED: Toast notification now shows correct success/error messages
+// FIXED: Removed unnecessary fields (city, province, zip, website, tax_id)
+// FIXED: Email sending no longer breaks JSON response
 
 // =============================================
 // ERROR REPORTING - DISABLE WARNINGS
@@ -247,10 +249,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
                 $clientId = @insertRecord("
                     INSERT INTO clients (
                         user_id, company_name, contact_person, contact_phone, 
-                        industry, company_size, address, city, province, 
-                        zip_code, website, tax_id, notes, is_active, created_at
+                        industry, company_size, address, notes, is_active, created_at
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
                     )
                     RETURNING id
                 ", [
@@ -261,11 +262,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
                     $_POST['industry'] ?? '',
                     $_POST['company_size'] ?? '',
                     $_POST['address'] ?? '',
-                    $_POST['city'] ?? '',
-                    $_POST['province'] ?? '',
-                    $_POST['zip_code'] ?? '',
-                    $_POST['website'] ?? '',
-                    $_POST['tax_id'] ?? '',
                     $_POST['notes'] ?? '',
                     isset($_POST['is_active']) ? (int)$_POST['is_active'] : 1
                 ]);
@@ -279,18 +275,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
                 
                 @commitTransaction();
                 
-                // Try to send email but don't fail if it doesn't work
+                // Try to send email but don't let it break the response
+                $emailSent = false;
                 try {
-                    @sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
+                    $emailSent = @sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
+                    if ($emailSent) {
+                        debug_log("Welcome email sent successfully to: $email");
+                    } else {
+                        debug_log("Welcome email failed to send to: $email");
+                    }
                 } catch (Exception $e) {
-                    debug_log("Welcome email failed: " . $e->getMessage());
+                    debug_log("Welcome email exception: " . $e->getMessage());
+                    // Don't re-throw - just log it
                 }
                 
                 debug_log("=== CREATE CLIENT SUCCESS ===");
                 sendJsonResponse([
                     'success' => true,
-                    'message' => 'Client created successfully.',
-                    'client_id' => $clientId
+                    'message' => 'Client created successfully.' . ($emailSent ? '' : ' (Email notification failed)'),
+                    'client_id' => $clientId,
+                    'email_sent' => $emailSent
                 ]);
                 
             } catch (Exception $e) {
@@ -313,8 +317,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
             
             $allowedFields = [
                 'company_name', 'contact_person', 'contact_phone', 'industry',
-                'company_size', 'address', 'city', 'province', 'zip_code',
-                'website', 'tax_id', 'notes'
+                'company_size', 'address', 'notes'
             ];
             
             foreach ($allowedFields as $field) {
@@ -428,7 +431,7 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 
 // =============================================
-// PHPMailer Function
+// PHPMailer Function - FIXED to not throw exceptions that break JSON
 // =============================================
 function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
     try {
@@ -450,7 +453,7 @@ function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
         $mail->send();
         return true;
     } catch (Exception $e) {
-        error_log("PHPMailer Error: " . $mail->ErrorInfo);
+        debug_log("PHPMailer Error: " . $e->getMessage());
         return false;
     }
 }
@@ -566,7 +569,7 @@ foreach ($tables as $table) {
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <style>
         /* =============================================
-           ALL YOUR EXISTING STYLES HERE
+           ALL YOUR EXISTING STYLES HERE (keep as is)
            ============================================= */
         :root {
             --bg-background: #f4f6fa;
@@ -1888,7 +1891,7 @@ foreach ($tables as $table) {
 </div>
 
 <!-- =============================================
-MODAL: Create/Edit Client
+MODAL: Create/Edit Client - UPDATED (removed city, province, zip, website, tax_id)
 ============================================= -->
 <div class="modal-overlay" id="clientModal">
     <div class="modal">
@@ -1969,35 +1972,8 @@ MODAL: Create/Edit Client
                     <input type="text" id="clientAddress" name="address" class="form-control" placeholder="Street address">
                 </div>
                 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>City</label>
-                        <input type="text" id="clientCity" name="city" class="form-control" placeholder="City">
-                    </div>
-                    <div class="form-group">
-                        <label>Province</label>
-                        <input type="text" id="clientProvince" name="province" class="form-control" placeholder="Province">
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label>ZIP Code</label>
-                    <input type="text" id="clientZip" name="zip_code" class="form-control" placeholder="ZIP code">
-                </div>
-                
                 <div style="background:var(--bg-surface-low); padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.75rem;">
                     <div style="font-size:0.75rem; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.05em;">Additional Information</div>
-                </div>
-                
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>Website</label>
-                        <input type="url" id="clientWebsite" name="website" class="form-control" placeholder="https://www.company.com">
-                    </div>
-                    <div class="form-group">
-                        <label>Tax ID</label>
-                        <input type="text" id="clientTaxId" name="tax_id" class="form-control" placeholder="Tax identification number">
-                    </div>
                 </div>
                 
                 <div class="form-group">
@@ -2224,11 +2200,6 @@ function editClient(id) {
             document.getElementById('clientEmail').value = c.email || '';
             document.getElementById('clientPhone').value = c.contact_phone || '';
             document.getElementById('clientAddress').value = c.address || '';
-            document.getElementById('clientCity').value = c.city || '';
-            document.getElementById('clientProvince').value = c.province || '';
-            document.getElementById('clientZip').value = c.zip_code || '';
-            document.getElementById('clientWebsite').value = c.website || '';
-            document.getElementById('clientTaxId').value = c.tax_id || '';
             document.getElementById('clientNotes').value = c.notes || '';
             
             const statusValue = c.is_active !== undefined && c.is_active !== null ? String(c.is_active) : '1';
@@ -2391,7 +2362,6 @@ function viewCompanyDetails(id) {
                             ${c.contact_phone ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">phone</span> ${escapeHtml(c.contact_phone)}</span>` : ''}
                             ${c.industry ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">category</span> ${escapeHtml(c.industry)}</span>` : ''}
                             ${c.company_size ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">group</span> ${escapeHtml(c.company_size)}</span>` : ''}
-                            ${c.website ? `<span><span class="material-symbols-outlined" style="font-size:1rem;">language</span> <a href="${escapeHtml(c.website)}" target="_blank" style="color:var(--primary);">${escapeHtml(c.website)}</a></span>` : ''}
                         </div>
                         ${c.address ? `<div style="margin-top:0.25rem; font-size:0.8125rem; color:var(--text-on-surface-variant);"><span class="material-symbols-outlined" style="font-size:1rem; vertical-align:middle;">location_on</span> ${escapeHtml(c.address)}</div>` : ''}
                         <div style="margin-top:0.25rem; font-size:0.75rem; color:var(--text-on-surface-variant);">
@@ -2701,6 +2671,6 @@ window.addEventListener('resize', function() {
 
 console.log('🏢 ISMERS Enhanced Clients Management loaded successfully!');
 </script>
-<script src="/CT1/session_guard.js"></script>
+<script src="/session_guard.js"></script>
 </body>
 </html>
