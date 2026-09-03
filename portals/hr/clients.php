@@ -1,7 +1,6 @@
 <?php
 // portals/hr/clients.php - Enhanced Client Management with Company Profiling
-// FIXED: Status update and client creation now work properly!
-// FIXED: Toast notification now shows correct success/error messages
+// FIXED: PHPMailer path issues
 // FIXED: Removed unnecessary fields (city, province, zip, website, tax_id)
 // FIXED: Email sending no longer breaks JSON response
 
@@ -278,11 +277,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isAjax) {
                 // Try to send email but don't let it break the response
                 $emailSent = false;
                 try {
-                    $emailSent = @sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
-                    if ($emailSent) {
-                        debug_log("Welcome email sent successfully to: $email");
+                    // Only load PHPMailer if we're going to send email
+                    if (file_exists(__DIR__ . '/../../PHPMailer-master/src/PHPMailer.php')) {
+                        require_once __DIR__ . '/../../PHPMailer-master/src/Exception.php';
+                        require_once __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php';
+                        require_once __DIR__ . '/../../PHPMailer-master/src/SMTP.php';
+                        
+                        $emailSent = sendClientWelcomeEmail($email, $contactPerson, $tempPassword, $companyName);
+                        if ($emailSent) {
+                            debug_log("Welcome email sent successfully to: $email");
+                        } else {
+                            debug_log("Welcome email failed to send to: $email");
+                        }
                     } else {
-                        debug_log("Welcome email failed to send to: $email");
+                        debug_log("PHPMailer not found at: " . __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php');
                     }
                 } catch (Exception $e) {
                     debug_log("Welcome email exception: " . $e->getMessage());
@@ -403,17 +411,6 @@ require_once '../../app/config.php';
 initSessionTimeout();
 require_once 'includes/functions.php';
 
-// =============================================
-// INCLUDE PHPMailer
-// =============================================
-require_once '../../PHPMailer-master/src/Exception.php';
-require_once '../../PHPMailer-master/src/PHPMailer.php';
-require_once '../../PHPMailer-master/src/SMTP.php';
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\SMTP;
-use PHPMailer\PHPMailer\Exception;
-
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     header('Location: ../../login.php');
     exit;
@@ -431,10 +428,22 @@ $email = $_SESSION['email'] ?? '';
 $role = $_SESSION['role'] ?? 'hr_manager';
 
 // =============================================
-// PHPMailer Function - FIXED to not throw exceptions that break JSON
+// PHPMailer Function - Only define if files exist
 // =============================================
 function sendClientWelcomeEmail($to, $name, $tempPassword, $companyName) {
+    // Check if PHPMailer files exist
+    $phpmailerPath = __DIR__ . '/../../PHPMailer-master/src/PHPMailer.php';
+    if (!file_exists($phpmailerPath)) {
+        debug_log("PHPMailer not found at: $phpmailerPath");
+        return false;
+    }
+    
     try {
+        // Use the correct namespace
+        use PHPMailer\PHPMailer\PHPMailer;
+        use PHPMailer\PHPMailer\SMTP;
+        use PHPMailer\PHPMailer\Exception;
+        
         $mail = new PHPMailer(true);
         $mail->SMTPDebug = SMTP::DEBUG_OFF;
         $mail->isSMTP();
@@ -2671,6 +2680,6 @@ window.addEventListener('resize', function() {
 
 console.log('🏢 ISMERS Enhanced Clients Management loaded successfully!');
 </script>
-<script src="/session_guard.js"></script>
+<script src="/CT1/session_guard.js"></script>
 </body>
 </html>
