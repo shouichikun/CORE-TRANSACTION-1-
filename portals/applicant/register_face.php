@@ -1106,8 +1106,44 @@ if ($applicantId) {
         let faceApiLoaded = false;
         let captureAttempts = 0;
         let isRegistering = false;
+        let faceObstacleDetected = false;
 
         const redirectUrl = '<?php echo htmlspecialchars($redirectUrl); ?>';
+
+        // Helper function to check if face has obstacles (sunglasses, mask, etc.)
+        function checkFaceObstacles(landmarks, expressions) {
+            // Check for sunglasses/glasses detection
+            // We check if the eye area has low confidence or if expressions indicate obstruction
+            
+            // Get eye landmarks (indices 36-47 for eyes)
+            const leftEye = landmarks.slice(36, 42);
+            const rightEye = landmarks.slice(42, 48);
+            
+            // Check if eye landmarks are visible (not blocked)
+            let eyeVisibilityScore = 0;
+            for (let i = 0; i < leftEye.length; i++) {
+                eyeVisibilityScore += leftEye[i].x;
+            }
+            for (let i = 0; i < rightEye.length; i++) {
+                eyeVisibilityScore += rightEye[i].x;
+            }
+            
+            // Check if mouth area is visible (indices 48-67 for mouth)
+            const mouth = landmarks.slice(48, 68);
+            let mouthVisibilityScore = 0;
+            for (let i = 0; i < mouth.length; i++) {
+                mouthVisibilityScore += mouth[i].x;
+            }
+            
+            // If face has low confidence in eye/mouth detection, might have obstacles
+            // Also check if expressions indicate covering
+            const hasObstacle = (
+                (expressions && (expressions.neutral < 0.3 && expressions.happy < 0.1)) ||
+                (leftEye.length < 6 || rightEye.length < 6)
+            );
+            
+            return hasObstacle;
+        }
 
         async function initFaceScanner() {
             try {
@@ -1121,14 +1157,24 @@ if ($applicantId) {
                     return;
                 }
 
-                // ✅ FIXED: Load face-api.js models from /public/js/ (no CT1)
-                const modelPath = '/public/js';
+                // Try multiple model paths
+                let modelPath = '/public/js';
                 console.log('Loading models from:', modelPath);
                 
-                await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
-                await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
-                await faceapi.nets.faceRecognitionNet.loadFromUri(modelPath);
-                await faceapi.nets.faceExpressionNet.loadFromUri(modelPath);
+                try {
+                    await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
+                    await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
+                    await faceapi.nets.faceRecognitionNet.loadFromUri(modelPath);
+                    await faceapi.nets.faceExpressionNet.loadFromUri(modelPath);
+                } catch (e) {
+                    console.warn('Failed to load from /public/js, trying relative path...');
+                    // Try relative path
+                    modelPath = '../public/js';
+                    await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
+                    await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
+                    await faceapi.nets.faceRecognitionNet.loadFromUri(modelPath);
+                    await faceapi.nets.faceExpressionNet.loadFromUri(modelPath);
+                }
 
                 faceApiLoaded = true;
                 console.log('✅ Face models loaded successfully');
@@ -1195,7 +1241,8 @@ if ($applicantId) {
 
                 const detection = await faceapi.detectSingleFace(faceScanVideo, options)
                     .withFaceLandmarks()
-                    .withFaceDescriptor();
+                    .withFaceDescriptor()
+                    .withFaceExpressions();
 
                 const ctx = faceScanCanvas.getContext('2d');
                 ctx.clearRect(0, 0, faceScanCanvas.width, faceScanCanvas.height);
@@ -1205,32 +1252,57 @@ if ($applicantId) {
                     const box = detection.detection.box;
                     const flippedX = faceScanCanvas.width - box.x - box.width;
 
-                    ctx.strokeStyle = '#22c55e';
-                    ctx.lineWidth = 3;
-                    ctx.strokeRect(flippedX, box.y, box.width, box.height);
+                    // Check for face obstacles (sunglasses, mask, etc.)
+                    const landmarks = detection.landmarks.positions;
+                    const expressions = detection.expressions;
+                    
+                    // Check if face has obstacles
+                    const hasObstacle = checkFaceObstacles(landmarks, expressions);
+                    
+                    if (hasObstacle) {
+                        // Draw red border for obstacle detection
+                        ctx.strokeStyle = '#dc2626';
+                        ctx.lineWidth = 3;
+                        ctx.setLineDash([8, 8]);
+                        ctx.strokeRect(flippedX, box.y, box.width, box.height);
+                        ctx.setLineDash([]);
+                        
+                        updateStatus('⚠️ Face partially covered. Remove sunglasses/mask.', 'error');
+                        document.getElementById('captureFaceBtn').disabled = true;
+                        faceScanDetection = null;
+                        faceObstacleDetected = true;
+                        
+                        // Show toast for obstacle
+                        showToast('Please remove any sunglasses, mask, or face covering.', 'warning');
+                    } else {
+                        // Draw green border for clean face
+                        ctx.strokeStyle = '#22c55e';
+                        ctx.lineWidth = 3;
+                        ctx.strokeRect(flippedX, box.y, box.width, box.height);
 
-                    // Draw landmarks
-                    const landmarks = detection.landmarks;
-                    const positions = landmarks.positions;
-                    ctx.fillStyle = '#22c55e';
-                    ctx.strokeStyle = '#22c55e';
-                    ctx.lineWidth = 2;
+                        // Draw landmarks
+                        ctx.fillStyle = '#22c55e';
+                        ctx.strokeStyle = '#22c55e';
+                        ctx.lineWidth = 2;
 
-                    for (let i = 0; i < positions.length; i++) {
-                        const flippedPosX = faceScanCanvas.width - positions[i].x;
-                        ctx.beginPath();
-                        ctx.arc(flippedPosX, positions[i].y, 2, 0, 2 * Math.PI);
-                        ctx.fill();
+                        for (let i = 0; i < landmarks.length; i++) {
+                            const flippedPosX = faceScanCanvas.width - landmarks[i].x;
+                            ctx.beginPath();
+                            ctx.arc(flippedPosX, landmarks[i].y, 2, 0, 2 * Math.PI);
+                            ctx.fill();
+                        }
+
+                        updateStatus('Face detected - Ready to register', 'success');
+                        document.getElementById('captureFaceBtn').disabled = false;
+                        faceScanDetection = detection;
+                        faceObstacleDetected = false;
                     }
-
-                    updateStatus('Face detected - Ready to register', 'success');
-                    document.getElementById('captureFaceBtn').disabled = false;
-                    faceScanDetection = detection;
 
                 } else {
                     updateStatus('Looking for face...', 'scanning');
                     document.getElementById('captureFaceBtn').disabled = true;
                     faceScanDetection = null;
+                    faceObstacleDetected = false;
                 }
 
             } catch (error) {
@@ -1261,6 +1333,11 @@ if ($applicantId) {
                 return;
             }
 
+            if (faceObstacleDetected) {
+                showToast('Please remove any face covering (sunglasses, mask, etc.) before registering.', 'warning');
+                return;
+            }
+
             if (isRegistering) return;
             isRegistering = true;
 
@@ -1288,7 +1365,8 @@ if ($applicantId) {
                     user_id: <?php echo $userId; ?>,
                     descriptor: descriptor,
                     snapshot: snapshot,
-                    redirect: redirectUrl
+                    redirect: redirectUrl,
+                    check_duplicate: true // Request server to check for duplicate face
                 };
 
                 console.log('Sending face data:', {
@@ -1297,27 +1375,41 @@ if ($applicantId) {
                     snapshot_length: requestData.snapshot ? requestData.snapshot.length : 0
                 });
 
-                // ✅ FIXED: Update API path to remove /CT1
-                const apiUrl = '/api/biometric_verify.php';
-                console.log('Calling API:', apiUrl);
-
-                // Send to server for enrollment
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
-                    body: JSON.stringify(requestData)
-                });
-
-                if (!response.ok) {
-                    const text = await response.text();
-                    console.error('Server error response:', text);
-                    throw new Error('Server returned ' + response.status + ': ' + text);
+                // Try multiple API paths
+                let apiUrls = ['/api/biometric_verify.php', '../api/biometric_verify.php'];
+                let response = null;
+                let data = null;
+                
+                for (let url of apiUrls) {
+                    try {
+                        console.log('Trying API URL:', url);
+                        response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            body: JSON.stringify(requestData)
+                        });
+                        
+                        if (response.ok) {
+                            const text = await response.text();
+                            try {
+                                data = JSON.parse(text);
+                                break;
+                            } catch (e) {
+                                console.warn('Invalid JSON from', url);
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Failed to fetch from', url, e);
+                    }
                 }
 
-                const data = await response.json();
+                if (!data) {
+                    throw new Error('Could not connect to server. Please try again.');
+                }
+
                 console.log('Server response:', data);
 
                 if (data.success) {
@@ -1330,8 +1422,14 @@ if ($applicantId) {
                     }, 1500);
 
                 } else {
-                    updateStatus('Registration failed: ' + (data.error || 'Unknown error'), 'error');
-                    showToast('Registration failed: ' + (data.error || 'Please try again.'), 'error');
+                    // Check if error is about duplicate face
+                    if (data.error && (data.error.includes('already registered') || data.error.includes('duplicate'))) {
+                        updateStatus('⚠️ Face already registered to another user!', 'error');
+                        showToast('This face is already registered in the system. Please contact support.', 'error');
+                    } else {
+                        updateStatus('Registration failed: ' + (data.error || 'Unknown error'), 'error');
+                        showToast('Registration failed: ' + (data.error || 'Please try again.'), 'error');
+                    }
                     captureBtn.disabled = false;
                     captureBtn.innerHTML = '<span class="material-symbols-outlined">scan</span> Register Face';
                     isRegistering = false;
@@ -1622,6 +1720,7 @@ if ($applicantId) {
             `;
             if (type === 'success') toast.style.background = '#22c55e';
             else if (type === 'error') toast.style.background = '#dc2626';
+            else if (type === 'warning') toast.style.background = '#f59e0b';
             else toast.style.background = '#4f46e5';
             
             toast.textContent = message;
