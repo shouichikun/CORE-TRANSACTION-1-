@@ -1340,10 +1340,10 @@ if ($applicantId) {
                     snapshot_length: requestData.snapshot ? requestData.snapshot.length : 0
                 });
 
-                // ✅ FIXED: Try multiple API paths with better detection
+                // ✅ FIXED: Correct API paths - from /portals/applicant/ to /api/
                 let apiPaths = [
-                    '/api/biometric_verify.php',
                     '../../api/biometric_verify.php',
+                    '/api/biometric_verify.php',
                     '../api/biometric_verify.php'
                 ];
                 
@@ -1381,7 +1381,6 @@ if ($applicantId) {
                             }
                         } else {
                             console.warn('HTTP error from', url, ':', response.status);
-                            // Try to read error response
                             try {
                                 const errorText = await response.text();
                                 console.warn('Error body:', errorText.substring(0, 200));
@@ -1502,224 +1501,12 @@ if ($applicantId) {
         });
 
         // =============================================
-        // SESSION ACTIVITY MONITOR
+        // SESSION ACTIVITY MONITOR - REMOVED broken calls
         // =============================================
+        // Session is already managed by config.php initSessionTimeout()
+        // No need for additional check_session.php or extend_session.php calls
 
-        let sessionTimer = null;
-        let warningShown = false;
-        const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
-        const WARNING_TIME = 60;
-
-        function updateSessionTimer() {
-            fetch('check_session.php')
-                .then(response => response.json())
-                .then(data => {
-                    const remaining = data.remaining;
-                    const minutes = Math.floor(remaining / 60);
-                    const seconds = remaining % 60;
-                    
-                    const timerEl = document.getElementById('sessionTimer');
-                    if (timerEl) {
-                        timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                        if (remaining < 60) {
-                            timerEl.style.color = '#dc2626';
-                            timerEl.style.fontWeight = 'bold';
-                        } else if (remaining < 120) {
-                            timerEl.style.color = '#f59e0b';
-                        } else {
-                            timerEl.style.color = '';
-                        }
-                    }
-                    
-                    if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
-                        warningShown = true;
-                        showSessionWarning(remaining);
-                    }
-                    
-                    if (remaining <= 0) {
-                        window.location.href = '../../login.php?timeout=1';
-                    }
-                })
-                .catch(error => {
-                    console.log('Session check error:', error);
-                });
-        }
-
-        function showSessionWarning(remaining) {
-            let modal = document.getElementById('sessionWarningModal');
-            if (!modal) {
-                modal = document.createElement('div');
-                modal.id = 'sessionWarningModal';
-                modal.style.cssText = `
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    background: rgba(0,0,0,0.6);
-                    backdrop-filter: blur(8px);
-                    z-index: 99999;
-                    display: none;
-                    justify-content: center;
-                    align-items: center;
-                    padding: 1rem;
-                `;
-                
-                modal.innerHTML = `
-                    <div style="
-                        background: white;
-                        border-radius: 1.5rem;
-                        max-width: 440px;
-                        width: 100%;
-                        padding: 2rem;
-                        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                        animation: slideUp 0.3s ease;
-                        text-align: center;
-                    ">
-                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
-                        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
-                        <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
-                            Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
-                            Please click "Stay Logged In" to continue.
-                        </p>
-                        <div style="display: flex; gap: 0.75rem; justify-content: center;">
-                            <button onclick="extendSession()" style="
-                                padding: 0.625rem 1.5rem;
-                                background: #4f46e5;
-                                color: white;
-                                border: none;
-                                border-radius: 0.75rem;
-                                font-weight: 600;
-                                font-size: 0.875rem;
-                                cursor: pointer;
-                                transition: all 0.15s;
-                            ">Stay Logged In</button>
-                            <button onclick="logoutNow()" style="
-                                padding: 0.625rem 1.5rem;
-                                background: #fef2f2;
-                                color: #dc2626;
-                                border: 1px solid #fecaca;
-                                border-radius: 0.75rem;
-                                font-weight: 600;
-                                font-size: 0.875rem;
-                                cursor: pointer;
-                                transition: all 0.15s;
-                            ">Logout</button>
-                        </div>
-                    </div>
-                `;
-                document.body.appendChild(modal);
-            }
-            
-            modal.style.display = 'flex';
-            
-            const warningTimer = document.getElementById('warningTimer');
-            if (warningTimer) {
-                let countdown = remaining;
-                const interval = setInterval(() => {
-                    countdown--;
-                    warningTimer.textContent = countdown;
-                    if (countdown <= 0) {
-                        clearInterval(interval);
-                        window.location.href = '../../login.php?timeout=1';
-                    }
-                }, 1000);
-                modal.dataset.interval = interval;
-            }
-        }
-
-        function extendSession() {
-            const modal = document.getElementById('sessionWarningModal');
-            if (modal && modal.dataset.interval) {
-                clearInterval(parseInt(modal.dataset.interval));
-            }
-            
-            fetch('extend_session.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    warningShown = false;
-                    if (modal) modal.style.display = 'none';
-                    showToast('Session extended!', 'success');
-                }
-            })
-            .catch(error => {
-                console.log('Extend session error:', error);
-            });
-        }
-
-        function logoutNow() {
-            window.location.href = '../../logout.php';
-        }
-
-        function showToast(message, type = 'info') {
-            const existingToast = document.querySelector('.toast');
-            if (existingToast) existingToast.remove();
-            
-            const toast = document.createElement('div');
-            toast.className = 'toast ' + type;
-            toast.style.cssText = `
-                position: fixed;
-                bottom: 1.5rem;
-                right: 1.5rem;
-                padding: 0.875rem 1.5rem;
-                border-radius: 0.75rem;
-                color: white;
-                font-weight: 600;
-                font-size: 0.875rem;
-                box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-                z-index: 100000;
-                animation: slideUp 0.4s ease-out;
-            `;
-            if (type === 'success') toast.style.background = '#22c55e';
-            else if (type === 'error') toast.style.background = '#dc2626';
-            else if (type === 'warning') toast.style.background = '#f59e0b';
-            else toast.style.background = '#4f46e5';
-            
-            toast.textContent = message;
-            document.body.appendChild(toast);
-            
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                toast.style.transform = 'translateY(20px)';
-                toast.style.transition = 'all 0.4s ease';
-                setTimeout(() => toast.remove(), 400);
-            }, 3000);
-        }
-
-        let activityTimer = null;
-
-        function resetActivityTimer() {
-            fetch('extend_session.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'reset' })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    warningShown = false;
-                    const modal = document.getElementById('sessionWarningModal');
-                    if (modal) modal.style.display = 'none';
-                }
-            })
-            .catch(error => console.log('Reset timer error:', error));
-        }
-
-        const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
-        activityEvents.forEach(event => {
-            document.addEventListener(event, () => {
-                resetActivityTimer();
-            });
-        });
-
-        sessionTimer = setInterval(updateSessionTimer, 10000);
-        updateSessionTimer();
-
-        console.log('⏰ Session timeout: 7 minutes');
+        console.log('⏰ Session timeout handled by config.php');
         console.log('🔄 Activity tracking enabled');
 
         <?php if (!$faceVerified): ?>
