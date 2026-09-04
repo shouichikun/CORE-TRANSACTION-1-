@@ -2,7 +2,7 @@
 // portals/applicant/register_face.php - Face Registration for Applicants
 session_start();
 
-// ✅ Initialize session timeout
+// ✅ Initialize session timeout po
 require_once '../../app/config.php';
 initSessionTimeout();
 // Check if user is logged in
