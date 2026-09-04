@@ -1,6 +1,6 @@
 <?php
 // api/biometric_verify.php - Face Verification API
-// FIXED: Correct column names based on actual table structure
+// FIXED: Removed is_active column (doesn't exist in table)
 
 // Start session for user authentication
 if (session_status() === PHP_SESSION_NONE) {
@@ -47,9 +47,9 @@ function calculateFaceDistance($descriptor1, $descriptor2) {
 // Helper function to check if face already exists in database
 function checkDuplicateFace($descriptor, $currentUserId = null, $threshold = 0.6) {
     // Fetch all face descriptors from face_verification table
-    $sql = "SELECT id, user_id, face_descriptor FROM face_verification WHERE is_active = 1";
+    $sql = "SELECT id, user_id, face_descriptor FROM face_verification";
     if ($currentUserId) {
-        $sql .= " AND user_id != $currentUserId";
+        $sql .= " WHERE user_id != $currentUserId";
     }
     
     $existingFaces = getRecords($sql);
@@ -177,7 +177,7 @@ if ($action === 'enroll') {
                 echo json_encode(['success' => false, 'error' => 'Failed to update face data']);
             }
         } else {
-            // Create new - use correct column names
+            // Create new - use correct column names (no is_active)
             error_log("Creating new face for user: $userId");
             
             $faceId = insertRecord("
@@ -185,10 +185,9 @@ if ($action === 'enroll') {
                     user_id, 
                     face_descriptor, 
                     snapshot, 
-                    is_active, 
                     created_at, 
                     updated_at
-                ) VALUES ($1, $2, $3, 1, NOW(), NOW())
+                ) VALUES ($1, $2, $3, NOW(), NOW())
                 RETURNING id
             ", [
                 $userId,
@@ -242,7 +241,7 @@ if ($action === 'check') {
     }
     
     $faceData = getRecord("
-        SELECT id, face_descriptor, is_active 
+        SELECT id, face_descriptor 
         FROM face_verification 
         WHERE user_id = $1
     ", [$userId]);
@@ -251,7 +250,6 @@ if ($action === 'check') {
         echo json_encode([
             'success' => true, 
             'has_face' => true,
-            'is_active' => $faceData['is_active'] == 1,
             'message' => 'Face verification found'
         ]);
     } else {
@@ -283,7 +281,7 @@ if ($action === 'verify') {
     $storedFace = getRecord("
         SELECT id, user_id, face_descriptor 
         FROM face_verification 
-        WHERE user_id = $1 AND is_active = 1
+        WHERE user_id = $1
     ", [$userId]);
     
     if (!$storedFace) {
