@@ -1,6 +1,6 @@
 <?php
 // api/biometric_verify.php - Face Verification API
-// FIXED: Only need config.php - all functions are inside it
+// FIXED: Correct column names based on actual table structure
 
 // Start session for user authentication
 if (session_status() === PHP_SESSION_NONE) {
@@ -46,8 +46,8 @@ function calculateFaceDistance($descriptor1, $descriptor2) {
 
 // Helper function to check if face already exists in database
 function checkDuplicateFace($descriptor, $currentUserId = null, $threshold = 0.6) {
-    // Fetch all face encodings from face_verification table
-    $sql = "SELECT id, user_id, face_encoding FROM face_verification WHERE is_active = 1";
+    // Fetch all face descriptors from face_verification table
+    $sql = "SELECT id, user_id, face_descriptor FROM face_verification WHERE is_active = 1";
     if ($currentUserId) {
         $sql .= " AND user_id != $currentUserId";
     }
@@ -61,7 +61,8 @@ function checkDuplicateFace($descriptor, $currentUserId = null, $threshold = 0.6
     $threshold = 0.6; // Lower threshold = stricter matching
     
     foreach ($existingFaces as $face) {
-        $existingDescriptor = json_decode($face['face_encoding'], true);
+        // Use 'face_descriptor' column
+        $existingDescriptor = json_decode($face['face_descriptor'], true);
         if (!$existingDescriptor || !is_array($existingDescriptor)) {
             continue;
         }
@@ -132,32 +133,34 @@ if ($action === 'enroll') {
         }
         
         // Check if user already has a face enrollment
+        error_log("Checking if user $userId already has face enrollment...");
         $existing = getRecord("SELECT id FROM face_verification WHERE user_id = $1", [$userId]);
+        error_log("Existing record: " . json_encode($existing));
         
         // Convert descriptor to JSON
         $descriptorJson = json_encode($descriptor);
+        error_log("Descriptor JSON length: " . strlen($descriptorJson));
         
         if ($existing) {
-            // Update existing
+            // Update existing - use correct column names
+            error_log("Updating existing face for user: $userId");
             $result = updateRecord("
                 UPDATE face_verification SET 
-                    face_encoding = $1,
-                    image_path = $2,
-                    expressions = $3,
-                    liveness_score = $4,
-                    is_active = 1,
+                    face_descriptor = $1,
+                    snapshot = $2,
                     updated_at = NOW()
-                WHERE user_id = $5
+                WHERE user_id = $3
             ", [
                 $descriptorJson,
                 $snapshot,
-                '{"neutral": 0.99, "happy": 0.01}', // Default expressions
-                0.95, // Default liveness score
                 $userId
             ]);
             
+            error_log("Update result: " . ($result ? 'true' : 'false'));
+            
             if ($result) {
                 // Update applicants table
+                error_log("Updating applicants table for user: $userId");
                 updateRecord("
                     UPDATE applicants SET face_verified = 1, face_verified_at = NOW() 
                     WHERE user_id = $1
@@ -174,29 +177,30 @@ if ($action === 'enroll') {
                 echo json_encode(['success' => false, 'error' => 'Failed to update face data']);
             }
         } else {
-            // Create new
+            // Create new - use correct column names
+            error_log("Creating new face for user: $userId");
+            
             $faceId = insertRecord("
                 INSERT INTO face_verification (
                     user_id, 
-                    face_encoding, 
-                    image_path, 
-                    expressions, 
-                    liveness_score, 
+                    face_descriptor, 
+                    snapshot, 
                     is_active, 
                     created_at, 
                     updated_at
-                ) VALUES ($1, $2, $3, $4, $5, 1, NOW(), NOW())
+                ) VALUES ($1, $2, $3, 1, NOW(), NOW())
                 RETURNING id
             ", [
                 $userId,
                 $descriptorJson,
-                $snapshot,
-                '{"neutral": 0.99, "happy": 0.01}', // Default expressions
-                0.95 // Default liveness score
+                $snapshot
             ]);
+            
+            error_log("Insert result (faceId): " . ($faceId ? $faceId : 'false'));
             
             if ($faceId) {
                 // Update applicants table
+                error_log("Updating applicants table for user: $userId");
                 updateRecord("
                     UPDATE applicants SET face_verified = 1, face_verified_at = NOW() 
                     WHERE user_id = $1
@@ -211,12 +215,17 @@ if ($action === 'enroll') {
                 ]);
             } else {
                 error_log("Failed to insert face for user: $userId");
-                echo json_encode(['success' => false, 'error' => 'Failed to save face data']);
+                // Get the last error from PostgreSQL
+                global $conn;
+                $lastError = $conn ? pg_last_error($conn) : 'No connection';
+                error_log("PostgreSQL last error: " . $lastError);
+                echo json_encode(['success' => false, 'error' => 'Failed to save face data: ' . $lastError]);
             }
         }
         
     } catch (Exception $e) {
         error_log("Face enrollment error: " . $e->getMessage());
+        error_log("Stack trace: " . $e->getTraceAsString());
         echo json_encode(['success' => false, 'error' => 'Server error: ' . $e->getMessage()]);
     }
     
@@ -233,7 +242,7 @@ if ($action === 'check') {
     }
     
     $faceData = getRecord("
-        SELECT id, face_encoding, is_active 
+        SELECT id, face_descriptor, is_active 
         FROM face_verification 
         WHERE user_id = $1
     ", [$userId]);
@@ -272,7 +281,7 @@ if ($action === 'verify') {
     
     // Get the user's stored face
     $storedFace = getRecord("
-        SELECT id, user_id, face_encoding 
+        SELECT id, user_id, face_descriptor 
         FROM face_verification 
         WHERE user_id = $1 AND is_active = 1
     ", [$userId]);
@@ -286,7 +295,7 @@ if ($action === 'verify') {
         exit;
     }
     
-    $storedDescriptor = json_decode($storedFace['face_encoding'], true);
+    $storedDescriptor = json_decode($storedFace['face_descriptor'], true);
     if (!$storedDescriptor || !is_array($storedDescriptor)) {
         echo json_encode([
             'success' => false, 
