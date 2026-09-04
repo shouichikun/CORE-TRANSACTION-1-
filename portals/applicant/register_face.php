@@ -31,7 +31,6 @@ $applicantId = $applicant['id'] ?? 0;
 $faceVerified = false;
 $faceEnrollmentId = null;
 if ($applicantId) {
-    // ✅ FIXED: PostgreSQL uses $1 placeholder
     $faceCheck = getRecord("
         SELECT id FROM face_verification WHERE user_id = $1
     ", [$userId]);
@@ -52,21 +51,18 @@ $interviewCount = 0;
 $pendingOffers = 0;
 
 if ($applicantId) {
-    // ✅ FIXED: PostgreSQL uses $1 placeholder
     $appResult = getRecord("
         SELECT COUNT(*) as count FROM applications 
         WHERE applicant_id = $1
     ", [$applicantId]);
     $totalApplications = (int)($appResult['count'] ?? 0);
     
-    // ✅ FIXED: PostgreSQL uses $1 placeholder
     $interviewResult = getRecord("
         SELECT COUNT(*) as count FROM applications 
         WHERE applicant_id = $1 AND interview_date IS NOT NULL
     ", [$applicantId]);
     $interviewCount = (int)($interviewResult['count'] ?? 0);
     
-    // ✅ FIXED: PostgreSQL uses $1 placeholder
     $offersResult = getRecord("
         SELECT COUNT(*) as count FROM offers o
         JOIN applications a ON o.application_id = a.id
@@ -1112,31 +1108,11 @@ if ($applicantId) {
 
         // Helper function to check if face has obstacles (sunglasses, mask, etc.)
         function checkFaceObstacles(landmarks, expressions) {
-            // Check for sunglasses/glasses detection
-            // We check if the eye area has low confidence or if expressions indicate obstruction
-            
             // Get eye landmarks (indices 36-47 for eyes)
             const leftEye = landmarks.slice(36, 42);
             const rightEye = landmarks.slice(42, 48);
             
-            // Check if eye landmarks are visible (not blocked)
-            let eyeVisibilityScore = 0;
-            for (let i = 0; i < leftEye.length; i++) {
-                eyeVisibilityScore += leftEye[i].x;
-            }
-            for (let i = 0; i < rightEye.length; i++) {
-                eyeVisibilityScore += rightEye[i].x;
-            }
-            
-            // Check if mouth area is visible (indices 48-67 for mouth)
-            const mouth = landmarks.slice(48, 68);
-            let mouthVisibilityScore = 0;
-            for (let i = 0; i < mouth.length; i++) {
-                mouthVisibilityScore += mouth[i].x;
-            }
-            
             // If face has low confidence in eye/mouth detection, might have obstacles
-            // Also check if expressions indicate covering
             const hasObstacle = (
                 (expressions && (expressions.neutral < 0.3 && expressions.happy < 0.1)) ||
                 (leftEye.length < 6 || rightEye.length < 6)
@@ -1168,7 +1144,6 @@ if ($applicantId) {
                     await faceapi.nets.faceExpressionNet.loadFromUri(modelPath);
                 } catch (e) {
                     console.warn('Failed to load from /public/js, trying relative path...');
-                    // Try relative path
                     modelPath = '../public/js';
                     await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
                     await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
@@ -1248,19 +1223,15 @@ if ($applicantId) {
                 ctx.clearRect(0, 0, faceScanCanvas.width, faceScanCanvas.height);
 
                 if (detection) {
-                    // Draw detection on canvas
                     const box = detection.detection.box;
                     const flippedX = faceScanCanvas.width - box.x - box.width;
 
-                    // Check for face obstacles (sunglasses, mask, etc.)
                     const landmarks = detection.landmarks.positions;
                     const expressions = detection.expressions;
                     
-                    // Check if face has obstacles
                     const hasObstacle = checkFaceObstacles(landmarks, expressions);
                     
                     if (hasObstacle) {
-                        // Draw red border for obstacle detection
                         ctx.strokeStyle = '#dc2626';
                         ctx.lineWidth = 3;
                         ctx.setLineDash([8, 8]);
@@ -1272,15 +1243,12 @@ if ($applicantId) {
                         faceScanDetection = null;
                         faceObstacleDetected = true;
                         
-                        // Show toast for obstacle
                         showToast('Please remove any sunglasses, mask, or face covering.', 'warning');
                     } else {
-                        // Draw green border for clean face
                         ctx.strokeStyle = '#22c55e';
                         ctx.lineWidth = 3;
                         ctx.strokeRect(flippedX, box.y, box.width, box.height);
 
-                        // Draw landmarks
                         ctx.fillStyle = '#22c55e';
                         ctx.strokeStyle = '#22c55e';
                         ctx.lineWidth = 2;
@@ -1349,24 +1317,21 @@ if ($applicantId) {
             updateStatus('Processing face data... (Attempt ' + captureAttempts + ')', 'scanning');
 
             try {
-                // Get face descriptor as array
                 const descriptor = Array.from(faceScanDetection.descriptor);
 
                 if (!descriptor || descriptor.length < 10) {
                     throw new Error('Invalid face descriptor data');
                 }
 
-                // Take snapshot
                 const snapshot = await takeFaceSnapshot();
 
-                // Prepare request data
                 const requestData = {
                     action: 'enroll',
                     user_id: <?php echo $userId; ?>,
                     descriptor: descriptor,
                     snapshot: snapshot,
                     redirect: redirectUrl,
-                    check_duplicate: true // Request server to check for duplicate face
+                    check_duplicate: true
                 };
 
                 console.log('Sending face data:', {
@@ -1375,14 +1340,21 @@ if ($applicantId) {
                     snapshot_length: requestData.snapshot ? requestData.snapshot.length : 0
                 });
 
-                // Try multiple API paths
-                let apiUrls = ['/api/biometric_verify.php', '../api/biometric_verify.php'];
+                // ✅ FIXED: Try multiple API paths with better detection
+                let apiPaths = [
+                    '/api/biometric_verify.php',
+                    '../../api/biometric_verify.php',
+                    '../api/biometric_verify.php'
+                ];
+                
                 let response = null;
                 let data = null;
+                let successUrl = null;
                 
-                for (let url of apiUrls) {
+                for (let url of apiPaths) {
                     try {
                         console.log('Trying API URL:', url);
+                        const startTime = Date.now();
                         response = await fetch(url, {
                             method: 'POST',
                             headers: {
@@ -1391,23 +1363,37 @@ if ($applicantId) {
                             },
                             body: JSON.stringify(requestData)
                         });
+                        const endTime = Date.now();
+                        console.log(`Response from ${url} took ${endTime - startTime}ms, status: ${response.status}`);
                         
                         if (response.ok) {
                             const text = await response.text();
+                            console.log('Response from', url, ':', text.substring(0, 200));
                             try {
                                 data = JSON.parse(text);
-                                break;
+                                if (data && data.success !== undefined) {
+                                    console.log('✅ Success from:', url);
+                                    successUrl = url;
+                                    break;
+                                }
                             } catch (e) {
                                 console.warn('Invalid JSON from', url);
                             }
+                        } else {
+                            console.warn('HTTP error from', url, ':', response.status);
+                            // Try to read error response
+                            try {
+                                const errorText = await response.text();
+                                console.warn('Error body:', errorText.substring(0, 200));
+                            } catch (e) {}
                         }
                     } catch (e) {
-                        console.warn('Failed to fetch from', url, e);
+                        console.warn('Failed to fetch from', url, e.message);
                     }
                 }
 
                 if (!data) {
-                    throw new Error('Could not connect to server. Please try again.');
+                    throw new Error('Could not connect to server. Please check your internet connection and try again.');
                 }
 
                 console.log('Server response:', data);
@@ -1416,14 +1402,12 @@ if ($applicantId) {
                     updateStatus('Face registered successfully!', 'success');
                     showToast('Face registration complete!', 'success');
 
-                    // Redirect after success
                     setTimeout(() => {
                         window.location.href = redirectUrl;
                     }, 1500);
 
                 } else {
-                    // Check if error is about duplicate face
-                    if (data.error && (data.error.includes('already registered') || data.error.includes('duplicate'))) {
+                    if (data.error && (data.error.includes('already registered') || data.error.includes('duplicate') || data.duplicate)) {
                         updateStatus('⚠️ Face already registered to another user!', 'error');
                         showToast('This face is already registered in the system. Please contact support.', 'error');
                     } else {
@@ -1457,7 +1441,6 @@ if ($applicantId) {
         }
 
         function reverifyFace() {
-            // This will reload the page and show the face scanner again
             window.location.href = window.location.href.split('?')[0] + '?reverify=1';
         }
 
@@ -1525,13 +1508,9 @@ if ($applicantId) {
         let sessionTimer = null;
         let warningShown = false;
         const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
-        const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+        const WARNING_TIME = 60;
 
-        /**
-         * Update session timer display
-         */
         function updateSessionTimer() {
-            // Get remaining time from server
             fetch('check_session.php')
                 .then(response => response.json())
                 .then(data => {
@@ -1539,12 +1518,9 @@ if ($applicantId) {
                     const minutes = Math.floor(remaining / 60);
                     const seconds = remaining % 60;
                     
-                    // Update timer display if exists
                     const timerEl = document.getElementById('sessionTimer');
                     if (timerEl) {
                         timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                        
-                        // Change color when running low
                         if (remaining < 60) {
                             timerEl.style.color = '#dc2626';
                             timerEl.style.fontWeight = 'bold';
@@ -1555,13 +1531,11 @@ if ($applicantId) {
                         }
                     }
                     
-                    // Show warning modal if session is about to expire
                     if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
                         warningShown = true;
                         showSessionWarning(remaining);
                     }
                     
-                    // If session expired, redirect
                     if (remaining <= 0) {
                         window.location.href = '../../login.php?timeout=1';
                     }
@@ -1571,11 +1545,7 @@ if ($applicantId) {
                 });
         }
 
-        /**
-         * Show session expiration warning
-         */
         function showSessionWarning(remaining) {
-            // Create modal if it doesn't exist
             let modal = document.getElementById('sessionWarningModal');
             if (!modal) {
                 modal = document.createElement('div');
@@ -1641,10 +1611,8 @@ if ($applicantId) {
                 document.body.appendChild(modal);
             }
             
-            // Show modal
             modal.style.display = 'flex';
             
-            // Update countdown inside modal
             const warningTimer = document.getElementById('warningTimer');
             if (warningTimer) {
                 let countdown = remaining;
@@ -1656,17 +1624,11 @@ if ($applicantId) {
                         window.location.href = '../../login.php?timeout=1';
                     }
                 }, 1000);
-                
-                // Store interval to clear it when extending
                 modal.dataset.interval = interval;
             }
         }
 
-        /**
-         * Extend session (reset timer)
-         */
         function extendSession() {
-            // Clear any existing warning interval
             const modal = document.getElementById('sessionWarningModal');
             if (modal && modal.dataset.interval) {
                 clearInterval(parseInt(modal.dataset.interval));
@@ -1689,16 +1651,10 @@ if ($applicantId) {
             });
         }
 
-        /**
-         * Logout immediately
-         */
         function logoutNow() {
             window.location.href = '../../logout.php';
         }
 
-        /**
-         * Show toast notification
-         */
         function showToast(message, type = 'info') {
             const existingToast = document.querySelector('.toast');
             if (existingToast) existingToast.remove();
@@ -1734,14 +1690,9 @@ if ($applicantId) {
             }, 3000);
         }
 
-        // =============================================
-        // TRACK USER ACTIVITY
-        // =============================================
-
         let activityTimer = null;
 
         function resetActivityTimer() {
-            // Reset the server-side timer via AJAX
             fetch('extend_session.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1751,7 +1702,6 @@ if ($applicantId) {
             .then(data => {
                 if (data.success) {
                     warningShown = false;
-                    // Hide warning modal if shown
                     const modal = document.getElementById('sessionWarningModal');
                     if (modal) modal.style.display = 'none';
                 }
@@ -1759,7 +1709,6 @@ if ($applicantId) {
             .catch(error => console.log('Reset timer error:', error));
         }
 
-        // Track user activity events
         const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
         activityEvents.forEach(event => {
             document.addEventListener(event, () => {
@@ -1767,22 +1716,12 @@ if ($applicantId) {
             });
         });
 
-        // =============================================
-        // START SESSION TIMER
-        // =============================================
-
-        // Update timer every 10 seconds
         sessionTimer = setInterval(updateSessionTimer, 10000);
-
-        // Initial update
         updateSessionTimer();
 
         console.log('⏰ Session timeout: 7 minutes');
         console.log('🔄 Activity tracking enabled');
 
-        // =============================================
-        // INITIALIZE FACE SCANNER
-        // =============================================
         <?php if (!$faceVerified): ?>
         document.addEventListener('DOMContentLoaded', function() {
             setTimeout(initFaceScanner, 500);
@@ -1796,7 +1735,5 @@ if ($applicantId) {
         console.log('📷 Face scanner initialized');
         <?php endif; ?>
     </script>
-    <!-- REMOVED: <script src="/CT1/session_guard.js"></script> -->
-    <!-- Session monitoring is already built into the page above -->
 </body>
 </html>
