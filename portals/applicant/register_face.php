@@ -2,7 +2,7 @@
 // portals/applicant/register_face.php - Face Registration for Applicants
 session_start();
 
-// ✅ Initialize session timeout po
+// ✅ Initialize session timeout
 require_once '../../app/config.php';
 initSessionTimeout();
 // Check if user is logged in
@@ -1121,14 +1121,17 @@ if ($applicantId) {
                     return;
                 }
 
-                // Load face-api.js models from /CT1/public/js/
-                const modelPath = '/CT1/public/js';
+                // ✅ FIXED: Load face-api.js models from /public/js/ (no CT1)
+                const modelPath = '/public/js';
+                console.log('Loading models from:', modelPath);
+                
                 await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
                 await faceapi.nets.faceLandmark68Net.loadFromUri(modelPath);
                 await faceapi.nets.faceRecognitionNet.loadFromUri(modelPath);
                 await faceapi.nets.faceExpressionNet.loadFromUri(modelPath);
 
                 faceApiLoaded = true;
+                console.log('✅ Face models loaded successfully');
 
                 // Start camera
                 faceScanStream = await navigator.mediaDevices.getUserMedia({
@@ -1155,6 +1158,8 @@ if ($applicantId) {
                 console.error('Face scanner error:', error);
                 if (error.message && error.message.includes('Permission')) {
                     updateStatus('Camera access denied. Please allow camera permissions.', 'error');
+                } else if (error.message && error.message.includes('404')) {
+                    updateStatus('Model files not found. Please check the model path.', 'error');
                 } else {
                     updateStatus('Camera error: ' + error.message, 'error');
                 }
@@ -1292,8 +1297,12 @@ if ($applicantId) {
                     snapshot_length: requestData.snapshot ? requestData.snapshot.length : 0
                 });
 
+                // ✅ FIXED: Update API path to remove /CT1
+                const apiUrl = '/api/biometric_verify.php';
+                console.log('Calling API:', apiUrl);
+
                 // Send to server for enrollment
-                const response = await fetch('/CT1/api/biometric_verify.php', {
+                const response = await fetch(apiUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
