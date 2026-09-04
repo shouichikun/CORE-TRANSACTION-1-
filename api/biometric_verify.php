@@ -1,6 +1,6 @@
 <?php
 // api/biometric_verify.php - Face Verification API
-// FIXED: Corrected include paths, added duplicate face detection and PostgreSQL support
+// FIXED: Only need config.php - all functions are inside it
 
 // Start session for user authentication
 if (session_status() === PHP_SESSION_NONE) {
@@ -15,25 +15,20 @@ ini_set('log_errors', 1);
 // Set JSON header
 header('Content-Type: application/json');
 
-// ✅ FIXED: Correct path to config and functions
-// From /api/biometric_verify.php, go up one level to root, then into app
+// ✅ ONLY include config.php - all functions are inside it
 $configPath = '../app/config.php';
-$functionsPath = '../app/includes/functions.php';
 
-// Check if files exist before requiring
+// Try alternative paths if the main one doesn't exist
 if (!file_exists($configPath)) {
-    // Try alternative path
     $configPath = '../../app/config.php';
 }
 
-if (!file_exists($functionsPath)) {
-    // Try alternative path
-    $functionsPath = '../../app/includes/functions.php';
+if (!file_exists($configPath)) {
+    echo json_encode(['success' => false, 'error' => 'Configuration file not found at: ' . $configPath]);
+    exit;
 }
 
-// Require the files
 require_once $configPath;
-require_once $functionsPath;
 
 // Helper function to calculate Euclidean distance between two face descriptors
 function calculateFaceDistance($descriptor1, $descriptor2) {
