@@ -75,7 +75,6 @@ if ($applicantId) {
     $pendingOffers = (int)($offersResult['count'] ?? 0);
 }
 ?>
-<!-- HTML CONTENT REMAINS THE SAME -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -321,12 +320,12 @@ if ($applicantId) {
         }
 
         .header-logo {
-    height: 2rem;
-    width: auto;
-    max-height: 2.5rem;
-    object-fit: contain;
-    border-radius: 0.375rem;
-}
+            height: 2rem;
+            width: auto;
+            max-height: 2.5rem;
+            object-fit: contain;
+            border-radius: 0.375rem;
+        }
         .top-header-left { display: flex; align-items: center; gap: 0.75rem; }
         .sidebar-toggle-btn {
             display: flex;
@@ -802,35 +801,35 @@ if ($applicantId) {
         .main-scroll::-webkit-scrollbar-track { background: transparent; }
         .main-scroll::-webkit-scrollbar-thumb { background: var(--slate-200); border-radius: 4px; }
         .main-scroll::-webkit-scrollbar-thumb:hover { background: var(--slate-300); }
-  .sidebar-logo {
-    width: 3.5rem;
-    height: 3.5rem;
-    object-fit: contain;
-    border-radius: 0.75rem;
-    display: block;
-    margin: 0 auto;
-}
+        .sidebar-logo {
+            width: 3.5rem;
+            height: 3.5rem;
+            object-fit: contain;
+            border-radius: 0.75rem;
+            display: block;
+            margin: 0 auto;
+        }
 
-/* For collapsed sidebar */
-.dashboard-sidebar.collapsed .sidebar-logo {
-    width: 2.5rem;
-    height: 2.5rem;
-}
+        /* For collapsed sidebar */
+        .dashboard-sidebar.collapsed .sidebar-logo {
+            width: 2.5rem;
+            height: 2.5rem;
+        }
 
-/* If using Option 2 - background image on icon */
-.sidebar-brand-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 1.75rem;
-    background-size: contain !important;
-    background-repeat: no-repeat !important;
-    background-position: center !important;
-    background-color: transparent !important;
-    flex-shrink: 0;
-}
+        /* If using Option 2 - background image on icon */
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 1.75rem;
+            background-size: contain !important;
+            background-repeat: no-repeat !important;
+            background-position: center !important;
+            background-color: transparent !important;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -841,11 +840,11 @@ if ($applicantId) {
     <!-- =============================================
     SIDEBAR - FIXED POSITION
     ============================================= -->
-   <aside class="dashboard-sidebar" id="appSidebar">
-    <div class="sidebar-brand-card">
-        <img src="logo.png" alt="ISMERS" class="sidebar-logo">
-        <p class="sidebar-brand-category">Applicant Portal</p>
-    </div>
+    <aside class="dashboard-sidebar" id="appSidebar">
+        <div class="sidebar-brand-card">
+            <img src="logo.png" alt="ISMERS" class="sidebar-logo">
+            <p class="sidebar-brand-category">Applicant Portal</p>
+        </div>
         <nav class="sidebar-nav">
             <div class="nav-label">Main Menu</div>
 
@@ -899,8 +898,8 @@ if ($applicantId) {
         <!-- Top Header -->
         <header class="top-header">
             <div class="top-header-left">
-<img src="logo.png" alt="ISMERS" class="logo" style="height: 2rem; width: auto;">     
-           <span class="separator">|</span>
+                <img src="logo.png" alt="ISMERS" class="header-logo">
+                <span class="separator">|</span>
                 <button class="sidebar-toggle-btn" id="sidebarToggleBtn" type="button" title="Toggle Sidebar">
                     <span class="material-symbols-outlined" id="sidebarToggleIcon">menu_open</span>
                 </button>
@@ -912,7 +911,7 @@ if ($applicantId) {
 
             <!-- Profile Dropdown -->
             <div class="profile-dropdown-wrapper">
-                <button class="profile-dropdown-toggle" id="profileDropdownToggle" type="button" aria-expanded="false">
+                <button class="profile-dropdown-toggle" id="profileToggle" type="button" aria-expanded="false">
                     <div class="avatar-small"><?php echo strtoupper(substr($firstName, 0, 1) ?: 'A'); ?></div>
                     <span class="profile-name"><?php echo htmlspecialchars($firstName); ?></span>
                     <span class="profile-role">Applicant</span>
@@ -920,7 +919,7 @@ if ($applicantId) {
                 </button>
 
                 <!-- Dropdown Menu -->
-                <div class="profile-dropdown-menu" id="profileDropdownMenu">
+                <div class="profile-dropdown-menu" id="profileMenu">
                     <div class="dropdown-header">Account</div>
                     <a href="settings.php" class="dropdown-item">
                         <span class="material-symbols-outlined">settings</span>
@@ -1067,27 +1066,33 @@ if ($applicantId) {
             document.body.style.overflow = '';
         }
 
-        mobileMenuBtn.addEventListener('click', openMobileSidebar);
-        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        if (mobileMenuBtn) {
+            mobileMenuBtn.addEventListener('click', openMobileSidebar);
+        }
+        if (sidebarBackdrop) {
+            sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+        }
 
         // =============================================
-        // PROFILE DROPDOWN
+        // PROFILE DROPDOWN - FIXED ID
         // =============================================
         const profileToggle = document.getElementById('profileToggle');
         const profileMenu = document.getElementById('profileMenu');
 
-        profileToggle.addEventListener('click', function(e) {
-            e.stopPropagation();
-            this.classList.toggle('open');
-            profileMenu.classList.toggle('open');
-        });
+        if (profileToggle && profileMenu) {
+            profileToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                this.classList.toggle('open');
+                profileMenu.classList.toggle('open');
+            });
 
-        document.addEventListener('click', function(e) {
-            if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
-            }
-        });
+            document.addEventListener('click', function(e) {
+                if (!profileToggle.contains(e.target) && !profileMenu.contains(e.target)) {
+                    profileToggle.classList.remove('open');
+                    profileMenu.classList.remove('open');
+                }
+            });
+        }
 
         // =============================================
         // FACE REGISTRATION - COMPLETE
@@ -1374,8 +1379,8 @@ if ($applicantId) {
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 closeMobileSidebar();
-                profileToggle.classList.remove('open');
-                profileMenu.classList.remove('open');
+                if (profileToggle) profileToggle.classList.remove('open');
+                if (profileMenu) profileMenu.classList.remove('open');
             }
         });
 
@@ -1406,266 +1411,266 @@ if ($applicantId) {
             }, 250);
         });
 
-// =============================================
-// SESSION ACTIVITY MONITOR
-// =============================================
+        // =============================================
+        // SESSION ACTIVITY MONITOR
+        // =============================================
 
-let sessionTimer = null;
-let warningShown = false;
-const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
-const WARNING_TIME = 60; // Show warning 60 seconds before timeout
+        let sessionTimer = null;
+        let warningShown = false;
+        const SESSION_TIMEOUT = <?php echo SESSION_TIMEOUT_SECONDS; ?>; // 7 minutes
+        const WARNING_TIME = 60; // Show warning 60 seconds before timeout
 
-/**
- * Update session timer display
- */
-function updateSessionTimer() {
-    // Get remaining time from server
-    fetch('check_session.php')
-        .then(response => response.json())
-        .then(data => {
-            const remaining = data.remaining;
-            const minutes = Math.floor(remaining / 60);
-            const seconds = remaining % 60;
-            
-            // Update timer display if exists
-            const timerEl = document.getElementById('sessionTimer');
-            if (timerEl) {
-                timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        /**
+         * Update session timer display
+         */
+        function updateSessionTimer() {
+            // Get remaining time from server
+            fetch('check_session.php')
+                .then(response => response.json())
+                .then(data => {
+                    const remaining = data.remaining;
+                    const minutes = Math.floor(remaining / 60);
+                    const seconds = remaining % 60;
+                    
+                    // Update timer display if exists
+                    const timerEl = document.getElementById('sessionTimer');
+                    if (timerEl) {
+                        timerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+                        
+                        // Change color when running low
+                        if (remaining < 60) {
+                            timerEl.style.color = '#dc2626';
+                            timerEl.style.fontWeight = 'bold';
+                        } else if (remaining < 120) {
+                            timerEl.style.color = '#f59e0b';
+                        } else {
+                            timerEl.style.color = '';
+                        }
+                    }
+                    
+                    // Show warning modal if session is about to expire
+                    if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
+                        warningShown = true;
+                        showSessionWarning(remaining);
+                    }
+                    
+                    // If session expired, redirect
+                    if (remaining <= 0) {
+                        window.location.href = '../../login.php?timeout=1';
+                    }
+                })
+                .catch(error => {
+                    console.log('Session check error:', error);
+                });
+        }
+
+        /**
+         * Show session expiration warning
+         */
+        function showSessionWarning(remaining) {
+            // Create modal if it doesn't exist
+            let modal = document.getElementById('sessionWarningModal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'sessionWarningModal';
+                modal.style.cssText = `
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background: rgba(0,0,0,0.6);
+                    backdrop-filter: blur(8px);
+                    z-index: 99999;
+                    display: none;
+                    justify-content: center;
+                    align-items: center;
+                    padding: 1rem;
+                `;
                 
-                // Change color when running low
-                if (remaining < 60) {
-                    timerEl.style.color = '#dc2626';
-                    timerEl.style.fontWeight = 'bold';
-                } else if (remaining < 120) {
-                    timerEl.style.color = '#f59e0b';
-                } else {
-                    timerEl.style.color = '';
-                }
+                modal.innerHTML = `
+                    <div style="
+                        background: white;
+                        border-radius: 1.5rem;
+                        max-width: 440px;
+                        width: 100%;
+                        padding: 2rem;
+                        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                        animation: slideUp 0.3s ease;
+                        text-align: center;
+                    ">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
+                        <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
+                        <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
+                            Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
+                            Please click "Stay Logged In" to continue.
+                        </p>
+                        <div style="display: flex; gap: 0.75rem; justify-content: center;">
+                            <button onclick="extendSession()" style="
+                                padding: 0.625rem 1.5rem;
+                                background: #4f46e5;
+                                color: white;
+                                border: none;
+                                border-radius: 0.75rem;
+                                font-weight: 600;
+                                font-size: 0.875rem;
+                                cursor: pointer;
+                                transition: all 0.15s;
+                            ">Stay Logged In</button>
+                            <button onclick="logoutNow()" style="
+                                padding: 0.625rem 1.5rem;
+                                background: #fef2f2;
+                                color: #dc2626;
+                                border: 1px solid #fecaca;
+                                border-radius: 0.75rem;
+                                font-weight: 600;
+                                font-size: 0.875rem;
+                                cursor: pointer;
+                                transition: all 0.15s;
+                            ">Logout</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
             }
             
-            // Show warning modal if session is about to expire
-            if (remaining <= WARNING_TIME && !warningShown && remaining > 0) {
-                warningShown = true;
-                showSessionWarning(remaining);
-            }
+            // Show modal
+            modal.style.display = 'flex';
             
-            // If session expired, redirect
-            if (remaining <= 0) {
-                window.location.href = '../../login.php?timeout=1';
+            // Update countdown inside modal
+            const warningTimer = document.getElementById('warningTimer');
+            if (warningTimer) {
+                let countdown = remaining;
+                const interval = setInterval(() => {
+                    countdown--;
+                    warningTimer.textContent = countdown;
+                    if (countdown <= 0) {
+                        clearInterval(interval);
+                        window.location.href = '../../login.php?timeout=1';
+                    }
+                }, 1000);
+                
+                // Store interval to clear it when extending
+                modal.dataset.interval = interval;
             }
-        })
-        .catch(error => {
-            console.log('Session check error:', error);
-        });
-}
-
-/**
- * Show session expiration warning
- */
-function showSessionWarning(remaining) {
-    // Create modal if it doesn't exist
-    let modal = document.getElementById('sessionWarningModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'sessionWarningModal';
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.6);
-            backdrop-filter: blur(8px);
-            z-index: 99999;
-            display: none;
-            justify-content: center;
-            align-items: center;
-            padding: 1rem;
-        `;
-        
-        modal.innerHTML = `
-            <div style="
-                background: white;
-                border-radius: 1.5rem;
-                max-width: 440px;
-                width: 100%;
-                padding: 2rem;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                animation: slideUp 0.3s ease;
-                text-align: center;
-            ">
-                <div style="font-size: 3rem; margin-bottom: 0.5rem;">⏰</div>
-                <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Session Expiring Soon</h2>
-                <p style="color: #464555; font-size: 0.875rem; margin-bottom: 1rem;">
-                    Your session will expire in <strong id="warningTimer" style="color: #dc2626;">60</strong> seconds.
-                    Please click "Stay Logged In" to continue.
-                </p>
-                <div style="display: flex; gap: 0.75rem; justify-content: center;">
-                    <button onclick="extendSession()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #4f46e5;
-                        color: white;
-                        border: none;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Stay Logged In</button>
-                    <button onclick="logoutNow()" style="
-                        padding: 0.625rem 1.5rem;
-                        background: #fef2f2;
-                        color: #dc2626;
-                        border: 1px solid #fecaca;
-                        border-radius: 0.75rem;
-                        font-weight: 600;
-                        font-size: 0.875rem;
-                        cursor: pointer;
-                        transition: all 0.15s;
-                    ">Logout</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-    }
-    
-    // Show modal
-    modal.style.display = 'flex';
-    
-    // Update countdown inside modal
-    const warningTimer = document.getElementById('warningTimer');
-    if (warningTimer) {
-        let countdown = remaining;
-        const interval = setInterval(() => {
-            countdown--;
-            warningTimer.textContent = countdown;
-            if (countdown <= 0) {
-                clearInterval(interval);
-                window.location.href = '../../login.php?timeout=1';
-            }
-        }, 1000);
-        
-        // Store interval to clear it when extending
-        modal.dataset.interval = interval;
-    }
-}
-
-/**
- * Extend session (reset timer)
- */
-function extendSession() {
-    // Clear any existing warning interval
-    const modal = document.getElementById('sessionWarningModal');
-    if (modal && modal.dataset.interval) {
-        clearInterval(parseInt(modal.dataset.interval));
-    }
-    
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            if (modal) modal.style.display = 'none';
-            showToast('Session extended!', 'success');
         }
-    })
-    .catch(error => {
-        console.log('Extend session error:', error);
-    });
-}
 
-/**
- * Logout immediately
- */
-function logoutNow() {
-    window.location.href = '../../logout.php';
-}
-
-/**
- * Show toast notification
- */
-function showToast(message, type = 'info') {
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) existingToast.remove();
-    
-    const toast = document.createElement('div');
-    toast.className = 'toast ' + type;
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 1.5rem;
-        right: 1.5rem;
-        padding: 0.875rem 1.5rem;
-        border-radius: 0.75rem;
-        color: white;
-        font-weight: 600;
-        font-size: 0.875rem;
-        box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-        z-index: 100000;
-        animation: slideUp 0.4s ease-out;
-    `;
-    if (type === 'success') toast.style.background = '#22c55e';
-    else if (type === 'error') toast.style.background = '#dc2626';
-    else toast.style.background = '#4f46e5';
-    
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(20px)';
-        toast.style.transition = 'all 0.4s ease';
-        setTimeout(() => toast.remove(), 400);
-    }, 3000);
-}
-
-// =============================================
-// TRACK USER ACTIVITY
-// =============================================
-
-let activityTimer = null;
-
-function resetActivityTimer() {
-    // Reset the server-side timer via AJAX
-    fetch('extend_session.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reset' })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            warningShown = false;
-            // Hide warning modal if shown
+        /**
+         * Extend session (reset timer)
+         */
+        function extendSession() {
+            // Clear any existing warning interval
             const modal = document.getElementById('sessionWarningModal');
-            if (modal) modal.style.display = 'none';
+            if (modal && modal.dataset.interval) {
+                clearInterval(parseInt(modal.dataset.interval));
+            }
+            
+            fetch('extend_session.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    warningShown = false;
+                    if (modal) modal.style.display = 'none';
+                    showToast('Session extended!', 'success');
+                }
+            })
+            .catch(error => {
+                console.log('Extend session error:', error);
+            });
         }
-    })
-    .catch(error => console.log('Reset timer error:', error));
-}
 
-// Track user activity events
-const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
-activityEvents.forEach(event => {
-    document.addEventListener(event, () => {
-        resetActivityTimer();
-    });
-});
+        /**
+         * Logout immediately
+         */
+        function logoutNow() {
+            window.location.href = '../../logout.php';
+        }
 
-// =============================================
-// START SESSION TIMER
-// =============================================
+        /**
+         * Show toast notification
+         */
+        function showToast(message, type = 'info') {
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+            
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.style.cssText = `
+                position: fixed;
+                bottom: 1.5rem;
+                right: 1.5rem;
+                padding: 0.875rem 1.5rem;
+                border-radius: 0.75rem;
+                color: white;
+                font-weight: 600;
+                font-size: 0.875rem;
+                box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+                z-index: 100000;
+                animation: slideUp 0.4s ease-out;
+            `;
+            if (type === 'success') toast.style.background = '#22c55e';
+            else if (type === 'error') toast.style.background = '#dc2626';
+            else toast.style.background = '#4f46e5';
+            
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                toast.style.transition = 'all 0.4s ease';
+                setTimeout(() => toast.remove(), 400);
+            }, 3000);
+        }
 
-// Update timer every 10 seconds
-sessionTimer = setInterval(updateSessionTimer, 10000);
+        // =============================================
+        // TRACK USER ACTIVITY
+        // =============================================
 
-// Initial update
-updateSessionTimer();
+        let activityTimer = null;
 
-console.log('⏰ Session timeout: 7 minutes');
-console.log('🔄 Activity tracking enabled');
+        function resetActivityTimer() {
+            // Reset the server-side timer via AJAX
+            fetch('extend_session.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'reset' })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    warningShown = false;
+                    // Hide warning modal if shown
+                    const modal = document.getElementById('sessionWarningModal');
+                    if (modal) modal.style.display = 'none';
+                }
+            })
+            .catch(error => console.log('Reset timer error:', error));
+        }
+
+        // Track user activity events
+        const activityEvents = ['click', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+        activityEvents.forEach(event => {
+            document.addEventListener(event, () => {
+                resetActivityTimer();
+            });
+        });
+
+        // =============================================
+        // START SESSION TIMER
+        // =============================================
+
+        // Update timer every 10 seconds
+        sessionTimer = setInterval(updateSessionTimer, 10000);
+
+        // Initial update
+        updateSessionTimer();
+
+        console.log('⏰ Session timeout: 7 minutes');
+        console.log('🔄 Activity tracking enabled');
 
         // =============================================
         // INITIALIZE FACE SCANNER
@@ -1683,6 +1688,7 @@ console.log('🔄 Activity tracking enabled');
         console.log('📷 Face scanner initialized');
         <?php endif; ?>
     </script>
-<script src="/CT1/session_guard.js"></script>
+    <!-- REMOVED: <script src="/CT1/session_guard.js"></script> -->
+    <!-- Session monitoring is already built into the page above -->
 </body>
 </html>
